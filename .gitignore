@@ -1,0 +1,20 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+# Keep .terraform.lock.hcl committed (pins provider versions)
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Claude Code (personal, not shared)
+.claude/settings.local.json
+CLAUDE.local.md

@@ -1,0 +1,79 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_ROLE_ARN: arn:aws:iam::753674274065:role/silvercare-cicd
+  AWS_REGION: ap-southeast-1
+  TERRAFORM_VERSION: 1.16.6
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/checks.yml
+
+  terraform:
+    name: Terraform plan and apply
+    needs: checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check for Terraform config
+        id: tf
+        run: |
+          if ls ./*.tf >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No .tf files at the repo root yet, nothing to deploy."
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.tf.outputs.present == 'true'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        if: steps.tf.outputs.present == 'true'
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        if: steps.tf.outputs.present == 'true'
+        run: terraform init
+
+      # The full plan isn't printed: the repo is public, so its logs are too.
+      # The job summary lists the changed resources instead.
+      - name: Terraform plan
+        if: steps.tf.outputs.present == 'true'
+        run: terraform plan -no-color -out=tfplan > /dev/null
+
+      - name: Summarise plan
+        if: steps.tf.outputs.present == 'true'
+        run: .github/scripts/plan-summary.sh success tfplan /dev/null >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform apply
+        if: steps.tf.outputs.present == 'true'
+        run: terraform apply -no-color tfplan

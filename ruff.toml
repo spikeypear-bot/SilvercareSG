@@ -1,0 +1,5 @@
+# Lint and format settings for the Python Lambdas.
+target-version = "py313"   # matches the Lambda runtime
+
+# Ruff also formats code blocks in Markdown; keep it off the docs and skills.
+extend-exclude = ["*.md"]
