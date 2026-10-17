@@ -17,7 +17,7 @@ if (!FEATURE) {
 }
 const SPEC = `docs/features/${FEATURE}.md`
 
-// Subagents also read CLAUDE.md, which says not to build unless the user asks.
+// Tells each agent the run was user-requested and keeps it inside its own files.
 const MANDATE = `The user explicitly started the build-feature workflow for ${SPEC}. That is their request to implement this feature, limited to the files your agent definition allows. Do not commit or push.`
 
 const STRINGS = { type: 'array', items: { type: 'string' } }
@@ -229,7 +229,7 @@ You are fixing issues found after the ${j.track} of ${SPEC} was built. For each 
 Issues:
 ${bullets(j.issues)}
 
-Afterwards, re-run the checks for your area (backend: terraform fmt/validate, ruff, pytest for the affected lambdas; frontend: npm run lint, npm run test, npm run build) and report the results.`,
+Afterwards, re-run the checks for your area (backend: make lint, make tf-check, make test FN=<name> for the affected lambdas; frontend: npm run lint, npm run test, npm run build in frontend/) and report the results.`,
     { label: `fix:${j.builder}`, phase: 'Fix', agentType: j.builder, schema: FIX },
   ).then(res => res && { track: j.track, ...res }),
 ))).filter(Boolean)

@@ -20,7 +20,7 @@ design lives in `docs/data-model.md`; Terraform implements it. Update the doc fi
 3. Design or extend the keys and GSIs so every listed pattern is a `GetItem` or `Query`.
 4. Update `docs/data-model.md`: tables, key schema, item types with example items, GSIs,
    TTL, and which access pattern each one serves.
-5. Implement in Terraform (follow `tf-change`), then run `fmt`/`validate`.
+5. Implement in Terraform (follow `tf-change`), then run `make fmt` and `make tf-check`.
 6. Summarise the change, and flag anything that replaces an existing table.
 
 ## DynamoDB rules

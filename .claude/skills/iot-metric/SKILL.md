@@ -35,7 +35,7 @@ build everything else from it.
    only their own (see `iam-policy`).
 6. **Tests.** Follow `lambda-test`, with a fake event built from the contract's example
    payload.
-7. Run `terraform fmt -recursive`, `terraform validate`, and the Lambda's tests.
+7. Run `make fmt`, `make tf-check`, and `make test FN=<lambda>`.
 8. Summarise the topic, rule, handler, storage, and policy changes.
 
 ## Rules

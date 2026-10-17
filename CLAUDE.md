@@ -9,11 +9,12 @@ structure, not code that exists yet. Update this file as decisions land.
 
 ## Working rules for Claude
 
-- I am building this project myself. Help with guidance, answers, and review. Do not
-  scaffold, implement, or build features unless I explicitly ask for that specific thing.
-  When I start the `build-feature` workflow for a spec, that counts as asking for that
-  feature.
-- Only edit the files I ask you to edit.
+- Build for me. Use the skills, subagents, and workflows in `.claude/`, and delegate to
+  the builder, tester, and reviewer agents wherever they fit.
+- I'm new to agents and learning on this project. When you use a skill, agent, or
+  workflow, say in a line which one and why.
+- Ask me before making product decisions: what data is collected, who can see what,
+  alert thresholds, retention.
 - Never run `git commit` or `git push`. I commit and push myself.
 
 ## Architecture
@@ -62,41 +63,54 @@ revisited first (see Open decisions).
 
 ## Deployment
 
-`.github/workflows/deploy.yml` runs `terraform init`, `plan`, and `apply` from the repo
-root on every push to `main`, authenticating via GitHub OIDC to the IAM role
-`silvercare-cicd`. Implications:
+GitHub Actions workflows in `.github/workflows/`:
 
-- Merging to `main` deploys to AWS. Work on branches and open PRs.
-- Terraform config must live at the repo root (or the workflow's `working-directory`
-  must change with it).
-- There is no remote state backend yet. CI runners are ephemeral, so the backend must be
-  set up (`/tf-state-bootstrap`) before the first real apply.
-- `terraform plan` fails if there are no `.tf` files, so the first merge to `main` must
-  include Terraform config.
+| Workflow | When | What |
+|---|---|---|
+| `checks.yml` | every PR, and before every deploy | builds the dev image, then `make lint`, `make test`, `make test-integration`, `make tf-check`; frontend lint/test/build once `frontend/` exists. No secrets or AWS access. |
+| `plan.yml` | every PR from this repo (not forks) | `terraform plan` with the read-only `silvercare-cicd-plan` role; posts a PR comment listing what will be created, updated, replaced, or **destroyed** |
+| `deploy.yml` | push to `main` | runs `checks.yml`, then `terraform plan` + `apply` with the `silvercare-cicd` role |
+
+Implications:
+
+- Merging to `main` deploys to AWS. Work on branches, open PRs, and read the plan
+  comment before merging, especially any 🔴 destroy or 🟠 replace rows.
+- **The repository is public**, so Actions logs and PR comments are public too.
+  Workflows never print full plans (`.github/scripts/plan-summary.sh` lists only
+  resource addresses and actions). Never print secrets, plan values, or data in CI.
+- Terraform config must live at the repo root (or the workflows' working directory must
+  change with it). With no `.tf` files, plan and deploy skip.
+- Terraform is pinned to the same version in the workflows (`TERRAFORM_VERSION`) and in
+  `docker/dev.Dockerfile`. Change both together.
+- There is no remote state backend yet. CI runners are ephemeral, so the backend and the
+  plan role must be set up (`/tf-state-bootstrap`) before the first real apply.
+- To remove a resource, delete it from the code and merge, rather than running
+  `terraform destroy`. Resources with deletion protection need two merges: first turn
+  the protection off, then remove the resource.
 
 ## Commands
 
-Tools must be installed locally; these are the intended defaults.
+Python and Terraform tooling runs in a Docker dev container (`docker/dev.Dockerfile`,
+`docker-compose.yml`): Python 3.13 to match Lambda, pytest, moto, ruff, Terraform,
+tflint, checkov. It has no AWS credentials. Use it through `make`, not host tools:
 
 ```sh
-# Terraform (repo root)
-terraform fmt -recursive
-terraform init -backend=false && terraform validate   # local check without AWS creds
-
-# Python Lambdas: run each function's tests separately (every function has a
-# module named handler, so a single pytest run across all of them collides)
-for d in lambdas/*/; do pytest "$d" || break; done
-ruff check lambdas && ruff format lambdas
-
-# Frontend (in frontend/)
-npm run dev
-npm run build
-npm run lint
-npm run test        # Vitest
+make up                     # start dev container + DynamoDB Local (faster runs, format hook)
+make test                   # unit tests, each Lambda separately; one: make test FN=<name>
+make test-integration       # tests marked @pytest.mark.integration, against DynamoDB Local
+make lint                   # ruff check + format check
+make fmt                    # ruff format + terraform fmt
+make tf-check               # terraform fmt check, validate, tflint, checkov
+make check                  # test + lint + tf-check
+make shell                  # shell inside the container
+make build                  # rebuild after changing docker/ or requirements-dev.txt
 ```
 
-Python dev dependencies (`pytest`, `moto`, `boto3`, `ruff`, `aws-lambda-powertools`) go
-in `requirements-dev.txt` at the repo root.
+Python dev dependencies live in `requirements-dev.txt` (pinned); tool versions are
+pinned in `docker/dev.Dockerfile`. Ruff settings are in `ruff.toml`.
+
+The frontend runs on the host's Node (in `frontend/`): `npm run dev`, `npm run build`,
+`npm run lint`, `npm run test` (Vitest).
 
 ## Data and privacy
 
@@ -117,7 +131,13 @@ under Singapore's PDPA. Treat it accordingly:
   - builders: `backend-builder`, `frontend-builder` (used by `build-feature`)
   - testers: `lambda-tester`, `frontend-tester`
   - reviewers (read-only): `iac-reviewer`, `privacy-reviewer`
-- `.claude/hooks/` blocks `git commit`/`push` and formats edited files.
+- `.claude/hooks/guard.sh` blocks `git commit`/`push`, the `aws` CLI, Terraform commands
+  that change infrastructure or state, and anything touching `~/.aws`.
+  `.claude/hooks/format.sh` formats edited files.
+- `.claude/settings.json` hides AWS credentials from Claude (`AWS_SHARED_CREDENTIALS_FILE`
+  and `AWS_CONFIG_FILE` are `/dev/null`), so Claude and its agents can't reach the real
+  AWS account. Anything that needs real AWS (bootstrap apply, debugging live resources),
+  I run myself in a separate terminal.
 - Feature flow, one feature at a time:
   1. Write the spec with the `feature-spec` skill → `docs/features/<name>.md`, `status: ready`
   2. Ask Claude to run the `build-feature` workflow with the feature name

@@ -88,18 +88,59 @@ The `silvercare-cicd` role needs, on the state bucket only:
 Tell the user to add these. Do not change the CI role yourself (see the
 `iam-policy` skill).
 
+Also tell the user to check that `silvercare-cicd`'s trust policy only allows `main`:
+the `token.actions.githubusercontent.com:sub` condition must be exactly
+`repo:spikeypear-bot/SilvercareSG:ref:refs/heads/main` (`StringEquals`, no wildcards).
+Otherwise a pull request could edit a workflow to assume the deploy role.
+
+## 5b. CI plan role (`bootstrap/ci-plan-role.tf`)
+
+`.github/workflows/plan.yml` assumes a separate read-only role on pull requests. Create
+it in `bootstrap/`, because it must exist before the root config can be planned:
+
+- `data "aws_iam_openid_connect_provider" "github"` with
+  `url = "https://token.actions.githubusercontent.com"`. It already exists, since the
+  deploy role uses it. If it doesn't, stop and ask the user.
+- `aws_iam_role` named `silvercare-cicd-plan`. Its trust policy allows
+  `sts:AssumeRoleWithWebIdentity` from that provider, with `StringEquals` on:
+  - `token.actions.githubusercontent.com:aud` = `sts.amazonaws.com`
+  - `token.actions.githubusercontent.com:sub` = `repo:spikeypear-bot/SilvercareSG:pull_request`
+- Attach the AWS managed `ReadOnlyAccess` policy, so `terraform plan` can read the
+  configuration of every resource type. This is an exception to the `iam-policy` rule
+  against broad managed policies: it's read-only, and the deny below removes data access.
+- An inline policy that:
+  - **allows** `s3:ListBucket` on the state bucket and `s3:GetObject` on
+    `<bucket-arn>/silvercare/terraform.tfstate` (no lock-file access: the plan job uses
+    `-lock=false`)
+  - **denies** reading actual data, so PR workflows can never see resident data:
+    `dynamodb:GetItem`, `dynamodb:BatchGetItem`, `dynamodb:Query`, `dynamodb:Scan`,
+    `dynamodb:PartiQLSelect`, `dynamodb:GetRecords`, `s3:GetObject` and
+    `s3:GetObjectVersion` with `NotResource` = the state object, `logs:GetLogEvents`,
+    `logs:FilterLogEvents`, `logs:StartQuery`, `cognito-idp:ListUsers`,
+    `cognito-idp:ListUsersInGroup`, `cognito-idp:AdminGetUser`, `iot:GetThingShadow`,
+    `secretsmanager:GetSecretValue`
+- `max_session_duration = 3600`.
+
 ## 6. Hand over to the user
 
-Give the user these commands to run themselves with their own AWS credentials:
+Give the user these commands to run themselves, **in their own terminal outside Claude
+Code**, with their own AWS credentials. Claude Code's environment hides the credentials,
+and the dev container has none. These run the dev image directly with the user's
+`~/.aws` mounted read-only. Use plain `docker run`, not `docker compose`, because the
+compose service sets fake credentials that would override the real ones:
 
 ```sh
-cd bootstrap
-terraform init
-terraform plan        # review: one bucket + its settings, nothing else
-terraform apply
-cd ..
-terraform init        # root: now uses the S3 backend
+tf() { docker run --rm -it -u "$(id -u):$(id -g)" -v "$PWD:/work" \
+  -v "$HOME/.aws:/cache/home/.aws:ro" -e AWS_PROFILE="${AWS_PROFILE:-default}" \
+  -w "/work/$1" silvercare-dev:local terraform "${@:2}"; }
+
+tf bootstrap init
+tf bootstrap plan     # review: one bucket + its settings, nothing else
+tf bootstrap apply
+tf . init             # root: now uses the S3 backend
 ```
+
+If they have Terraform installed on the host, plain `terraform` in `bootstrap/` works too.
 
 If the root config already has local state, `terraform init -migrate-state`
 moves it into the bucket.

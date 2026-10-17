@@ -27,9 +27,13 @@ lambdas/<name>/tests/
 - provide fixtures that start moto (`from moto import mock_aws`) and create the tables
   and buckets the handler needs, matching the key schema in Terraform
 
-Because every function has a module named `handler`, run each function's tests
-separately: `pytest lambdas/<name>`. One pytest run across all functions will import the
-wrong handler.
+Run tests in the dev container: `make test FN=<name>` (unit) and
+`make test-integration FN=<name>` (against DynamoDB Local; see `local-dev`). `make test`
+alone runs every function, each in its own pytest run, because they all have a module
+named `handler` and a single run would import the wrong one.
+
+The container already sets fake AWS credentials and the region, but keep the
+`conftest.py` defaults too, so the tests don't depend on where they run.
 
 ## Events
 

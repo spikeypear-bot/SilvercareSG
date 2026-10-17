@@ -64,5 +64,6 @@ Once two functions exist, put this in a `python-lambda` module (see `tf-module`)
 
 ## Finish
 
-Run `ruff check` and `ruff format` on the function, then hand off to `lambda-tester` or
-follow `lambda-test`.
+Run `make fmt` and `make lint`, then hand off to `lambda-tester` or follow `lambda-test`.
+To support integration tests, pass `os.environ.get("DYNAMODB_ENDPOINT")` as
+`endpoint_url` when creating DynamoDB clients (see `local-dev`).

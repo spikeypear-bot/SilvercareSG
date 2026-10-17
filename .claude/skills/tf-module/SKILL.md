@@ -51,9 +51,8 @@ Module names are kebab-case nouns describing what they create: `python-lambda`,
 2. Create the files above. Start from the inputs: what must the caller decide?
 3. Write `README.md` with one example `module "..." {}` call.
 4. Add or update the call in the root config.
-5. Run `terraform fmt -recursive` and `terraform validate` from the repo root.
-   (`validate` needs `terraform init`; use `terraform init -backend=false` if no
-   AWS credentials are available.)
+5. Run `make fmt` and `make tf-check` (fmt check, validate, tflint, checkov in the dev
+   container, with no AWS credentials needed).
 6. Summarise what the module creates, its inputs/outputs, and any resources that
    will be replaced if this refactors existing root resources into a module. Moving
    resources into a module changes their addresses; add `moved {}` blocks so they

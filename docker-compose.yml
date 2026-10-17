@@ -1,0 +1,32 @@
+# Local dev/test environment. Use through the Makefile (make help).
+# Nothing here has AWS credentials: AWS calls go to moto or DynamoDB Local.
+name: silvercare
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: docker/dev.Dockerfile
+    image: silvercare-dev:local
+    # Run as the host user so files created in /work stay owned by you.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    init: true
+    command: sleep infinity
+    working_dir: /work
+    volumes:
+      - .:/work
+      - tf-plugin-cache:/cache/terraform
+    environment:
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
+      AWS_DEFAULT_REGION: ap-southeast-1
+      AWS_EC2_METADATA_DISABLED: "true"
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:3.3.2
+    command: -jar DynamoDBLocal.jar -inMemory -sharedDb
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  tf-plugin-cache:

@@ -23,9 +23,9 @@ Read the full files that changed, not just the diff, and any module they call.
 
 ## Checks to run
 
-1. `terraform fmt -check -recursive`
-2. `terraform init -backend=false -input=false` then `terraform validate`
-3. `tflint` and `checkov -d .` if installed. If a tool is missing, say so and continue.
+Run `make tf-check`. It runs `terraform fmt -check`, `init -backend=false` + `validate`,
+`tflint`, and `checkov` in the dev container. If Docker isn't available, say so and
+review the code without the checks.
 
 Do not run `terraform plan`, `apply`, `destroy`, or anything that needs AWS credentials.
 

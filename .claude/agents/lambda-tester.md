@@ -25,7 +25,8 @@ skill.
    changed on the current branch (`git diff main...HEAD --stat`, `git status --short`).
 2. Read each handler and its existing tests.
 3. Add the missing cases that `lambda-test` requires (unless told to only run).
-4. Run each function's tests separately: `pytest lambdas/<name>`.
+4. Run `make test FN=<name>` for each function, plus `make test-integration FN=<name>` if
+   it has integration tests. These run in the dev container (see `local-dev`).
 
 ## Report
 

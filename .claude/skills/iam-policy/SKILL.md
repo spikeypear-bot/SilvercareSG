@@ -46,15 +46,21 @@ Devices must only act as themselves:
 
 ## CI role
 
-`silvercare-cicd` is assumed by GitHub Actions through OIDC. Do not widen its
-permissions or its trust policy as a side effect of another change. If a change
-needs the CI role to have more access, stop and tell the user what to add and why.
+Two roles are assumed by GitHub Actions through OIDC:
+
+- `silvercare-cicd` (deploy, `main` only) is used by `deploy.yml`.
+- `silvercare-cicd-plan` (read-only, pull requests) is used by `plan.yml` and defined in
+  `bootstrap/` (see `tf-state-bootstrap`).
+
+Do not widen either role's permissions or trust policy as a side effect of another
+change. Never let pull-request workflows assume the deploy role. If a change needs a CI
+role to have more access, stop and tell the user what to add and why.
 
 ## Steps
 
 1. List what the code does with AWS (each API call and the resource it touches).
 2. Write one statement per resource group with exactly those actions.
-3. Run `terraform fmt -recursive` and `terraform validate`.
+3. Run `make fmt` and `make tf-check`.
 4. Summarise the permissions granted, in plain words, per role. Flag any `*`, any
    cross-account access, and any change to a trust policy.
 

@@ -27,9 +27,8 @@ You must not change `frontend/`, any `tests/` folder (the testers write tests),
   personal-data fields, alert thresholds). Leave them out and list them as open questions.
 - Match the API contract in the spec exactly (paths, fields, status codes). The frontend
   is being built against it in parallel.
-- Run `terraform fmt -recursive`, `terraform init -backend=false` + `terraform validate`,
-  and `ruff check` / `ruff format` on what you changed. Fix any errors. If a tool is
-  missing, say so.
+- Run `make fmt`, `make lint`, and `make tf-check` (in the dev container) and fix any
+  errors. If Docker isn't available, say so.
 - Never run `terraform plan`, `apply`, or `destroy`. Never call real AWS. Never commit
   or push.
 

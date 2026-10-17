@@ -1,0 +1,100 @@
+name: Plan
+
+# Posts a Terraform plan summary on each PR, so you can see what a merge will create,
+# change, or destroy before merging.
+#
+# Uses the read-only silvercare-cicd-plan role, never the deploy role: a PR runs its
+# own version of this file, so whatever role it can assume, a PR author could use.
+# The repo is public, so only resource addresses and actions are posted, never values.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  AWS_ROLE_ARN: arn:aws:iam::753674274065:role/silvercare-cicd-plan
+  AWS_REGION: ap-southeast-1
+  TERRAFORM_VERSION: 1.16.6
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  plan:
+    name: Terraform plan
+    # PRs from forks get no AWS access, so only plan for branches in this repo.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check for Terraform config
+        id: tf
+        run: |
+          if ls ./*.tf >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No .tf files at the repo root yet, skipping."
+          fi
+
+      - name: Configure AWS credentials (OIDC, read-only role)
+        if: steps.tf.outputs.present == 'true'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        if: steps.tf.outputs.present == 'true'
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        if: steps.tf.outputs.present == 'true'
+        run: terraform init
+
+      # -lock=false: the plan role can't write the state lock, and a plan changes nothing.
+      # Output goes to files, not the public log.
+      - name: Terraform plan
+        id: plan
+        if: steps.tf.outputs.present == 'true'
+        continue-on-error: true
+        run: terraform plan -lock=false -no-color -out=tfplan > /dev/null 2> plan-stderr.txt
+
+      - name: Summarise plan
+        if: steps.tf.outputs.present == 'true'
+        run: |
+          .github/scripts/plan-summary.sh "${{ steps.plan.outcome }}" tfplan plan-stderr.txt > plan-summary.md
+          cat plan-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR
+        if: steps.tf.outputs.present == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs')
+            const body = fs.readFileSync('plan-summary.md', 'utf8')
+            const marker = '<!-- silvercare-plan -->'
+            const { owner, repo } = context.repo
+            const issue_number = context.issue.number
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number })
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(marker))
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body })
+            }
+
+      - name: Fail if plan failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

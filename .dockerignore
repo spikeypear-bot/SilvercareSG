@@ -1,0 +1,3 @@
+# The dev image only needs requirements-dev.txt; the repo is mounted at runtime.
+*
+!requirements-dev.txt

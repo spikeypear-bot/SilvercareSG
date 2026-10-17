@@ -15,12 +15,15 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
 - Encrypt every data store at rest (KMS or AWS-managed keys) and enforce TLS in transit.
 - IAM: follow the `iam-policy` skill (one role per Lambda, no `*` actions or resources).
 - Tag every resource: `project = "silvercare"`, `managed_by = "terraform"`
-- Pin provider versions in `required_providers`.
+- Pin provider versions in `required_providers`, and set `required_version` for Terraform
+  (tflint flags it if missing).
 
 ## Steps
 1. Read existing `.tf` files and match their layout and naming.
 2. Make the change.
-3. Run `terraform fmt -recursive` and `terraform validate`; fix any errors.
+3. Run `make fmt` and `make tf-check` (fmt check, validate, tflint, checkov, all in the
+   dev container); fix any errors. Fix checkov findings or, if one doesn't apply, add a
+   `#checkov:skip=<ID>:<reason>` comment on the resource and mention it in the summary.
 4. Summarise: resources added / changed / destroyed, and flag anything
    destructive (replacements, deletions) or with ongoing cost.
 

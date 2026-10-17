@@ -12,6 +12,8 @@ crash.*.log
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
+.ruff_cache/
 
 # Claude Code (personal, not shared)
 .claude/settings.local.json
