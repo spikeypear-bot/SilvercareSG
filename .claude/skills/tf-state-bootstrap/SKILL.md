@@ -91,7 +91,10 @@ Tell the user to add these. Do not change the CI role yourself (see the
 
 Also tell the user to check that `silvercare-cicd`'s trust policy only allows `main`:
 the `token.actions.githubusercontent.com:sub` condition must be exactly
-`repo:spikeypear-bot/SilvercareSG:ref:refs/heads/main` (`StringEquals`, no wildcards).
+`repo:spikeypear-bot@232546008/SilvercareSG@1416327993:ref:refs/heads/main` (`StringEquals`, no wildcards).
+The repo uses GitHub's immutable OIDC subject, so the prefix carries the owner and repo
+IDs (`gh api repos/{owner}/{repo}/actions/oidc/customization/sub` shows it); the plain
+`repo:spikeypear-bot/SilvercareSG:...` form never matches.
 Otherwise a pull request could edit a workflow to assume the deploy role.
 
 ## 5b. CI plan role (`infra/bootstrap/ci-plan-role.tf`)
@@ -105,7 +108,7 @@ it in `infra/bootstrap/`, because it must exist before the root config can be pl
 - `aws_iam_role` named `silvercare-cicd-plan`. Its trust policy allows
   `sts:AssumeRoleWithWebIdentity` from that provider, with `StringEquals` on:
   - `token.actions.githubusercontent.com:aud` = `sts.amazonaws.com`
-  - `token.actions.githubusercontent.com:sub` = `repo:spikeypear-bot/SilvercareSG:pull_request`
+  - `token.actions.githubusercontent.com:sub` = `repo:spikeypear-bot@232546008/SilvercareSG@1416327993:pull_request`
 - Attach the AWS managed `ReadOnlyAccess` policy, so `terraform plan` can read the
   configuration of every resource type. This is an exception to the `iam-policy` rule
   against broad managed policies: it's read-only, and the deny below removes data access.

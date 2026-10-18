@@ -21,10 +21,13 @@ data "aws_iam_policy_document" "ci_plan_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
+    # The repo uses GitHub's immutable OIDC subject (owner and repo IDs after the names),
+    # so a renamed or re-created repo with the same name can't assume this role.
+    # Check with: gh api repos/{owner}/{repo}/actions/oidc/customization/sub
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:spikeypear-bot/SilvercareSG:pull_request"]
+      values   = ["repo:spikeypear-bot@232546008/SilvercareSG@1416327993:pull_request"]
     }
   }
 }
