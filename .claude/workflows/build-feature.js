@@ -166,6 +166,12 @@ ${t.other}`,
     if (!build || build.stopped || build.files_changed.length === 0) {
       return { track: t.key, build, test: null }
     }
+    // lambda-tester can only write tests under lambdas/; on Terraform-only changes it
+    // has nothing to test, so skip it rather than spend an agent on a no-op.
+    if (t.key === 'backend' && !build.files_changed.some(f => f.includes('lambdas/'))) {
+      log('Backend changed no Lambdas: skipping lambda-tester (Terraform is checked by make tf-check and iac-reviewer)')
+      return { track: t.key, build, test: null }
+    }
     return agent(
       `${MANDATE}
 

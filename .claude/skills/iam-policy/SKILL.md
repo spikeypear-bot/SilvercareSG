@@ -48,7 +48,8 @@ Devices must only act as themselves:
 
 Two roles are assumed by GitHub Actions through OIDC:
 
-- `silvercare-cicd` (deploy, `main` only) is used by `deploy.yml`.
+- `silvercare-cicd` (deploy, `main` only) is used by `deploy.yml`. Created by hand, not in
+  Terraform, with `AdministratorAccess`, so new services need no extra deploy permissions.
 - `silvercare-cicd-plan` (read-only, pull requests) is used by `plan.yml` and defined in
   `infra/bootstrap/` (see `tf-state-bootstrap`).
 

@@ -5,7 +5,8 @@ description: Set up or change Cognito authentication and authorisation - user po
 
 # Cognito auth
 
-Groups: `staff`, `caregiver`, `family` (see `CLAUDE.md`). Groups decide what kind of
+Groups: `doctor`, `nurse`, `caregiver`, `family` (see `CLAUDE.md`); `doctor` and `nurse`
+are "staff". Groups decide what kind of
 user someone is; links stored in DynamoDB decide **which residents** they can see. Both
 checks happen in the API. The frontend only uses groups to choose which screens to show.
 
@@ -15,16 +16,29 @@ checks happen in the API. The frontend only uses groups to choose which screens 
   - sign-in with email (`username_attributes = ["email"]`), email auto-verified
   - `admin_create_user_config { allow_admin_create_user_only = true }` until the
     onboarding decision in `CLAUDE.md` says otherwise
-  - strong password policy; MFA at least optional (TOTP), and required for `staff` if
-    possible
+  - strong password policy; MFA optional (TOTP), as decided by the user
   - `deletion_protection = "ACTIVE"`
   - only the attributes the app needs. No NRIC, no health data in user attributes.
+  - **Required attributes are writable by every app client**, whatever
+    `write_attributes` says. Only mark an attribute required if users may change it
+    themselves. `name` and `email` are deliberately not required (no `schema` blocks), so
+    only admins can change them.
+  - Required-ness, `username_attributes`, `username_configuration`, and `schema` blocks
+    can't change after creation: changing them replaces the pool and deletes every user.
+    Keep `lifecycle { prevent_destroy = true }` on the pool.
 - One `aws_cognito_user_group` per group.
 - `aws_cognito_user_pool_client` for the React app:
   - `generate_secret = false` (it runs in a browser and can't keep a secret)
   - `explicit_auth_flows = ["ALLOW_USER_SRP_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]`
   - `prevent_user_existence_errors = "ENABLED"`
   - set token validity explicitly (short access/ID token lifetime, longer refresh token)
+  - `write_attributes` must list only what users may change about themselves, and must
+    never be empty or unset: Cognito treats that as "every attribute writable". If users
+    may change nothing, list one attribute the app never reads (this repo uses
+    `["zoneinfo"]`). This applies to every app client in the pool.
+  - `auto_verified_attributes` does not verify admin-created users. Admins must mark the
+    email verified (`email_verified=true`), or password reset by verified email fails
+    silently.
 
 ## API authorizer
 

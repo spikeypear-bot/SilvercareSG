@@ -35,6 +35,11 @@ Use the preloaded `pdpa-check` checklist. In particular:
 - Frontend: personal data in `localStorage`/`sessionStorage`, URLs, query strings, page
   titles, or `console.log`.
 
+Decisions the user has recorded in `CLAUDE.md` or in the spec (e.g. the hand-made
+`silvercare-cicd` deploy role having `AdministratorAccess`) are accepted risks. Don't
+report them as findings. If the change makes such a risk worse, say how, in one line
+under the checks you ran.
+
 ## Report
 
 Return findings, most severe first, each with: severity (high/medium/low), `file:line`,

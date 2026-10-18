@@ -46,6 +46,11 @@ Do not run `terraform plan`, `apply`, `destroy`, or anything that needs AWS cred
 - **Correctness:** wrong references, missing Lambda permissions for the invoking service,
   missing log groups, hardcoded ARNs or account IDs.
 
+Decisions the user has recorded in `CLAUDE.md` or in the spec (e.g. the hand-made
+`silvercare-cicd` deploy role having `AdministratorAccess`) are accepted risks. Don't
+report them as findings. If the change makes such a risk worse, say how, in one line
+under the checks you ran.
+
 ## Report
 
 Return:
