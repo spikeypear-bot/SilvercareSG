@@ -30,8 +30,17 @@ structure, not code that exists yet. Update this file as decisions land.
   rates) is in `docs/metrics.md` *(planned)*.
 - **Compute:** AWS Lambda, Python (`python3.13` runtime).
 - **API:** API Gateway HTTP API → Lambda, protected by a Cognito JWT authorizer.
-- **Database:** DynamoDB (on-demand). Tables, keys, and access patterns are in
-  `docs/data-model.md` *(planned)*.
+- **Database:** DynamoDB for live state only: the device registry, the latest 5
+  messages per device and message type, and alerts. Provisioned capacity with fixed
+  limits inside the always-free tier (25 RCU / 25 WCU across all tables and indexes),
+  no auto scaling. Tables, keys, and access patterns are in `docs/data-model.md`.
+- **History and analytics:** every telemetry message and alert also goes to S3 for
+  analysis; the data is cleaned later with AWS Lake Formation. Design to follow.
+- **Budget:** the AWS account is on the free plan with about US$120 of credits that
+  must last until the project ends (end of November 2026). Prefer always-free options,
+  and state the cost of any new service before adding it.
+  A US$40/month AWS Budget (`infra/bootstrap/budget.tf`) emails alerts at 50/80/100% of
+  actual and 100% of forecast spend, counted before credits.
 - **Auth:** Cognito user pool with groups `staff`, `caregiver`, `family` (initial names;
   adjust as needed). Groups decide what a user can see; the API enforces it, the UI only
   hides things.
@@ -42,10 +51,11 @@ structure, not code that exists yet. Update this file as decisions land.
 ## Repo layout *(planned)*
 
 ```
-*.tf                 root Terraform config (CI runs from the repo root)
-backend.tf           S3 remote state (see /tf-state-bootstrap)
-modules/<name>/      reusable Terraform modules
-bootstrap/           state bucket config, applied once by hand, never by CI
+infra/               all Terraform
+  *.tf               root config: CI runs plan/apply here
+  backend.tf         S3 remote state (see /tf-state-bootstrap)
+  modules/<name>/    reusable Terraform modules
+  bootstrap/         state bucket, plan role, budget: applied once by hand, never by CI
 lambdas/<name>/
   src/handler.py     entry point: lambda_handler(event, context)
   tests/             pytest tests for this function
@@ -78,8 +88,8 @@ Implications:
 - **The repository is public**, so Actions logs and PR comments are public too.
   Workflows never print full plans (`.github/scripts/plan-summary.sh` lists only
   resource addresses and actions). Never print secrets, plan values, or data in CI.
-- Terraform config must live at the repo root (or the workflows' working directory must
-  change with it). With no `.tf` files, plan and deploy skip.
+- The Terraform root config lives in `infra/` (the workflows' `working-directory`). Moving
+  it means changing the workflows and `docker/tf-check.sh` too. With no `.tf` files, plan and deploy skip.
 - Terraform is pinned to the same version in the workflows (`TERRAFORM_VERSION`) and in
   `docker/dev.Dockerfile`. Change both together.
 - There is no remote state backend yet. CI runners are ephemeral, so the backend and the
@@ -155,6 +165,8 @@ Record the outcome here (and remove the item) once decided.
    vitals) and how alerts are delivered (push, SMS, email).
 3. **User onboarding:** who creates accounts (staff invite only, or self sign-up for
    family) and how caregivers/family are linked to residents.
-4. **Data retention:** how long raw sensor readings, alerts, and user data are kept.
+4. **Data retention:** how long history in S3, resolved alerts in DynamoDB, and user
+   data are kept. (Decided: DynamoDB keeps at most the latest 5 messages per device and
+   type.)
 5. **Lambda packaging for third-party packages**, if a function ever needs more than
    the standard library, boto3, and Powertools.

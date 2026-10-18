@@ -25,18 +25,19 @@ design lives in `docs/data-model.md`; Terraform implements it. Update the doc fi
 
 ## DynamoDB rules
 
-- `billing_mode = "PAY_PER_REQUEST"`.
+- `billing_mode = "PROVISIONED"` with fixed `read_capacity`/`write_capacity`, no auto
+  scaling. All tables and GSIs together must stay within the always-free 25 RCU / 25 WCU;
+  keep the capacity table in `docs/data-model.md` up to date and check the total.
 - `point_in_time_recovery { enabled = true }`, `deletion_protection_enabled = true`, and
   server-side encryption on.
 - Changing a table's name, hash key, or range key **destroys the table**. Never do it to
   an existing table without the user agreeing to a migration plan.
 - Every GSI must serve a listed access pattern. Project only the attributes it needs.
 - No `Scan` in application code.
-- Keep high-volume time-series readings in their own table with a TTL attribute
-  (`expires_at`, epoch seconds). Their volume and retention differ from residents,
-  devices, and alerts.
-- Avoid hot partitions: for high-rate metrics, include a time bucket in the partition key
-  (e.g. `DEVICE#<id>#2026-10-17`) so one device doesn't concentrate all its writes.
+- DynamoDB holds live state, not history. Device messages go in `silvercare-latest`,
+  at most 5 per device and message type; history goes to S3. Don't add tables or items
+  that grow without bound; anything that accumulates (like resolved alerts) needs a TTL
+  attribute (`expires_at`, epoch seconds).
 - Attribute names are `snake_case`. Sort-key timestamps use ISO 8601 UTC
   (`2026-10-17T09:30:00Z`), which sorts correctly as a string.
 - Every write path must be idempotent: IoT Core and Lambda retries deliver duplicates.

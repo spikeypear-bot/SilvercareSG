@@ -50,7 +50,7 @@ Two roles are assumed by GitHub Actions through OIDC:
 
 - `silvercare-cicd` (deploy, `main` only) is used by `deploy.yml`.
 - `silvercare-cicd-plan` (read-only, pull requests) is used by `plan.yml` and defined in
-  `bootstrap/` (see `tf-state-bootstrap`).
+  `infra/bootstrap/` (see `tf-state-bootstrap`).
 
 Do not widen either role's permissions or trust policy as a side effect of another
 change. Never let pull-request workflows assume the deploy role. If a change needs a CI

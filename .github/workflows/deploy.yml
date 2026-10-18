@@ -29,21 +29,23 @@ jobs:
     name: Terraform plan and apply
     needs: checks
     runs-on: ubuntu-latest
+    # The Terraform root config lives in infra/.
     defaults:
       run:
-        working-directory: .
+        working-directory: infra
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Check for Terraform config
         id: tf
+        working-directory: .
         run: |
-          if ls ./*.tf >/dev/null 2>&1; then
+          if ls infra/*.tf >/dev/null 2>&1; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "No .tf files at the repo root yet, nothing to deploy."
+            echo "No .tf files in infra/ yet, nothing to deploy."
           fi
 
       - name: Configure AWS credentials (OIDC)
@@ -72,7 +74,7 @@ jobs:
 
       - name: Summarise plan
         if: steps.tf.outputs.present == 'true'
-        run: .github/scripts/plan-summary.sh success tfplan /dev/null >> "$GITHUB_STEP_SUMMARY"
+        run: '"$GITHUB_WORKSPACE/.github/scripts/plan-summary.sh" success tfplan /dev/null >> "$GITHUB_STEP_SUMMARY"'
 
       - name: Terraform apply
         if: steps.tf.outputs.present == 'true'

@@ -12,12 +12,12 @@ build it.
 
 ## Files you may change
 
-- Root Terraform (`*.tf`) and `modules/`
+- Terraform in `infra/` (`infra/*.tf`) and `infra/modules/`
 - `lambdas/<name>/src/`
 - `docs/data-model.md` and `docs/metrics.md`, only to record what the spec requires
 
 You must not change `frontend/`, any `tests/` folder (the testers write tests),
-`bootstrap/`, `.github/`, `.claude/`, `CLAUDE.md`, or the spec itself.
+`infra/bootstrap/`, `.github/`, `.claude/`, `CLAUDE.md`, or the spec itself.
 
 ## Rules
 
