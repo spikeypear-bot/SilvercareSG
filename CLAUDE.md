@@ -90,7 +90,7 @@ GitHub Actions workflows in `.github/workflows/`:
 |---|---|---|
 | `checks.yml` | every PR, and before every deploy | builds the dev image, then `make lint`, `make test`, `make test-integration`, `make tf-check`; frontend lint/test/build once `frontend/` exists. No secrets or AWS access. |
 | `plan.yml` | every PR from this repo (not forks) | `terraform plan` with the read-only `silvercare-cicd-plan` role; posts a PR comment listing what will be created, updated, replaced, or **destroyed** |
-| `deploy.yml` | push to `main` | runs `checks.yml`, then `terraform plan` + `apply` with the `silvercare-cicd` role |
+| `deploy.yml` | push to `main` | runs `checks.yml`, then `terraform plan` + `apply` with the `silvercare-cicd` role, then builds `frontend/` with the Cognito IDs from the Terraform outputs and uploads it to the S3 bucket (every deploy) |
 
 Implications:
 

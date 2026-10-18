@@ -79,3 +79,43 @@ jobs:
       - name: Terraform apply
         if: steps.tf.outputs.present == 'true'
         run: terraform apply -no-color tfplan
+
+      # The frontend is uploaded on every deploy, not only when frontend/ changed: the
+      # build embeds Terraform outputs (Cognito IDs), and this also refills an empty bucket.
+      - name: Set up Node
+        if: steps.tf.outputs.present == 'true' && hashFiles('frontend/package-lock.json') != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The IDs aren't secrets (they ship in the bundle), but they aren't printed either.
+      - name: Build frontend
+        if: steps.tf.outputs.present == 'true' && hashFiles('frontend/package-lock.json') != ''
+        working-directory: frontend
+        run: |
+          VITE_USER_POOL_ID="$(terraform -chdir=../infra output -raw cognito_user_pool_id)"
+          VITE_USER_POOL_CLIENT_ID="$(terraform -chdir=../infra output -raw cognito_user_pool_client_id)"
+          export VITE_USER_POOL_ID VITE_USER_POOL_CLIENT_ID
+          npm ci
+          npm run build
+
+      # Hashed files in assets/ go first and are cached for a year; index.html and the
+      # other root files go next with no-cache, so browsers pick up a new deploy at once.
+      # Old assets are deleted last, after the new index.html no longer points to them.
+      - name: Upload frontend
+        if: steps.tf.outputs.present == 'true' && hashFiles('frontend/package-lock.json') != ''
+        working-directory: frontend
+        run: |
+          bucket="$(terraform -chdir=../infra output -raw frontend_bucket_name)"
+          distribution="$(terraform -chdir=../infra output -raw frontend_distribution_id)"
+          aws s3 sync dist/assets/ "s3://$bucket/assets/" --only-show-errors \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 sync dist/ "s3://$bucket/" --only-show-errors --delete --exclude "assets/*" \
+            --cache-control "no-cache"
+          aws s3 sync dist/assets/ "s3://$bucket/assets/" --only-show-errors --delete \
+            --cache-control "public, max-age=31536000, immutable"
+          aws cloudfront create-invalidation --distribution-id "$distribution" \
+            --paths "/index.html" > /dev/null
+          echo "Frontend uploaded and the cache for /index.html cleared." >> "$GITHUB_STEP_SUMMARY"
