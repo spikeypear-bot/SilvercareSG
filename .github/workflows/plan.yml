@@ -31,18 +31,23 @@ jobs:
     # PRs from forks get no AWS access, so only plan for branches in this repo.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # The Terraform root config lives in infra/.
+    defaults:
+      run:
+        working-directory: infra
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Check for Terraform config
         id: tf
+        working-directory: .
         run: |
-          if ls ./*.tf >/dev/null 2>&1; then
+          if ls infra/*.tf >/dev/null 2>&1; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "No .tf files at the repo root yet, skipping."
+            echo "No .tf files in infra/ yet, skipping."
           fi
 
       - name: Configure AWS credentials (OIDC, read-only role)
@@ -74,7 +79,7 @@ jobs:
       - name: Summarise plan
         if: steps.tf.outputs.present == 'true'
         run: |
-          .github/scripts/plan-summary.sh "${{ steps.plan.outcome }}" tfplan plan-stderr.txt > plan-summary.md
+          "$GITHUB_WORKSPACE/.github/scripts/plan-summary.sh" "${{ steps.plan.outcome }}" tfplan plan-stderr.txt > plan-summary.md
           cat plan-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on PR
@@ -83,7 +88,7 @@ jobs:
         with:
           script: |
             const fs = require('fs')
-            const body = fs.readFileSync('plan-summary.md', 'utf8')
+            const body = fs.readFileSync('infra/plan-summary.md', 'utf8')
             const marker = '<!-- silvercare-plan -->'
             const { owner, repo } = context.repo
             const issue_number = context.issue.number

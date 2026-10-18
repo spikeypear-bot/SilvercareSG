@@ -22,20 +22,24 @@ Two constraints shape the design:
 
 ## Decision
 
-Three IoT rules, split by pathway, plus a scheduled watchdog and a single alerts table
-that every alert goes through.
+Three IoT rules, split by pathway, plus a scheduled watchdog, and a single alerts queue
+that every alert goes through (amended 2026-10-18: alerts go through SQS instead of
+being written straight to the alerts table).
 
 ```
-                    ┌─ rule: health ──── silvercare/v1/+/status ──────────► device-health λ ──► devices table
+                    ┌─ rule: health ──── silvercare/v1/+/status ──────────► device-health λ ──► latest table
                     │
-device ── MQTT ──► IoT Core ─ rule: telemetry ─ silvercare/v1/+/{vitals,motion,bed} ─► telemetry λ ──► readings table
+device ── MQTT ──► IoT Core ─ rule: telemetry ─ silvercare/v1/+/{vitals,motion,bed} ─► telemetry λ ──► latest table
                     │                                                                       │ abnormal vitals
                     └─ rule: alert ───── silvercare/v1/+/fall ────────────► fall-alert λ ───┤
                                                                                              ▼
-             EventBridge schedule (5 min) ──► watchdog λ ── offline / possible fall ──► alerts table
-                                                                                             │ DynamoDB Stream
+             EventBridge schedule (5 min) ──► watchdog λ ── offline / possible fall ──► alerts queue (SQS) ── max retries ──► DLQ
+                                                                                             │
                                                                                              ▼
-                                                                                       notifier λ ──► delivery (TBD)
+                                                                                     alert-processor λ
+                                                                                      ├─► SNS ──► caregivers
+                                                                                      ├─► alerts table ──► staff (nurses) dashboard
+                                                                                      └─► S3 (alert history)
 ```
 
 | Rule | SQL | Action |
@@ -49,32 +53,44 @@ destination for rejected or failed messages.
 
 Responsibilities:
 
-- **`device-health`**: validate, update the device's current state (`last_seen`,
-  battery, worn, charging). Clears an offline or low-battery alert when the device recovers.
-- **`telemetry`**: validate, store the reading idempotently, compare vitals against the
-  resident's thresholds, update the bedroom's current state (in bed / out of bed, last
-  motion). Writes an alert when vitals are abnormal.
-- **`fall-alert`**: validate, write a fall alert. Kept separate so a telemetry backlog,
+- **`device-health`**: validate, add the `status` to the device's latest 5 (the newest
+  one is the current state: `last_seen`, battery, worn, charging). Clears an offline or
+  low-battery alert when the device recovers.
+- **`telemetry`**: validate, add the message to the device's latest 5 idempotently,
+  compare vitals against the resident's thresholds. The newest `bed` and `motion`
+  entries are the bedroom's current state. Sends an alert to the queue when vitals are
+  abnormal.
+- **`fall-alert`**: validate, send a fall alert to the queue, add the fall to the device's latest 5. Kept separate so a telemetry backlog,
   throttling, or bug can never delay a fall. Gets reserved concurrency.
 - **`watchdog`** (EventBridge schedule, every 5 minutes): raises alerts for conditions
   defined by absence: a device with no `status` for 15 minutes (offline), and a
   resident out of bed at night with no motion and no return within N minutes (possible
   fall).
-- **Alerts table**: the single place every alert ends up, whatever raised it. Writes
-  are conditional, so a retried message cannot create a duplicate alert.
-- **`notifier`** (DynamoDB Stream on the alerts table): delivers new alerts. Delivery
-  channels are Open decision #2.
+- **Alerts queue** (SQS): the single entry point for every alert, whatever raised it.
+  Detectors only send a message; they don't notify or store anything themselves.
+  A message that fails processing is retried, and after the maximum number of
+  receives it moves to the **DLQ** (dead-letter queue).
+- **`alert-processor`** (SQS trigger): for each alert, publishes to **SNS**, which
+  notifies the resident's caregivers; writes the alert to the **alerts table**, which
+  the staff (nurses) dashboard shows; and writes it to **S3** to keep track of every
+  alert. The alert ID is deterministic, so a retried message can't create a duplicate
+  alert item.
+
+Storage (amended 2026-10-18): DynamoDB keeps only live state, at most the latest 5
+messages per device and type (`docs/data-model.md`). Full history of telemetry and
+alerts goes to S3 for analysis; that path is designed separately.
 
 ## Consequences
 
 - Falls are isolated from the high-volume path.
-- Alert delivery is decoupled from detection: adding SMS or push later touches only
-  the notifier.
+- Alert delivery is decoupled from detection: changing how caregivers are notified
+  touches only `alert-processor` and SNS.
+- The queue absorbs spikes and retries failures; alerts that keep failing are kept in
+  the DLQ instead of being lost.
 - "Offline" is decided from `status` heartbeats alone, so the telemetry path never has
   to update `last_seen`.
 - Five Lambdas instead of three. Each is small and has one job.
-- Three Lambdas write alert items. The alert item shape is defined once in
-  `docs/data-model.md`; until shared code is packaged (Open decision #5), each Lambda
-  carries its own small copy of the write.
+- Three Lambdas send alert messages, and only `alert-processor` writes alert items. The
+  message and item shapes are defined once in `docs/data-model.md`.
 - Thresholds, the night window, and N minutes for a possible fall are product decisions,
   set in the alerting spec.

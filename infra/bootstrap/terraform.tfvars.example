@@ -1,0 +1,2 @@
+# Copy to terraform.tfvars (git-ignored) and fill in. Never commit terraform.tfvars.
+budget_alert_email = "you@example.com"

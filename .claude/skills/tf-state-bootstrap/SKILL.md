@@ -11,23 +11,24 @@ state and tries to create everything again. This sets up an S3 bucket for state
 with S3-native locking (`use_lockfile`, Terraform >= 1.11; no DynamoDB lock table).
 
 It's a chicken-and-egg problem: the bucket must exist before the root config can use it.
-So the bucket is created by a separate config in `bootstrap/`, which the user applies
-**once, by hand**. CI never runs it, because CI only reads `.tf` files at the repo root.
+So the bucket is created by a separate config in `infra/bootstrap/`, which the user
+applies **once, by hand**. CI never runs it, because CI only reads the `.tf` files
+directly in `infra/`, not its subfolders.
 
 Claude writes the files and gives the user the commands. Claude does not run
 `terraform apply`.
 
 ## 1. Check first
 
-- If `bootstrap/` or a `backend "s3"` block already exists, stop and show the user
+- If `infra/bootstrap/` or a `backend "s3"` block already exists, stop and show the user
   what's there instead of overwriting it.
 - Confirm with the user: AWS account ID (CI uses `753674274065`), region
   (`ap-southeast-1`), and the bucket name. Suggest
   `silvercare-tfstate-<account-id>`, since bucket names are globally unique.
 
-## 2. Write `bootstrap/`
+## 2. Write `infra/bootstrap/`
 
-`bootstrap/main.tf` creates:
+`infra/bootstrap/main.tf` creates:
 
 - `aws_s3_bucket` with `lifecycle { prevent_destroy = true }`
 - `aws_s3_bucket_versioning`: `Enabled` (lets you recover a corrupted state)
@@ -38,14 +39,14 @@ Claude writes the files and gives the user the commands. Claude does not run
 - Optional `aws_s3_bucket_lifecycle_configuration` that expires noncurrent
   versions after e.g. 90 days
 
-`bootstrap/versions.tf`: `required_version >= 1.11`, pinned AWS provider, and a
+`infra/bootstrap/versions.tf`: `required_version >= 1.11`, pinned AWS provider, and a
 `provider "aws"` with the region. No backend block, so it uses local state.
 
-`bootstrap/outputs.tf`: the bucket name and ARN.
+`infra/bootstrap/outputs.tf`: the bucket name and ARN.
 
 ## 3. Write the root backend
 
-Root `backend.tf`:
+`infra/backend.tf`:
 
 ```hcl
 terraform {
@@ -90,13 +91,16 @@ Tell the user to add these. Do not change the CI role yourself (see the
 
 Also tell the user to check that `silvercare-cicd`'s trust policy only allows `main`:
 the `token.actions.githubusercontent.com:sub` condition must be exactly
-`repo:spikeypear-bot/SilvercareSG:ref:refs/heads/main` (`StringEquals`, no wildcards).
+`repo:spikeypear-bot@232546008/SilvercareSG@1416327993:ref:refs/heads/main` (`StringEquals`, no wildcards).
+The repo uses GitHub's immutable OIDC subject, so the prefix carries the owner and repo
+IDs (`gh api repos/{owner}/{repo}/actions/oidc/customization/sub` shows it); the plain
+`repo:spikeypear-bot/SilvercareSG:...` form never matches.
 Otherwise a pull request could edit a workflow to assume the deploy role.
 
-## 5b. CI plan role (`bootstrap/ci-plan-role.tf`)
+## 5b. CI plan role (`infra/bootstrap/ci-plan-role.tf`)
 
 `.github/workflows/plan.yml` assumes a separate read-only role on pull requests. Create
-it in `bootstrap/`, because it must exist before the root config can be planned:
+it in `infra/bootstrap/`, because it must exist before the root config can be planned:
 
 - `data "aws_iam_openid_connect_provider" "github"` with
   `url = "https://token.actions.githubusercontent.com"`. It already exists, since the
@@ -104,7 +108,7 @@ it in `bootstrap/`, because it must exist before the root config can be planned:
 - `aws_iam_role` named `silvercare-cicd-plan`. Its trust policy allows
   `sts:AssumeRoleWithWebIdentity` from that provider, with `StringEquals` on:
   - `token.actions.githubusercontent.com:aud` = `sts.amazonaws.com`
-  - `token.actions.githubusercontent.com:sub` = `repo:spikeypear-bot/SilvercareSG:pull_request`
+  - `token.actions.githubusercontent.com:sub` = `repo:spikeypear-bot@232546008/SilvercareSG@1416327993:pull_request`
 - Attach the AWS managed `ReadOnlyAccess` policy, so `terraform plan` can read the
   configuration of every resource type. This is an exception to the `iam-policy` rule
   against broad managed policies: it's read-only, and the deny below removes data access.
@@ -129,18 +133,23 @@ and the dev container has none. These run the dev image directly with the user's
 `~/.aws` mounted read-only. Use plain `docker run`, not `docker compose`, because the
 compose service sets fake credentials that would override the real ones:
 
+The plugin cache volume is needed: the image sets `TF_PLUGIN_CACHE_DIR`, so
+`.terraform/` only holds symlinks into the cache, and without the volume the cache
+disappears with each `--rm` container ("no package ... cached in .terraform/providers").
+
 ```sh
 tf() { docker run --rm -it -u "$(id -u):$(id -g)" -v "$PWD:/work" \
-  -v "$HOME/.aws:/cache/home/.aws:ro" -e AWS_PROFILE="${AWS_PROFILE:-default}" \
+  -v "$HOME/.aws:/cache/home/.aws:ro" -v silvercare_tf-plugin-cache:/cache/terraform \
+  -e AWS_PROFILE="${AWS_PROFILE:-default}" \
   -w "/work/$1" silvercare-dev:local terraform "${@:2}"; }
 
-tf bootstrap init
-tf bootstrap plan     # review: one bucket + its settings, nothing else
-tf bootstrap apply
-tf . init             # root: now uses the S3 backend
+tf infra/bootstrap init
+tf infra/bootstrap plan     # review: the bucket + its settings, plan role, budget
+tf infra/bootstrap apply
+tf infra init               # root config: now uses the S3 backend
 ```
 
-If they have Terraform installed on the host, plain `terraform` in `bootstrap/` works too.
+If they have Terraform installed on the host, plain `terraform` in `infra/bootstrap/` works too.
 
 If the root config already has local state, `terraform init -migrate-state`
 moves it into the bucket.

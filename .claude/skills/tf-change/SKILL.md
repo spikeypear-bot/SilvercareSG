@@ -8,8 +8,8 @@ description: Conventions and checks for every Terraform change in this repo. Use
 Merging to `main` runs `terraform apply` in CI. Treat every change as going live.
 
 ## Rules
-- Root config lives at the repo root (CI runs from there). Reusable modules go in
-  `modules/` (see the `tf-module` skill).
+- Root config lives in `infra/` (CI runs from there). Reusable modules go in
+  `infra/modules/` (see the `tf-module` skill). `infra/bootstrap/` is applied by hand only.
 - Serverless only. No EC2, NAT Gateway, provisioned RDS, or other fixed-cost resources.
 - Region: ap-southeast-1
 - Encrypt every data store at rest (KMS or AWS-managed keys) and enforce TLS in transit.

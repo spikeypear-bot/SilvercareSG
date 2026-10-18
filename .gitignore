@@ -6,6 +6,9 @@
 tfplan
 crash.log
 crash.*.log
+# Variable files can hold private values (e.g. the budget alert email); commit *.tfvars.example instead
+*.tfvars
+*.tfvars.json
 # Keep .terraform.lock.hcl committed (pins provider versions)
 
 # Python

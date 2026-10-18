@@ -8,13 +8,13 @@ argument-hint: [module-name]
 
 Module to work on: $ARGUMENTS
 
-CI runs Terraform from the repo root only. Modules live under `modules/` and do
-nothing until the root config calls them.
+CI runs Terraform from `infra/` only. Modules live under `infra/modules/` and do
+nothing until the root config in `infra/` calls them.
 
 ## Layout
 
 ```
-modules/<module-name>/
+infra/modules/<module-name>/
 ├── main.tf        # resources
 ├── variables.tf   # inputs
 ├── outputs.tf     # outputs
@@ -46,11 +46,11 @@ Module names are kebab-case nouns describing what they create: `python-lambda`,
 
 ## Steps
 
-1. Check `modules/` for an existing module that does this, or nearly does. Extend it
+1. Check `infra/modules/` for an existing module that does this, or nearly does. Extend it
    rather than duplicating it.
 2. Create the files above. Start from the inputs: what must the caller decide?
 3. Write `README.md` with one example `module "..." {}` call.
-4. Add or update the call in the root config.
+4. Add or update the call in the root config (`infra/*.tf`).
 5. Run `make fmt` and `make tf-check` (fmt check, validate, tflint, checkov in the dev
    container, with no AWS credentials needed).
 6. Summarise what the module creates, its inputs/outputs, and any resources that
