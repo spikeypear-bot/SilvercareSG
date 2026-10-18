@@ -41,8 +41,13 @@ Review these in the changed components, and test them where you can:
 
 1. Work out the scope: the files named in your task, or else frontend files changed on
    the current branch (`git diff main...HEAD --stat`, `git status --short`).
-2. Write the missing tests (unless told to only run).
-3. From `frontend/`, run `npm run test`, `npm run lint`, and `npm run build`.
+2. Write the missing tests (unless told to only run). CI runners are slower than this
+   machine, so never assert something a `useEffect` does (`document.title`, focus,
+   storage, timers) straight after a `findBy*` or a user event: wrap it in
+   `await waitFor(...)`. Don't lower the timeouts in `src/test/setup.ts` or
+   `vite.config.ts`.
+3. From `frontend/`, run `npm run test` twice, plus `npm run lint` and `npm run build`. A
+   test that passes once and fails once is flaky: fix the test before reporting.
 
 ## Report
 

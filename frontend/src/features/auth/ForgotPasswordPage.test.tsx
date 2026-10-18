@@ -43,7 +43,7 @@ const location = () => screen.getByTestId('location').textContent
 describe('step 1: email', () => {
   it('shows the email field, Send code, and Back to sign in', async () => {
     const { user } = await openPage()
-    expect(document.title).toBe('SilverCare - Forgot password')
+    await waitFor(() => expect(document.title).toBe('SilverCare - Forgot password'))
     await user.click(screen.getByRole('link', { name: 'Back to sign in' }))
     expect(await screen.findByRole('heading', { name: 'Sign in to SilverCare' })).toBeInTheDocument()
   })
