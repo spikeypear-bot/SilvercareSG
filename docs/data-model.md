@@ -44,7 +44,7 @@ acknowledged or resolved an alert. The API turns `acknowledged_by` / `resolved_b
 (staff `sub`) into the staff member's name from Cognito; the `sub` itself is not
 returned.
 
-Caller groups: **staff** can read every resident. **caregiver/family** can read a
+Caller groups (Cognito): **staff** means the `doctor` and `nurse` groups and can read every resident. **caregiver/family** can read a
 resident only after the link check (pattern 13) passes, and the API also checks the
 caller's current Cognito group, because `relationship` on the link is a copy that can
 go stale. Lambdas without a caller are marked *backend*.

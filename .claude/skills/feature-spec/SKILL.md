@@ -41,9 +41,17 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] Personal data touched is listed, with its retention.
 - [ ] Out of scope is filled in.
 - [ ] Open questions is empty.
+- [ ] Size: at most about two screens and two API routes, or the user agreed to the size.
 
 ## Keep features small
 
 A feature that's small enough to review in one sitting is the right size: roughly one
 or two API routes and one or two screens. If a spec grows past that, suggest splitting
 it into several features that can be built one at a time.
+
+This is a required check before `status: ready`, not a suggestion: count the screens
+(each route, including settings pages and sub-steps that have their own route) and API
+routes. If it's over, propose a split to the user and get their answer first. Example:
+the first `sign-in` spec had Cognito plus five screens and took about 40 minutes to
+build; it would have been better as Cognito + login, then account settings, then the
+dashboard.

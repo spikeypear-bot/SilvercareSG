@@ -16,6 +16,14 @@ structure, not code that exists yet. Update this file as decisions land.
 - Ask me before making product decisions: what data is collected, who can see what,
   alert thresholds, retention.
 - Never run `git commit` or `git push`. I commit and push myself.
+- After fixing a bug, a reviewer finding, or a mistake I corrected, run the
+  `improve-agents` skill: fix the skill, agent, or workflow that let it happen, without
+  asking me, within that skill's guardrails. Changes are logged in
+  `.claude/agent-changes.md`.
+- When you finish a task (a feature build, a fix, a workflow run, a config or docs
+  change), end with a recap using the `recap` skill: done, what I should check (including
+  the expected plan and cost), what's left to do, and how agents were used. Skip it for
+  quick questions that changed nothing.
 
 ## Architecture
 
@@ -41,9 +49,12 @@ structure, not code that exists yet. Update this file as decisions land.
   and state the cost of any new service before adding it.
   A US$40/month AWS Budget (`infra/bootstrap/budget.tf`) emails alerts at 50/80/100% of
   actual and 100% of forecast spend, counted before credits.
-- **Auth:** Cognito user pool with groups `staff`, `caregiver`, `family` (initial names;
-  adjust as needed). Groups decide what a user can see; the API enforces it, the UI only
-  hides things.
+- **Auth:** one Cognito user pool (`silvercare-users`) with groups `doctor`, `nurse`,
+  `caregiver`, `family`. "Staff" in the docs means `doctor` or `nurse`: they get the
+  staff dashboard and see every resident. `caregiver` and `family` get the family view
+  and see only linked residents. Sign-in is email + password, MFA (authenticator app)
+  optional. Groups decide what a user can see; the API enforces it, the UI only hides
+  things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
   caregiver/family views and the staff dashboard, chosen by Cognito group. Static build
   hosted on S3 behind CloudFront (no server-side rendering).
@@ -94,6 +105,10 @@ Implications:
   `docker/dev.Dockerfile`. Change both together.
 - There is no remote state backend yet. CI runners are ephemeral, so the backend and the
   plan role must be set up (`/tf-state-bootstrap`) before the first real apply.
+- The deploy role `silvercare-cicd` was created by hand (not in Terraform) and has the
+  AWS managed `AdministratorAccess` policy, so applies don't need per-service CI
+  permissions. Its trust policy must allow only `main` (see `/tf-state-bootstrap`).
+  Only the plan role is in code (`infra/bootstrap/ci-plan-role.tf`).
 - To remove a resource, delete it from the code and merge, rather than running
   `terraform destroy`. Resources with deletion protection need two merges: first turn
   the protection off, then remove the resource.
@@ -163,8 +178,8 @@ Record the outcome here (and remove the item) once decided.
    DynamoDB table design depends on it.
 2. **Alerting rules:** which conditions trigger alerts (e.g. fall, inactivity, abnormal
    vitals) and how alerts are delivered (push, SMS, email).
-3. **User onboarding:** who creates accounts (staff invite only, or self sign-up for
-   family) and how caregivers/family are linked to residents.
+3. **User onboarding:** how caregivers/family are linked to residents. (Decided: accounts
+   are created by an admin only, no self sign-up.)
 4. **Data retention:** how long history in S3, resolved alerts in DynamoDB, and user
    data are kept. (Decided: DynamoDB keeps at most the latest 5 messages per device and
    type.)

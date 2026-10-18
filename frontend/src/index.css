@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+/* Design tokens: teal actions, slate neutrals, Inter (self-hosted via @fontsource-variable/inter). */
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@layer base {
+  html {
+    /* Body text is 16px minimum. */
+    font-size: 100%;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    min-width: 360px;
+    background-color: var(--color-slate-50);
+    color: var(--color-slate-900);
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline-color: var(--color-teal-600);
+  }
+}

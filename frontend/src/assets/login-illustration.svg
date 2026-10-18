@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" fill="none">
+  <!-- Abstract: a home held by two caring hands, with a heart-rate line. No people. -->
+  <circle cx="200" cy="150" r="128" fill="#ffffff" fill-opacity="0.08"/>
+  <circle cx="200" cy="150" r="92" fill="#ffffff" fill-opacity="0.08"/>
+  <!-- home -->
+  <path d="M146 140 200 96l54 44v58a6 6 0 0 1-6 6h-96a6 6 0 0 1-6-6Z" fill="#ffffff" fill-opacity="0.95"/>
+  <path d="M136 146 200 92l64 54" stroke="#ccfbf1" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="186" y="164" width="28" height="40" rx="4" fill="#99f6e4"/>
+  <!-- heart in window -->
+  <path d="M200 150c-9-7-16-12-16-19a8 8 0 0 1 16-3 8 8 0 0 1 16 3c0 7-7 12-16 19Z" fill="#f43f5e" fill-opacity="0.9"/>
+  <!-- caring hands (abstract cupped shapes) -->
+  <path d="M84 196c18 0 40 6 58 18 10 7 22 10 34 10h24v22h-30c-20 0-38-6-54-16-12-7-22-10-32-10Z" fill="#5eead4"/>
+  <path d="M316 196c-18 0-40 6-58 18-10 7-22 10-34 10h-24v22h30c20 0 38-6 54-16 12-7 22-10 32-10Z" fill="#2dd4bf"/>
+  <!-- heart-rate line -->
+  <path d="M28 262h96l14-26 18 44 16-34 10 16h190" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.9"/>
+  <!-- small sparkles -->
+  <circle cx="92" cy="92" r="5" fill="#ccfbf1"/>
+  <circle cx="318" cy="84" r="4" fill="#ccfbf1"/>
+  <circle cx="336" cy="138" r="3" fill="#ccfbf1"/>
+  <circle cx="70" cy="150" r="3" fill="#ccfbf1"/>
+</svg>

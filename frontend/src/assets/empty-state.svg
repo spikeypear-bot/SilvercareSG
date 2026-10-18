@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" fill="none">
+  <!-- Abstract: an empty clipboard with a magnifier. -->
+  <ellipse cx="100" cy="126" rx="70" ry="8" fill="#e2e8f0"/>
+  <rect x="56" y="18" width="80" height="100" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="3"/>
+  <rect x="78" y="10" width="36" height="16" rx="6" fill="#ccfbf1" stroke="#5eead4" stroke-width="3"/>
+  <rect x="70" y="44" width="52" height="6" rx="3" fill="#e2e8f0"/>
+  <rect x="70" y="60" width="40" height="6" rx="3" fill="#e2e8f0"/>
+  <rect x="70" y="76" width="46" height="6" rx="3" fill="#e2e8f0"/>
+  <circle cx="138" cy="86" r="20" fill="#f0fdfa" stroke="#0f766e" stroke-width="5"/>
+  <path d="m152 100 16 16" stroke="#0f766e" stroke-width="7" stroke-linecap="round"/>
+  <path d="M128 86h6l3-6 4 12 3-6h4" stroke="#14b8a6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
