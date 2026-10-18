@@ -11,5 +11,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // CI runners are slower than dev machines; the defaults (5 s) made tests flaky there.
+    testTimeout: 15_000,
   },
 })

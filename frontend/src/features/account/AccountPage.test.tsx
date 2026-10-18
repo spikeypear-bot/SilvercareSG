@@ -57,7 +57,7 @@ describe('profile', () => {
 
   it('has the page title without personal data', async () => {
     renderAccount()
-    expect(document.title).toBe('SilverCare - Account settings')
+    await waitFor(() => expect(document.title).toBe('SilverCare - Account settings'))
     await screen.findByText('Off')
   })
 })

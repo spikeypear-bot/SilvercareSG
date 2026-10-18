@@ -3,6 +3,14 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-10-19
+
+- **Problem:** a `LoginPage` test checked `document.title` (set in a `useEffect`) right
+  after the page appeared. It passed locally and on the PR, then failed on the merge to
+  `main`, which stopped the deploy. **Changed:** `.claude/agents/frontend-tester.md`:
+  wrap effect results in `waitFor`, don't lower timeouts, and run the suite twice to
+  catch flaky tests.
+
 ## 2026-10-18
 
 - **Problem:** the `sign-in` spec and the builder let users edit their own `name`/`email`

@@ -53,7 +53,7 @@ describe('login page layout', () => {
     expect(screen.getByRole('button', { name: 'Sign in' })).toHaveAttribute('type', 'submit')
     expect(screen.getByText('Accounts are created by your care provider.')).toBeInTheDocument()
     expect(screen.getByText('Peace of mind for every family')).toBeInTheDocument()
-    expect(document.title).toBe('SilverCare - Sign in')
+    await waitFor(() => expect(document.title).toBe('SilverCare - Sign in'))
   })
 
   it('has no axe violations', async () => {
