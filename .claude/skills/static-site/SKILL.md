@@ -41,15 +41,16 @@ settings and the frontend's build config need them.
 
 ## Deploying the build
 
-The build is uploaded after `terraform apply`, not by Terraform:
+`deploy.yml` builds and uploads the frontend on every push to `main`, after
+`terraform apply`, in the same job:
 
-```sh
-cd frontend && npm ci && npm run build
-aws s3 sync dist/ s3://<bucket>/ --delete
-aws cloudfront create-invalidation --distribution-id <id> --paths "/index.html"
-```
+1. Build with `VITE_USER_POOL_ID` and `VITE_USER_POOL_CLIENT_ID` read from
+   `terraform output -raw` (never printed).
+2. `s3 sync dist/assets/` with `Cache-Control: public, max-age=31536000, immutable`.
+3. `s3 sync dist/` (excluding `assets/`) with `--delete` and `Cache-Control: no-cache`.
+4. `s3 sync dist/assets/ --delete` to remove old hashed files, then invalidate
+   `/index.html`.
 
-Adding these steps to `.github/workflows/deploy.yml` needs extra CI role permissions
-(`s3:ListBucket`, `s3:PutObject`, `s3:DeleteObject` on the frontend bucket, and
-`cloudfront:CreateInvalidation` on the distribution). Tell the user what to add. Don't
-change the CI role yourself.
+Terraform doesn't upload app files: every build changes file names, which would flood the
+plan. When the build needs a new Terraform output (e.g. the API URL), add it to the
+"Build frontend" step. Changing `.github/` needs the user to ask for it.
