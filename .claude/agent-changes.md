@@ -5,6 +5,10 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-10-24
 
+- **Problem:** the `iot-core` README told the user to run `terraform output` on their
+  machine, which had no Terraform: it only exists in the dev container, which has no
+  AWS credentials. **Changed:** `.claude/skills/local-dev/SKILL.md`: README steps the
+  user runs on the host say how to install the tool, at the pinned version.
 - **Problem:** `pre-pr-check` compared against the local `main`, which was behind
   `origin/main`, so `frontend-tester` reviewed the already-merged frontend and all 9 of
   its findings were rejected as out of scope. **Changed:**

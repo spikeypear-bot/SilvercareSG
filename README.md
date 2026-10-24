@@ -36,14 +36,25 @@ Run these yourself. Claude is blocked from the key targets.
 
 ### Smoke test
 
-After the deploy, from `infra/` with your own AWS credentials:
+After the deploy, from `infra/` with your own AWS credentials. These `terraform`
+commands run on your machine, not in the dev container (it has no AWS credentials), so
+install Terraform 1.16.6 on the host first, the same version CI and the container use:
+
+```sh
+curl -fsSLO https://releases.hashicorp.com/terraform/1.16.6/terraform_1.16.6_linux_amd64.zip
+curl -fsSL https://releases.hashicorp.com/terraform/1.16.6/terraform_1.16.6_SHA256SUMS | grep linux_amd64.zip | sha256sum -c -
+mkdir -p ~/.local/bin && unzip -o terraform_1.16.6_linux_amd64.zip terraform -d ~/.local/bin && rm terraform_1.16.6_linux_amd64.zip
+terraform version
+```
+
+Then:
 
 ```sh
 terraform init
 terraform output -raw iot_endpoint
 terraform output -json device_certificates > ../devices/keys/certificates.json
 cd .. && make device-certs
-make smoke-test DEVICE=wearable-0001 ENDPOINT=<the endpoint>
+make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint)
 ```
 
 Every check should print `PASS`. Published messages aren't stored anywhere yet.
