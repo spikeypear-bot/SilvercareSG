@@ -1,14 +1,16 @@
 export const meta = {
   name: 'pre-pr-check',
   description: 'Review the current branch before a PR: IaC review, privacy review, Lambda and frontend tests in parallel, then verify each set of findings',
-  whenToUse: 'Before opening a pull request, after Terraform, Lambda, or frontend changes. Optional args: { base: "main" }',
+  whenToUse: 'Before opening a pull request, after Terraform, Lambda, or frontend changes. Optional args: { base: "origin/main" }',
   phases: [
     { title: 'Review', detail: 'iac-reviewer, privacy-reviewer, lambda-tester, frontend-tester on the branch changes' },
     { title: 'Verify', detail: 'one skeptic per reviewer re-checks its findings against the code' },
   ],
 }
 
-const BASE = (args && args.base) || 'main'
+// origin/main, not main: the local main is often behind (merges happen on GitHub), and a
+// stale base pulls already-merged work into scope.
+const BASE = (args && args.base) || 'origin/main'
 
 const SCOPE = `Scope: changes on the current branch compared with ${BASE}, plus uncommitted and untracked files. Find them with \`git diff ${BASE}...HEAD --stat\`, \`git diff\`, and \`git status --short\`. If nothing in scope is relevant to your role, return no findings and say so in checks_run.`
 

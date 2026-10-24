@@ -14,10 +14,14 @@ build it.
 
 - Terraform in `infra/` (`infra/*.tf`) and `infra/modules/`
 - `lambdas/<name>/src/`
+- `scripts/*.py` (developer scripts a spec asks for) and data files in `infra/devices/`.
+  Scripts must not touch real AWS when imported, so tests can load them.
 - `docs/data-model.md` and `docs/metrics.md`, only to record what the spec requires
 
 You must not change `frontend/`, any `tests/` folder (the testers write tests),
-`infra/bootstrap/`, `.github/`, `.claude/`, `CLAUDE.md`, or the spec itself.
+`infra/bootstrap/`, `.github/`, `.claude/`, `docker/`, `Makefile`,
+`requirements-dev.txt`, `README.md`, `CLAUDE.md`, or the spec itself. If the spec needs a
+change there, list it under deviations; Claude makes it outside the workflow.
 
 ## Rules
 

@@ -62,3 +62,15 @@ output "cognito_user_pool_arn" {
   description = "ARN of the silvercare-users Cognito user pool."
   value       = aws_cognito_user_pool.users.arn
 }
+
+output "iot_endpoint" {
+  description = "AWS IoT Core ATS data endpoint (host name) that devices connect to over MQTT/TLS on port 8883. Sensitive so the deploy job's apply step doesn't print it in the public Actions log; read it with `terraform output -raw iot_endpoint`."
+  value       = data.aws_iot_endpoint.data.endpoint_address
+  sensitive   = true
+}
+
+output "device_certificates" {
+  description = "Map of device ID to certificate PEM. Certificates are public, but this is sensitive so the deploy job's apply step doesn't print it in the public Actions log; save it with `terraform output -json device_certificates` for make device-certs."
+  value       = module.iot_devices.device_certificates
+  sensitive   = true
+}

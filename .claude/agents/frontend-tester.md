@@ -40,7 +40,7 @@ Review these in the changed components, and test them where you can:
 ## Steps
 
 1. Work out the scope: the files named in your task, or else frontend files changed on
-   the current branch (`git diff main...HEAD --stat`, `git status --short`).
+   the current branch (`git diff origin/main...HEAD --stat`, `git status --short`).
 2. Write the missing tests (unless told to only run). CI runners are slower than this
    machine, so never assert something a `useEffect` does (`document.title`, focus,
    storage, timers) straight after a `findBy*` or a user event: wrap it in

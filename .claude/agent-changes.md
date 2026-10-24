@@ -3,7 +3,36 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-10-24
+
+- **Problem:** `pre-pr-check` compared against the local `main`, which was behind
+  `origin/main`, so `frontend-tester` reviewed the already-merged frontend and all 9 of
+  its findings were rejected as out of scope. **Changed:**
+  `.claude/workflows/pre-pr-check.js` defaults the base to `origin/main`; the
+  `iac-reviewer`, `privacy-reviewer`, `lambda-tester`, and `frontend-tester` agents and
+  the `recap` skill diff against `origin/main` too.
+
 ## 2026-10-19
+
+- **Problem:** in the `iot-core` build, `lambda-tester` was skipped because
+  `backend-builder` reported absolute paths and the skip check only matched paths
+  starting with `scripts/`. **Changed:** `.claude/workflows/build-feature.js` matches
+  `lambdas/` or `scripts/` anywhere in the path.
+- **Problem:** the `iot-core` builder assumed a `precondition` runs before `file()`
+  (it doesn't, so the custom "run make device-keys" message never showed), and the spec
+  assumed CI never prints outputs (deploy's `apply` prints non-sensitive ones; a
+  reviewer caught it). **Changed:** `.claude/skills/tf-change/SKILL.md`: mark outputs
+  sensitive unless publishable; guard `file()` with `fileexists()` and test on
+  `terraform_data`.
+- **Problem:** the `iot-core` spec needs developer scripts in `scripts/` with tests, but
+  `backend-builder` could only write `infra/` and `lambdas/`, `lambda-tester` only
+  `lambdas/*/tests/`, and the workflow skipped the tester when no Lambda changed. The
+  build would have left half the spec undone. **Changed:**
+  `.claude/agents/backend-builder.md` (may write `scripts/*.py` and `infra/devices/`;
+  lists the files only Claude changes), `.claude/agents/lambda-tester.md` (may write
+  `scripts/tests/`, only in `tmp_path`, no PEM fixtures), and
+  `.claude/workflows/build-feature.js` (plans script tasks as backend, runs the tester
+  when `scripts/` changed).
 
 - **Problem:** a `LoginPage` test checked `document.title` (set in a `useEffect`) right
   after the page appeared. It passed locally and on the PR, then failed on the merge to

@@ -115,7 +115,7 @@ const plan = await agent(
 
 Decide whether the spec is ready to build. It is NOT ready if: the file doesn't exist, its frontmatter status isn't "ready", Open questions isn't empty, or an acceptance criterion, API route, or screen is too vague to implement and test. If it's not ready, set ready=false and list the problems.
 
-If it is ready, split the work into backend tasks (Terraform, DynamoDB, IoT rules, API routes, Lambda source) and frontend tasks (pages, components, routes, API client). Copy the acceptance criteria as written. Also check whether frontend/ contains a Vite app; if frontend tasks exist but it doesn't, add that to problems and set ready=false.`,
+If it is ready, split the work into backend tasks (Terraform, DynamoDB, IoT rules, API routes, Lambda source, developer scripts in scripts/) and frontend tasks (pages, components, routes, API client). Copy the acceptance criteria as written. Also check whether frontend/ contains a Vite app; if frontend tasks exist but it doesn't, add that to problems and set ready=false.`,
   { label: 'plan', phase: 'Plan', schema: PLAN },
 )
 
@@ -132,7 +132,8 @@ const TRACKS = [
     builder: 'backend-builder',
     tester: 'lambda-tester',
     tasks: plan.backend_tasks,
-    other: 'The frontend is being built in parallel by another agent. Do not touch frontend/.',
+    other: 'The frontend is being built in parallel by another agent. Do not touch frontend/. Besides infra/ and lambdas/<name>/src/, you may write developer scripts (scripts/*.py) and data files in infra/devices/. Do not change docker/, Makefile, requirements-dev.txt, README.md, .github/, .claude/, or CLAUDE.md: list needed changes there under deviations.',
+    testerScope: 'You may write tests under lambdas/<name>/tests/ and scripts/tests/ (run with make test FN=<name> or make test FN=scripts). Script tests write only to tmp_path and generate any keys or certificates inside the test; never commit PEM fixtures.',
   },
   {
     key: 'frontend',
@@ -140,6 +141,7 @@ const TRACKS = [
     tester: 'frontend-tester',
     tasks: plan.frontend_tasks,
     other: 'The backend is being built in parallel by another agent against the same API contract. Do not touch anything outside frontend/.',
+    testerScope: '',
   },
 ].filter(t => t.tasks.length > 0)
 
@@ -166,10 +168,10 @@ ${t.other}`,
     if (!build || build.stopped || build.files_changed.length === 0) {
       return { track: t.key, build, test: null }
     }
-    // lambda-tester can only write tests under lambdas/; on Terraform-only changes it
-    // has nothing to test, so skip it rather than spend an agent on a no-op.
-    if (t.key === 'backend' && !build.files_changed.some(f => f.includes('lambdas/'))) {
-      log('Backend changed no Lambdas: skipping lambda-tester (Terraform is checked by make tf-check and iac-reviewer)')
+    // lambda-tester can only write tests under lambdas/ and scripts/; on Terraform-only
+    // changes it has nothing to test, so skip it rather than spend an agent on a no-op.
+    if (t.key === 'backend' && !build.files_changed.some(f => /(^|\/)(lambdas|scripts)\//.test(f))) {
+      log('Backend changed no Lambdas or scripts: skipping lambda-tester (Terraform is checked by make tf-check and iac-reviewer)')
       return { track: t.key, build, test: null }
     }
     return agent(
@@ -181,7 +183,9 @@ Files changed by the builder:
 ${bullets(build.files_changed)}
 
 Acceptance criteria:
-${CRITERIA}`,
+${CRITERIA}
+
+${t.testerScope}`,
       { label: t.tester, phase: 'Test', agentType: t.tester, schema: TEST },
     ).then(test => ({ track: t.key, build, test }))
   },
@@ -235,7 +239,7 @@ You are fixing issues found after the ${j.track} of ${SPEC} was built. For each 
 Issues:
 ${bullets(j.issues)}
 
-Afterwards, re-run the checks for your area (backend: make lint, make tf-check, make test FN=<name> for the affected lambdas; frontend: npm run lint, npm run test, npm run build in frontend/) and report the results.`,
+Afterwards, re-run the checks for your area (backend: make lint, make tf-check, make test FN=<name> for the affected lambdas or FN=scripts; frontend: npm run lint, npm run test, npm run build in frontend/) and report the results.`,
     { label: `fix:${j.builder}`, phase: 'Fix', agentType: j.builder, schema: FIX },
   ).then(res => res && { track: j.track, ...res }),
 ))).filter(Boolean)

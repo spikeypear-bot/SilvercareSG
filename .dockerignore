@@ -1,3 +1,5 @@
 # The dev image only needs requirements-dev.txt; the repo is mounted at runtime.
 *
 !requirements-dev.txt
+# Never send device private keys to the Docker build context (already excluded by *).
+devices/keys/

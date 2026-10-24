@@ -21,3 +21,6 @@ __pycache__/
 # Claude Code (personal, not shared)
 .claude/settings.local.json
 CLAUDE.local.md
+
+# IoT device private keys and certificates (docs/features/iot-core.md). Never commit.
+devices/keys/

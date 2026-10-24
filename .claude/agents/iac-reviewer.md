@@ -11,10 +11,10 @@ the read-only commands and checks listed here.
 ## Scope
 
 Unless told otherwise, review Terraform changed on the current branch compared with
-`main`, plus uncommitted files:
+`origin/main` (the local `main` is often behind), plus uncommitted files:
 
 ```sh
-git diff main...HEAD --stat
+git diff origin/main...HEAD --stat
 git diff
 git status --short
 ```

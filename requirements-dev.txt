@@ -5,3 +5,5 @@ moto[dynamodb,s3]==5.2.4
 boto3==1.43.114
 aws-lambda-powertools==3.36.0
 ruff==0.17.1
+cryptography==50.0.2
+paho-mqtt==2.1.0

@@ -1,0 +1,133 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ViewProjectServices",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:Get*",
+        "cloudfront:List*",
+        "cognito-idp:Describe*",
+        "cognito-idp:List*",
+        "cognito-idp:Get*",
+        "dynamodb:Describe*",
+        "dynamodb:List*",
+        "lambda:Get*",
+        "lambda:List*",
+        "logs:Describe*",
+        "logs:Get*",
+        "logs:List*",
+        "logs:FilterLogEvents",
+        "logs:StartQuery",
+        "logs:StopQuery",
+        "cloudwatch:Describe*",
+        "cloudwatch:Get*",
+        "cloudwatch:List*",
+        "iot:Describe*",
+        "iot:Get*",
+        "iot:List*",
+        "apigateway:GET",
+        "iam:Get*",
+        "iam:List*",
+        "budgets:ViewBudget",
+        "s3:ListAllMyBuckets"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadProjectBuckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:Get*",
+        "s3:List*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::silvercare-*",
+        "arn:aws:s3:::silvercare-*/*"
+      ]
+    },
+    {
+      "Sid": "ReadAndEditTableItems",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:BatchGetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:PartiQLSelect",
+        "dynamodb:PartiQLInsert",
+        "dynamodb:PartiQLUpdate",
+        "dynamodb:PartiQLDelete"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-1:753674274065:table/silvercare-*",
+        "arn:aws:dynamodb:ap-southeast-1:753674274065:table/silvercare-*/index/*"
+      ]
+    },
+    {
+      "Sid": "ManageCognitoUsers",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminGetUser",
+        "cognito-idp:AdminUpdateUserAttributes",
+        "cognito-idp:AdminDeleteUserAttributes",
+        "cognito-idp:AdminDisableUser",
+        "cognito-idp:AdminEnableUser",
+        "cognito-idp:AdminDeleteUser",
+        "cognito-idp:AdminResetUserPassword",
+        "cognito-idp:AdminSetUserPassword",
+        "cognito-idp:AdminUserGlobalSignOut",
+        "cognito-idp:AdminAddUserToGroup",
+        "cognito-idp:AdminRemoveUserFromGroup",
+        "cognito-idp:AdminListGroupsForUser"
+      ],
+      "Resource": "arn:aws:cognito-idp:ap-southeast-1:753674274065:userpool/*"
+    },
+    {
+      "Sid": "UploadFrontend",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::silvercare-frontend-753674274065/*"
+    },
+    {
+      "Sid": "ClearFrontendCache",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:CreateInvalidation"
+      ],
+      "Resource": "arn:aws:cloudfront::753674274065:distribution/*"
+    },
+    {
+      "Sid": "TerraformLockForLocalPlan",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::silvercare-tfstate-753674274065/silvercare/terraform.tfstate.tflock"
+    },
+    {
+      "Sid": "NeverWriteTerraformState",
+      "Effect": "Deny",
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:PutBucket*",
+        "s3:DeleteBucket*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::silvercare-tfstate-753674274065",
+        "arn:aws:s3:::silvercare-tfstate-753674274065/silvercare/terraform.tfstate"
+      ]
+    }
+  ]
+}
