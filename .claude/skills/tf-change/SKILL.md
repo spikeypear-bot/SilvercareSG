@@ -17,6 +17,12 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
 - Tag every resource: `project = "silvercare"`, `managed_by = "terraform"`
 - Pin provider versions in `required_providers`, and set `required_version` for Terraform
   (tflint flags it if missing).
+- Outputs: `terraform apply` in `deploy.yml` prints every non-sensitive output to the
+  public Actions log. Mark an output `sensitive = true` unless it's fine to publish (it
+  can still be read with `terraform output`).
+- A `file()` on a missing path errors before any `precondition` runs. To fail with your
+  own message, guard it: `fileexists(p) ? file(p) : "<placeholder>"`. Test such logic
+  without AWS on `terraform_data` in a scratch dir.
 
 ## Steps
 1. Read existing `.tf` files and match their layout and naming.

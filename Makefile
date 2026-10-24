@@ -10,8 +10,11 @@ DEVOPTS :=
 DEV = $(if $(shell $(COMPOSE) ps --status running -q dev 2>/dev/null),$(COMPOSE) exec -T $(DEVOPTS) dev,$(COMPOSE) run --rm -T $(DEVOPTS) dev)
 
 FN ?=
+DEVICE ?=
+ENDPOINT ?=
+JOB ?=
 
-.PHONY: help build up down shell test test-integration lint fmt tf-check check
+.PHONY: help build up down shell test test-integration lint fmt tf-check check device-keys device-certs smoke-test
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -28,7 +31,7 @@ down: ## Stop all containers
 shell: ## Open a shell in the dev container
 	$(COMPOSE) run --rm dev bash
 
-test: ## Unit tests for every Lambda, or one: make test FN=<name>
+test: ## Unit tests for every Lambda and scripts/, or one: make test FN=<name|scripts>
 	$(DEV) sh docker/run-lambda-tests.sh unit $(FN)
 
 test-integration: DEVOPTS = -e DYNAMODB_ENDPOINT=http://dynamodb-local:8000
@@ -46,3 +49,14 @@ tf-check: ## Terraform fmt check, validate, tflint, checkov (no AWS credentials 
 	$(DEV) sh docker/tf-check.sh
 
 check: test lint tf-check ## Everything above except integration tests
+
+# IoT device targets (docs/features/iot-core.md). The developer runs these, not Claude:
+# they read or write the private keys in devices/keys/.
+device-keys: ## Create missing device keys + CSRs: make device-keys [DEVICE=<id>]
+	$(DEV) python scripts/device-keys.py $(if $(DEVICE),--device $(DEVICE))
+
+device-certs: ## Write devices/keys/<id>.crt from devices/keys/certificates.json
+	$(DEV) python scripts/device-certs.py
+
+smoke-test: ## Test a device against AWS IoT: make smoke-test DEVICE=<id> ENDPOINT=<host> [JOB=1]
+	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) $(if $(JOB),--job)

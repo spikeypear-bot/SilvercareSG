@@ -37,7 +37,9 @@
       "Bash(terraform destroy *)",
       "Bash(aws *)",
       "Read(~/.aws/**)",
-      "Edit(~/.aws/**)"
+      "Edit(~/.aws/**)",
+      "Read(devices/keys/**)",
+      "Edit(devices/keys/**)"
     ]
   },
   "hooks": {

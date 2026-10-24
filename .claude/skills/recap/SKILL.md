@@ -17,7 +17,7 @@ accurate. Report facts you've verified, not what you expect to be true.
 
 Read these before writing. Don't run anything that changes files.
 
-- `git branch --show-current`, `git status --short`, and `git diff --stat main...` plus
+- `git branch --show-current`, `git status --short`, and `git diff --stat origin/main...` plus
   the uncommitted diff, to see every changed and new file.
 - The results of the agents and workflows that ran in this task: their deviations,
   open questions, untested items, findings left unfixed, and checks run.

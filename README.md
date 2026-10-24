@@ -1,1 +1,59 @@
 Silvercare monitoring system
+
+## IoT devices
+
+Every device (`wearable-0001`…`wearable-0020`, `bedroom-0001`…`bedroom-0020`) is an
+AWS IoT thing with its own X.509 certificate, and connects over MQTT with mutual TLS.
+The device list is `infra/devices/devices.json`; the feature spec is
+`docs/features/iot-core.md`.
+
+Each device's **private key** stays on your machine in `devices/keys/`. That folder is
+git-ignored and must never be committed (CI fails if a private key is tracked). Only
+the CSRs in `infra/devices/csr/` are committed. Terraform sends them to AWS, which signs
+the certificates.
+
+Run these yourself. Claude is blocked from the key targets.
+
+### First setup
+
+1. Create a key and a CSR for every device:
+
+   ```sh
+   make device-keys
+   ```
+
+2. Download Amazon's public root CA, which devices use to check they're talking to AWS:
+
+   ```sh
+   curl -o devices/AmazonRootCA1.pem https://www.amazontrust.com/repository/AmazonRootCA1.pem
+   ```
+
+3. Commit `infra/devices/` and `devices/AmazonRootCA1.pem` on a branch and open a PR.
+   `git status` must not show anything under `devices/keys/`. The plan comment should
+   list only creates: thing types, things, thing groups and memberships, certificates,
+   policies, and attachments.
+4. Merge. The deploy creates the things and certificates.
+
+### Smoke test
+
+After the deploy, from `infra/` with your own AWS credentials:
+
+```sh
+terraform init
+terraform output -raw iot_endpoint
+terraform output -json device_certificates > ../devices/keys/certificates.json
+cd .. && make device-certs
+make smoke-test DEVICE=wearable-0001 ENDPOINT=<the endpoint>
+```
+
+Every check should print `PASS`. Published messages aren't stored anywhere yet.
+
+### Adding, removing, or replacing a device
+
+- **Add:** add an entry to `infra/devices/devices.json`, run
+  `make device-keys DEVICE=<id>`, then commit the new CSR and merge.
+- **Remove:** delete the entry and its CSR, merge, then delete its files in
+  `devices/keys/`.
+- **Replace a lost or leaked key:** delete `devices/keys/<id>.key` and
+  `infra/devices/csr/<id>.csr`, run `make device-keys DEVICE=<id>`, commit the new CSR,
+  and merge. The plan shows that device's certificate as replaced, which is expected.

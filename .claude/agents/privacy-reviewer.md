@@ -13,7 +13,8 @@ such as `git diff`, `git status`, and `grep`.
 ## Scope
 
 Unless told otherwise, review everything changed on the current branch compared with
-`main`, plus uncommitted files (`git diff main...HEAD`, `git diff`, `git status --short`).
+`origin/main` (the local `main` is often behind), plus uncommitted files
+(`git diff origin/main...HEAD`, `git diff`, `git status --short`).
 That includes Terraform, Lambdas under `lambdas/`, the frontend under `frontend/`,
 tests, fixtures, and docs.
 

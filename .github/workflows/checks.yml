@@ -17,6 +17,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Device private keys must never be committed (docs/features/iot-core.md).
+      # Prints only file paths, never file contents.
+      - name: No private keys in the repo
+        run: |
+          found=$( { git ls-files -- 'devices/keys/*'; git grep -lI -E -e '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' || true; } | sort -u)
+          if [ -n "$found" ]; then
+            echo "::error::Private key files are tracked by git. Remove them and replace the keys:"
+            echo "$found"
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 

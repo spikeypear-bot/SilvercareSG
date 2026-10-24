@@ -67,6 +67,11 @@ infra/               all Terraform
   backend.tf         S3 remote state (see /tf-state-bootstrap)
   modules/<name>/    reusable Terraform modules
   bootstrap/         state bucket, plan role, budget: applied once by hand, never by CI
+  devices/           devices.json (the device list) and csr/<id>.csr (committed)
+devices/
+  AmazonRootCA1.pem  Amazon's public root CA (committed)
+  keys/              device private keys and certs: git-ignored, never committed
+scripts/             developer scripts (device keys, smoke test); tests in scripts/tests/
 lambdas/<name>/
   src/handler.py     entry point: lambda_handler(event, context)
   tests/             pytest tests for this function
@@ -121,7 +126,7 @@ tflint, checkov. It has no AWS credentials. Use it through `make`, not host tool
 
 ```sh
 make up                     # start dev container + DynamoDB Local (faster runs, format hook)
-make test                   # unit tests, each Lambda separately; one: make test FN=<name>
+make test                   # unit tests, each Lambda and scripts/ separately; one: make test FN=<name|scripts>
 make test-integration       # tests marked @pytest.mark.integration, against DynamoDB Local
 make lint                   # ruff check + format check
 make fmt                    # ruff format + terraform fmt
@@ -129,6 +134,8 @@ make tf-check               # terraform fmt check, validate, tflint, checkov
 make check                  # test + lint + tf-check
 make shell                  # shell inside the container
 make build                  # rebuild after changing docker/ or requirements-dev.txt
+make device-keys            # create missing device keys + CSRs (I run it, never Claude)
+make smoke-test DEVICE=<id> ENDPOINT=<host>   # test one device against AWS IoT (me only)
 ```
 
 Python dev dependencies live in `requirements-dev.txt` (pinned); tool versions are
@@ -148,6 +155,14 @@ under Singapore's PDPA. Treat it accordingly:
   event types.
 - Keep data in `ap-southeast-1`. Encrypt at rest and in transit, and give each IAM role
   only the access it needs.
+- Developers share one hand-made IAM user in the IAM group `silvercare-developers`,
+  whose inline policy is kept in `docs/iam/developer-policy.json` (update both together).
+  They can read all project config and data, edit DynamoDB items and Cognito users, and
+  upload the frontend; they can't change infrastructure, write Terraform state, or change
+  the shared password or MFA (only the account owner can). MFA is optional. Because the
+  user is shared, CloudTrail can't tell developers apart. Data reads and the shared user
+  are acceptable while all data is synthetic; revisit both before any real resident data
+  arrives.
 - The `pdpa-check` skill has the full checklist.
 
 ## Claude setup
@@ -157,7 +172,8 @@ under Singapore's PDPA. Treat it accordingly:
   - testers: `lambda-tester`, `frontend-tester`
   - reviewers (read-only): `iac-reviewer`, `privacy-reviewer`
 - `.claude/hooks/guard.sh` blocks `git commit`/`push`, the `aws` CLI, Terraform commands
-  that change infrastructure or state, and anything touching `~/.aws`.
+  that change infrastructure or state, anything touching `~/.aws`, and anything touching
+  device private keys (`devices/keys/`, `make device-keys|device-certs|smoke-test`).
   `.claude/hooks/format.sh` formats edited files.
 - `.claude/settings.json` hides AWS credentials from Claude (`AWS_SHARED_CREDENTIALS_FILE`
   and `AWS_CONFIG_FILE` are `/dev/null`), so Claude and its agents can't reach the real
