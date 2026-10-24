@@ -59,7 +59,10 @@ For one-off commands: `docker compose run --rm -T dev <command>` (or
 - **Cognito and the API Gateway JWT authorizer:** test handlers with fake claims. Test
   real sign-in against the deployed user pool.
 - **Anything needing real AWS credentials** (`terraform plan` against the real state,
-  `apply`): the user runs these outside Claude Code.
+  `apply`, `terraform output`): the user runs these outside Claude Code, on the host,
+  where nothing is installed by default. Any README step that has the user run a tool
+  on the host (e.g. Terraform) also says how to install it, at the version pinned in
+  `docker/dev.Dockerfile`.
 
 ## Rules
 
