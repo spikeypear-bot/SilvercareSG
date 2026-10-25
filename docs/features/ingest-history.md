@@ -1,5 +1,5 @@
 ---
-status: ready          # draft | ready | built
+status: built          # draft | ready | built
 ---
 
 # Ingest: history path

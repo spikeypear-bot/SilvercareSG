@@ -44,3 +44,6 @@ build everything else from it.
 - Never log the payload body. Log the device ID, metric name, and outcome.
 - Devices may resend messages and clocks may be wrong. Store both the device timestamp
   and the time the message was received.
+- Device-side code (smoke test, simulator) that reconnects with the same client ID
+  waits at least 1 s between connects: AWS IoT allows one connect per second per client
+  ID and drops faster reconnects, which looks like an authorization failure.
