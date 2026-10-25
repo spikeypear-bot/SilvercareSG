@@ -67,7 +67,7 @@ resource "aws_iam_role_policy" "this" {
 }
 
 resource "aws_lambda_function" "this" {
-  #checkov:skip=CKV_AWS_116:No Lambda DLQ. Async-invoked functions get an on-failure destination (aws_lambda_function_event_invoke_config below), which replaces it; SQS-triggered functions are given none, because failed messages go to the source queue's redrive DLQ.
+  #checkov:skip=CKV_AWS_116:No Lambda DLQ. An async-invoked function can be given an on-failure destination (aws_lambda_function_event_invoke_config below); the ingest functions have none by the user's decision (raw messages are kept in S3 history). SQS-triggered functions use the source queue's redrive DLQ.
   #checkov:skip=CKV_AWS_117:No VPC. The function only calls DynamoDB and SQS over TLS; a VPC would need endpoints or a NAT Gateway (fixed cost).
   #checkov:skip=CKV_AWS_115:No reserved concurrency yet; it needs the account's Lambda concurrency limit checked first (spec, Out of scope).
   #checkov:skip=CKV_AWS_173:Environment variables hold only resource names, no secrets; a customer-managed KMS key would add cost.

@@ -406,8 +406,8 @@ which absorbs this, but only on a best-effort basis. So:
 
 - The simulator spreads devices across the minute (random offset per device).
 - Lambdas use boto3's `adaptive` retry mode, so throttled writes back off and retry.
-- IoT rules invoke Lambdas asynchronously; an invocation that still fails after
-  Lambda's retries needs an on-failure destination (set in the Lambda/IoT spec).
+- IoT rules invoke Lambdas asynchronously, with Lambda's two automatic retries. There
+  is no failed-message queue (see `docs/decisions/0001-iot-rule-routing.md`).
 
 ## Settings (all tables)
 

@@ -73,6 +73,6 @@ module "telemetry_lambda" {
   }
 
   policy_json                = data.aws_iam_policy_document.ingest_latest_table.json
-  on_failure_destination = { arn = aws_sqs_queue.ingest_failed.arn }
+  on_failure_destination = { arn = aws_sqs_queue.example_failed.arn }
 }
 ```

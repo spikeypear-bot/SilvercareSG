@@ -81,9 +81,9 @@ It prints `PASS` when every valid message is stored exactly once in `silvercare-
 and the invalid one isn't. With `--history` (the first command the smoke test prints),
 it then waits up to 7 minutes for all the messages, the invalid one included, to appear
 in the S3 history bucket, which is written in batches of up to 5 minutes. Leave out
-`--history` to check only the live table. If it prints `FAIL`, look at the Lambda logs (`/aws/lambda/silvercare-*`) and the
-`silvercare-ingest-failed` queue in the console; for history, the
-`/aws/lambda/silvercare-history` logs and the `silvercare-history-dlq` queue.
+`--history` to check only the live table. If it prints `FAIL`, look at the Lambda logs
+(`/aws/lambda/silvercare-*`) in the console; for history, also the
+`silvercare-history-dlq` queue.
 
 ### Adding, removing, or replacing a device
 

@@ -25,8 +25,9 @@ build everything else from it.
      with `topic(n)` instead of trusting IDs in the payload.
    - Use a Lambda action when the message needs validation, transformation, or alert
      checks; use a direct DynamoDB action only for pure storage.
-   - Always set an `error_action` (e.g. to an S3 bucket or CloudWatch Logs) so dropped
-     messages can be inspected.
+   - Set an `error_action` (e.g. to an SQS queue) so dropped messages can be
+     inspected, unless the spec decides against it (the ingest rules have none: every
+     message is also kept in S3 history). Never one that logs full payloads.
    - Add `aws_lambda_permission` for principal `iot.amazonaws.com`, with `source_arn` set
      to the rule ARN.
 4. **Handler.** Follow `lambda-python`. Validate the payload against the contract, reject

@@ -4,9 +4,10 @@
 #
 # Each rule also sends every message it matches to the silvercare-history queue (second
 # action, docs/features/ingest-history.md; see history.tf). No alerts yet. Invalid
-# messages are dropped by the Lambdas (logged with a reason code). Rule action failures
-# and async invocations that still fail after Lambda's retries go to the
-# silvercare-ingest-failed queue (kept 14 days, may hold full payloads).
+# messages are dropped by the Lambdas (logged with a reason code). There is no
+# failed-message queue (user's decision): an invocation that still fails after Lambda's
+# two automatic retries is dropped and shows only as an error in the function's logs.
+# The raw message is still in S3 history.
 #
 # Cost: pay per use only (IoT rules, Lambda requests, SQS requests), about US$2/month
 # with the simulator running 24/7, US$0 when it is stopped. No fixed fees.
@@ -61,45 +62,6 @@ locals {
 }
 
 # ---------------------------------------------------------------------------------------
-# Failed-message queue
-# ---------------------------------------------------------------------------------------
-
-# Receives IoT rule action failures (error_action) and async Lambda invocations that
-# still fail after retries (on-failure destination). Messages can include full payloads.
-resource "aws_sqs_queue" "ingest_failed" {
-  name                      = "silvercare-ingest-failed"
-  sqs_managed_sse_enabled   = true
-  message_retention_seconds = 1209600 # 14 days, the SQS maximum
-}
-
-# Deny statement: sqs:* and principal * are intentional here. Denying every action from
-# every caller without TLS is narrower access, not broader.
-data "aws_iam_policy_document" "ingest_failed_queue" {
-  statement {
-    sid       = "DenyInsecureTransport"
-    effect    = "Deny"
-    actions   = ["sqs:*"]
-    resources = [aws_sqs_queue.ingest_failed.arn]
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    condition {
-      test     = "Bool"
-      variable = "aws:SecureTransport"
-      values   = ["false"]
-    }
-  }
-}
-
-resource "aws_sqs_queue_policy" "ingest_failed" {
-  queue_url = aws_sqs_queue.ingest_failed.id
-  policy    = data.aws_iam_policy_document.ingest_failed_queue.json
-}
-
-# ---------------------------------------------------------------------------------------
 # Lambdas
 # ---------------------------------------------------------------------------------------
 
@@ -114,8 +76,8 @@ data "archive_file" "ingest" {
 
 # What the function code does with AWS: a strongly consistent GetItem and a conditional
 # PutItem on its device's item in silvercare-latest. Nothing else (no indexes, no other
-# tables, no Query/Scan/UpdateItem/DeleteItem/batch). The module adds the log group and
-# on-failure destination permissions.
+# tables, no Query/Scan/UpdateItem/DeleteItem/batch). The module adds the log group
+# permissions.
 data "aws_iam_policy_document" "ingest_latest_table" {
   statement {
     sid       = "LatestTableDeviceItems"
@@ -152,16 +114,15 @@ module "ingest_lambda" {
   policy_json        = data.aws_iam_policy_document.ingest_latest_table.json
   log_retention_days = 30
 
-  on_failure_destination       = { arn = aws_sqs_queue.ingest_failed.arn }
-  maximum_retry_attempts       = 2
-  maximum_event_age_in_seconds = 3600
+  # No on_failure_destination (no failed-message queue, user's decision), so the module
+  # creates no async invoke config: Lambda's defaults apply (2 retries, then dropped).
 }
 
 # ---------------------------------------------------------------------------------------
 # IoT rules
 # ---------------------------------------------------------------------------------------
 
-# Used by the rules' SQS actions: the history action and the error_action. Invoking the
+# Used by the rules' SQS action to the history queue. Invoking the
 # Lambdas is granted by the aws_lambda_permission resources below, not by this role.
 data "aws_iam_policy_document" "iot_rules_assume" {
   statement {
@@ -194,18 +155,11 @@ data "aws_region" "current" {}
 
 resource "aws_iam_role" "iot_rules" {
   name               = "silvercare-iot-rules"
-  description        = "Lets the silvercare ingest IoT rules send messages to silvercare-history and failed messages to silvercare-ingest-failed."
+  description        = "Lets the silvercare ingest IoT rules send messages to silvercare-history."
   assume_role_policy = data.aws_iam_policy_document.iot_rules_assume.json
 }
 
 data "aws_iam_policy_document" "iot_rules" {
-  statement {
-    sid       = "IngestFailedQueue"
-    effect    = "Allow"
-    actions   = ["sqs:SendMessage"]
-    resources = [aws_sqs_queue.ingest_failed.arn]
-  }
-
   # Second action of every rule (docs/features/ingest-history.md, criterion 5).
   statement {
     sid       = "HistoryQueue"
@@ -241,13 +195,8 @@ resource "aws_iot_topic_rule" "ingest" {
     use_base64 = false
   }
 
-  error_action {
-    sqs {
-      queue_url  = aws_sqs_queue.ingest_failed.id
-      role_arn   = aws_iam_role.iot_rules.arn
-      use_base64 = false
-    }
-  }
+  # No error_action (no failed-message queue, user's decision). If the Lambda action
+  # fails, the history action still runs, so the message is still kept in S3.
 
   depends_on = [aws_iam_role_policy.iot_rules]
 }

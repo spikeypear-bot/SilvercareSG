@@ -46,7 +46,9 @@ function from the same zip, each with its own role, log group, and failure handl
   - Invalid input: log the reason (without the data) and return without raising, so
     retries don't loop on a message that can never succeed.
   - Transient failures (throttling, timeouts): raise, so the platform retries.
-  - Async-invoked functions get an on-failure destination or DLQ in Terraform.
+  - Async-invoked functions get an on-failure destination or DLQ in Terraform, unless
+    the spec decides against it (the ingest functions have none). Anything that raises
+    alerts should have one: a dropped message there is a lost alert.
 - Use type hints. Keep functions small.
 
 ## API handlers

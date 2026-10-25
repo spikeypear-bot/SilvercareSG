@@ -66,17 +66,14 @@ Who does what:
    SELECT for all three: `*, topic(3) AS device_id, topic(4) AS message, timestamp() AS
    received_at`. "Reserved fields undefined" is
    `isUndefined(device_id) AND isUndefined(message) AND isUndefined(received_at)`.
-3. Every rule has an `error_action` that sends to the SQS queue
-   `silvercare-ingest-failed`, using an IAM role `silvercare-iot-rules` whose only
-   permission is `sqs:SendMessage` on that queue.
+3. No rule has an `error_action`, and there is no failed-message queue (user's
+   decision, 2026-10-25): failures are visible only in the Lambda logs, and the raw
+   message is still kept in S3 history (`ingest-history`).
 4. Each Lambda has an `aws_lambda_permission` allowing `iot.amazonaws.com` to invoke it,
    limited by `source_arn` to its own rule and `source_account` to the account.
 
-### Failed-message queue (Terraform)
-
-5. SQS standard queue `silvercare-ingest-failed`: SSE-SQS encryption, message retention
-   14 days (1,209,600 s), a queue policy that denies requests without TLS.
-6. Output `ingest_failed_queue_url`.
+5. *(Removed: failed-message queue.)*
+6. *(Removed: its output.)*
 
 ### Lambdas (Terraform)
 
@@ -94,22 +91,18 @@ Who does what:
      `dynamodb:LeadingKeys` = `DEVICE#*`
    - `logs:CreateLogStream` and `logs:PutLogEvents` on its own log group
      (`.../log-group:/aws/lambda/<function-name>:*`) only
-   - `sqs:SendMessage` on the `silvercare-ingest-failed` queue ARN only (on-failure
-     destination)
 
    Nothing else: no AWS managed policies (in particular not
    `AWSLambdaBasicExecutionRole`, which allows logs on every log group), no
    `logs:CreateLogGroup` (Terraform creates the group), no `UpdateItem`,
    `DeleteItem`, `Query`, `Scan`, or batch actions, no `*` in actions, and no `*`
    resources. No role is shared between functions.
-8a. The IoT rule role `silvercare-iot-rules` (criterion 3) is trusted only by
-    `iot.amazonaws.com` with `aws:SourceAccount = <account>`, and allows only
-    `sqs:SendMessage` on `silvercare-ingest-failed`. Invoking the Lambdas is granted
-    by the per-function `aws_lambda_permission` (criterion 4), not by this role.
+8a. The IoT rule role `silvercare-iot-rules` is created by `ingest-history` for the
+    history action. Invoking the Lambdas is granted by the per-function
+    `aws_lambda_permission` (criterion 4), not by a role.
 9. Each function has a log group `/aws/lambda/<function-name>` with 30-day retention.
-10. Each function has an async invoke config: `maximum_retry_attempts = 2`,
-    `maximum_event_age_in_seconds = 3600`, on-failure destination
-    `silvercare-ingest-failed`.
+10. No async invoke config: Lambda's defaults apply (2 automatic retries, then the
+    event is dropped and logged as an error).
 11. boto3 clients use the `adaptive` retry mode.
 
 ### Validation (shared)
@@ -252,8 +245,8 @@ come with the alerting feature (Open decision #2). All data is synthetic until t
   activity), falls, bed occupancy, and motion, linked to a device ID. The device ID is
   linked to a resident only in the registry, which this feature doesn't read.
 - Retention: the newest 5 per device and message type (write rule); Lambda logs 30
-  days (IDs and outcomes only); `silvercare-ingest-failed` keeps failed messages,
-  which can include full payloads, for 14 days.
+  days (IDs and outcomes only). No failed-message queue, so no payloads are kept
+  outside DynamoDB and S3 history.
 - Must not be logged or shown: payloads and any field values. Logs hold only
   `device_id`, `message`, `message_id`, outcome, and reason codes.
 
@@ -267,7 +260,6 @@ messages/month with the simulator running 24/7:
 - Lambda: 1.3M requests (1M free) ~US$0.06; compute inside the free tier
 - DynamoDB: inside the provisioned free tier, US$0
 - CloudWatch Logs: ~1 GB/month, inside the 5 GB free tier
-- SQS failed-message queue: near zero
 
 About **US$2/month** in total, US$0 when the simulator is stopped. No fixed fees.
 

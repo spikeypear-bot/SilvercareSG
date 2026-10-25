@@ -75,10 +75,6 @@ output "device_certificates" {
   sensitive   = true
 }
 
-output "ingest_failed_queue_url" {
-  description = "URL of the silvercare-ingest-failed SQS queue (failed IoT rule actions and Lambda invocations)."
-  value       = aws_sqs_queue.ingest_failed.url
-}
 
 output "history_queue_url" {
   description = "URL of the silvercare-history SQS queue (second action of every ingest IoT rule)."

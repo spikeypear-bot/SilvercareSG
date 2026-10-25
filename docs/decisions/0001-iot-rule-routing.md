@@ -53,13 +53,14 @@ every rule, second action ──► history queue (SQS) ── batches of up to 
 | `telemetry` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/+' WHERE topic(4) = 'vitals' OR topic(4) = 'motion' OR topic(4) = 'bed'` | Lambda `telemetry`; SQS `silvercare-history` |
 | `alert` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/fall'` | Lambda `fall-alert`; SQS `silvercare-history` |
 
-All rules use SQL version `2016-03-23`. Each has an `error_action` to a shared
-destination, which IoT uses only when an action itself fails (for example, the Lambda
-can't be invoked or the queue can't be reached). A message that a Lambda rejects as
-invalid never reaches the error action: the Lambda logs `device_id`, `message_id`, and
-the reason, and drops it. The raw message is still in S3 history. Lambdas invoked by
-IoT run asynchronously; one that still fails after Lambda's retries goes to an
-on-failure destination (an SQS dead-letter queue).
+All rules use SQL version `2016-03-23`. A message that a Lambda rejects as invalid is
+logged (`device_id`, `message_id`, reason) and dropped. Lambdas invoked by IoT run
+asynchronously and get Lambda's two automatic retries. There is no error action and no
+failed-message queue for the live path (decided 2026-10-25): a message whose Lambda
+keeps failing is dropped and shows only as an error in the logs, and the raw message is
+still in S3 history, because each rule action runs independently. Revisit this for
+`fall-alert` when it starts raising alerts, where a dropped message would be a lost
+fall alert.
 
 Responsibilities:
 

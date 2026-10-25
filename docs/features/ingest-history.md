@@ -54,10 +54,11 @@ Who does what:
 
 4. Each of the three rules (`silvercare_health`, `silvercare_telemetry`,
    `silvercare_alert`) gets a second action: `sqs` to `silvercare-history`, using the
-   existing `silvercare-iot-rules` role, `use_base64 = false`. SQL, the Lambda action,
-   and the error action don't change.
-5. The `silvercare-iot-rules` policy additionally allows `sqs:SendMessage` on
-   `silvercare-history` only. Its trust policy doesn't change.
+   `silvercare-iot-rules` role (created here, trusted only by `iot.amazonaws.com`
+   with `aws:SourceAccount` and `aws:SourceArn` on `rule/silvercare_*`),
+   `use_base64 = false`. SQL and the Lambda action don't change.
+5. The `silvercare-iot-rules` policy allows only `sqs:SendMessage` on
+   `silvercare-history`.
 
 ### Bucket (Terraform)
 

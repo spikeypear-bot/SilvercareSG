@@ -26,6 +26,10 @@ a wasted step. Newest first. Review these in the diff before committing.
   visibility timeout to 6 × the Lambda timeout, ignoring the 300 s batching window
   (iac-reviewer, medium). **Changed:** `.claude/skills/lambda-python/SKILL.md`: SQS
   trigger visibility timeout = 6 × timeout + batching window.
+- **Problem:** not a mistake: the user dropped the live path's failed-message queue,
+  which two skills required. **Changed:** `.claude/skills/lambda-python/SKILL.md` and
+  `.claude/skills/iot-metric/SKILL.md`: on-failure destinations and error actions are
+  the default unless a spec decides against it; anything raising alerts keeps one.
 
 ## 2026-10-24
 
