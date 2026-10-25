@@ -50,6 +50,9 @@ design lives in `docs/data-model.md`; Terraform implements it. Update the doc fi
   without TLS in the bucket policy.
 - Turn on versioning where losing an object matters. Add a lifecycle rule that matches
   the retention decision.
+- Telemetry reaches S3 through the history queue and `history` Lambda, not Firehose or
+  Kinesis (paid plan only; see the History path in
+  `docs/decisions/0001-iot-rule-routing.md`).
 - Frontend hosting buckets are covered by the `static-site` skill.
 
 ## Never

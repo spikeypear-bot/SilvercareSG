@@ -1,6 +1,7 @@
 # IoT metrics contract
 
-Status: **draft** (not yet approved; Open decision #1 in `CLAUDE.md` stays open until it is)
+Status: **approved** 2026-10-25. The offline timeout below stays *proposed* until the
+alerting rules are decided.
 
 The contract between devices and the backend. Devices, the simulator, the IoT topic
 rules, and the ingest Lambdas are all built from this file. Change it first.
@@ -85,8 +86,14 @@ below.
   can be wrong. If `ts` is more than 5 minutes off `received_at`, the message is still
   stored, and flagged `clock_skew: true`.
 - Payloads never contain names, NRIC numbers, addresses, or resident IDs.
+- Payloads must not contain `device_id`, `message`, or `received_at`. The IoT rules add
+  these (`device_id` and `message` from the topic, `received_at` from `timestamp()`), and
+  a message that already has any of them is dropped by the rule, so a device can't
+  claim to be another device.
 - Unknown fields are ignored. A missing required field, a wrong type, or an
-  out-of-range value rejects the message (it goes to the rule's error action).
+  out-of-range value rejects the message: the ingest Lambda logs `device_id`,
+  `message_id`, and the reason, and drops it. The raw message is still kept in S3
+  history (see `docs/decisions/0001-iot-rule-routing.md`).
 
 ### Versioning
 
@@ -264,6 +271,32 @@ component raises each one is in `docs/decisions/0001-iot-rule-routing.md`.
   `occupied: true` within N minutes, at night. Stronger when the wearable is not worn.
 - **Abnormal vitals:** `vitals` compared against **per-resident** thresholds (each
   resident has their own limits for heart rate, SpO2, and skin temperature).
+- **Critical vitals (device safety net):** a wearable `vitals_alert` event, sent at
+  once without waiting for the 60 s `vitals` message (below).
+
+### Planned: `wearable` → `vitals_alert`
+
+Decided 2026-10-25, built with the alerting feature: **not** in the v1 contract yet.
+Devices don't send it, the device policy doesn't allow its topic, and no rule routes
+it until then.
+
+An instant safety net alongside the cloud's per-resident check, for emergencies where
+waiting up to 60 s for the next `vitals` message is too slow. The limits are fixed and
+the same for every resident, because a device doesn't know who wears it:
+
+| Metric | Sends when |
+|---|---|
+| heart rate | below 45 or above 130 bpm |
+| SpO2 | below 88 % |
+
+- A reading must stay past the limit for **10 seconds** before the device sends, to
+  filter motion glitches. Skin temperature is not included (wrist temperature is
+  unreliable).
+- Sent once when the condition starts, then again every 5 minutes while it lasts.
+- Payload fields to be finalised in the alerting spec; expected: `metric`
+  (`hr_bpm` or `spo2_pct`), `value`, `limit`, `direction` (`below` or `above`),
+  `held_s`, plus the envelope.
+- The limits must be checked with a clinician before any real use.
 - **Device problems:** device offline, low battery, wearable not worn for a long time.
 
 ## Volume

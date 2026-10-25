@@ -11,6 +11,10 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
 - Root config lives in `infra/` (CI runs from there). Reusable modules go in
   `infra/modules/` (see the `tf-module` skill). `infra/bootstrap/` is applied by hand only.
 - Serverless only. No EC2, NAT Gateway, provisioned RDS, or other fixed-cost resources.
+- The account is on AWS's free plan, which blocks some services until it is upgraded
+  (e.g. Data Firehose, Kinesis, End User Messaging SMS). Before proposing a service not
+  already in `infra/`, check it under "Free Tier" in
+  https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html.
 - Region: ap-southeast-1
 - Encrypt every data store at rest (KMS or AWS-managed keys) and enforce TLS in transit.
 - IAM: follow the `iam-policy` skill (one role per Lambda, no `*` actions or resources).
