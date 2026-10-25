@@ -21,7 +21,7 @@ jobs:
       # Prints only file paths, never file contents.
       - name: No private keys in the repo
         run: |
-          found=$( { git ls-files -- 'devices/keys/*'; git grep -lI -E -e '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' || true; } | sort -u)
+          found=$( { git ls-files -- 'secrets/*' 'devices/keys/*'; git grep -lI -E -e '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' || true; } | sort -u)
           if [ -n "$found" ]; then
             echo "::error::Private key files are tracked by git. Remove them and replace the keys:"
             echo "$found"

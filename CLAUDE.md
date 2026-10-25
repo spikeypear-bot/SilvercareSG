@@ -74,7 +74,9 @@ infra/               all Terraform
   devices/           devices.json (the device list) and csr/<id>.csr (committed)
 devices/
   AmazonRootCA1.pem  Amazon's public root CA (committed)
-  keys/              device private keys and certs: git-ignored, never committed
+secrets/             git-ignored, never committed; developers share it privately
+  device-keys/       device private keys and certs
+  .env               frontend config (Vite's envDir)
 scripts/             developer scripts (device keys, smoke test); tests in scripts/tests/
 lambdas/<name>/
   src/handler.py     entry point: lambda_handler(event, context); a folder may hold
@@ -179,7 +181,7 @@ under Singapore's PDPA. Treat it accordingly:
   - reviewers (read-only): `iac-reviewer`, `privacy-reviewer`
 - `.claude/hooks/guard.sh` blocks `git commit`/`push`, the `aws` CLI, Terraform commands
   that change infrastructure or state, anything touching `~/.aws`, and anything touching
-  device private keys (`devices/keys/`, `make device-keys|device-certs|smoke-test`).
+  device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test`).
   `.claude/hooks/format.sh` formats edited files.
 - `.claude/settings.json` hides AWS credentials from Claude (`AWS_SHARED_CREDENTIALS_FILE`
   and `AWS_CONFIG_FILE` are `/dev/null`), so Claude and its agents can't reach the real

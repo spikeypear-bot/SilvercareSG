@@ -1,5 +1,30 @@
 Silvercare monitoring system
 
+## Local secrets
+
+Everything private to your machine lives in one git-ignored folder, `secrets/`, which
+the Makefile and the frontend read from:
+
+```
+secrets/
+  device-keys/   device private keys, certificates, certificates.json
+  .env           frontend config (copy frontend/.env.example and fill it in)
+```
+
+To give another developer a working setup, send them the whole `secrets/` folder
+over a private channel (not a public chat, an issue, or the repo), and they put it at the
+repo root. The private keys let anyone connect as those devices, so treat the folder like
+a password.
+
+**Moving from the old layout** (keys in `devices/keys/`, env in `frontend/.env.local`),
+once, from the repo root:
+
+```sh
+mkdir -p secrets
+mv devices/keys secrets/device-keys
+mv frontend/.env.local secrets/.env
+```
+
 ## IoT devices
 
 Every device (`wearable-0001`…`wearable-0020`, `bedroom-0001`…`bedroom-0020`) is an
@@ -7,10 +32,10 @@ AWS IoT thing with its own X.509 certificate, and connects over MQTT with mutual
 The device list is `infra/devices/devices.json`; the feature spec is
 `docs/features/iot-core.md`.
 
-Each device's **private key** stays on your machine in `devices/keys/`. That folder is
-git-ignored and must never be committed (CI fails if a private key is tracked). Only
-the CSRs in `infra/devices/csr/` are committed. Terraform sends them to AWS, which signs
-the certificates.
+Each device's **private key** stays on your machine in `secrets/device-keys/` (see Local
+secrets). That folder is git-ignored and must never be committed (CI fails if a private
+key is tracked). Only the CSRs in `infra/devices/csr/` are committed. Terraform sends
+them to AWS, which signs the certificates.
 
 Run these yourself. Claude is blocked from the key targets.
 
@@ -29,7 +54,7 @@ Run these yourself. Claude is blocked from the key targets.
    ```
 
 3. Commit `infra/devices/` and `devices/AmazonRootCA1.pem` on a branch and open a PR.
-   `git status` must not show anything under `devices/keys/`. The plan comment should
+   `git status` must not show anything under `secrets/device-keys/`. The plan comment should
    list only creates: thing types, things, thing groups and memberships, certificates,
    policies, and attachments.
 4. Merge. The deploy creates the things and certificates.
@@ -52,7 +77,7 @@ Then:
 ```sh
 terraform init
 terraform output -raw iot_endpoint
-terraform output -json device_certificates > ../devices/keys/certificates.json
+terraform output -json device_certificates > ../secrets/device-keys/certificates.json
 cd .. && make device-certs
 make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint)
 ```
@@ -90,7 +115,7 @@ in the S3 history bucket, which is written in batches of up to 5 minutes. Leave 
 - **Add:** add an entry to `infra/devices/devices.json`, run
   `make device-keys DEVICE=<id>`, then commit the new CSR and merge.
 - **Remove:** delete the entry and its CSR, merge, then delete its files in
-  `devices/keys/`.
-- **Replace a lost or leaked key:** delete `devices/keys/<id>.key` and
+  `secrets/device-keys/`.
+- **Replace a lost or leaked key:** delete `secrets/device-keys/<id>.key` and
   `infra/devices/csr/<id>.csr`, run `make device-keys DEVICE=<id>`, commit the new CSR,
   and merge. The plan shows that device's certificate as replaced, which is expected.

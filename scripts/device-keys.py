@@ -3,7 +3,7 @@
 Run with `make device-keys [DEVICE=<id>]` in the dev container. Needs no AWS access.
 
 For each device in infra/devices/devices.json:
-  - no key at devices/keys/<id>.key: create an EC P-256 key (mode 0600) and a CSR at
+  - no key at secrets/device-keys/<id>.key: create an EC P-256 key (mode 0600) and a CSR at
     infra/devices/csr/<id>.csr with subject CN=<id>
   - key but no CSR: recreate the CSR from the existing key
   - both exist: skip
@@ -28,7 +28,7 @@ from cryptography.x509.oid import NameOID
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DEVICES_FILE = REPO_ROOT / "infra" / "devices" / "devices.json"
-DEFAULT_KEYS_DIR = REPO_ROOT / "devices" / "keys"
+DEFAULT_KEYS_DIR = REPO_ROOT / "secrets" / "device-keys"
 DEFAULT_CSR_DIR = REPO_ROOT / "infra" / "devices" / "csr"
 
 DEVICE_ID_RE = re.compile(r"^(wearable|bedroom)-[0-9]{4}$")

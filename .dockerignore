@@ -2,4 +2,5 @@
 *
 !requirements-dev.txt
 # Never send device private keys to the Docker build context (already excluded by *).
+secrets/
 devices/keys/

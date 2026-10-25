@@ -22,5 +22,7 @@ __pycache__/
 .claude/settings.local.json
 CLAUDE.local.md
 
-# IoT device private keys and certificates (docs/features/iot-core.md). Never commit.
+# Local secrets: device private keys and certificates (docs/features/iot-core.md) and the
+# frontend .env. Never commit. devices/keys/ is where the keys used to live.
+secrets/
 devices/keys/

@@ -14,6 +14,10 @@ DEVICE ?=
 ENDPOINT ?=
 JOB ?=
 INGEST ?=
+# Local secrets (device keys and certs, the frontend .env), git-ignored. Share this one
+# folder privately with other developers (README.md, Sharing local secrets).
+SECRETS_DIR := secrets
+KEYS_DIR := $(SECRETS_DIR)/device-keys
 
 .PHONY: help build up down shell test test-integration lint fmt tf-check check device-keys device-certs smoke-test
 
@@ -52,12 +56,12 @@ tf-check: ## Terraform fmt check, validate, tflint, checkov (no AWS credentials 
 check: test lint tf-check ## Everything above except integration tests
 
 # IoT device targets (docs/features/iot-core.md). The developer runs these, not Claude:
-# they read or write the private keys in devices/keys/.
+# they read or write the private keys in $(KEYS_DIR)/.
 device-keys: ## Create missing device keys + CSRs: make device-keys [DEVICE=<id>]
-	$(DEV) python scripts/device-keys.py $(if $(DEVICE),--device $(DEVICE))
+	$(DEV) python scripts/device-keys.py --keys-dir $(KEYS_DIR) $(if $(DEVICE),--device $(DEVICE))
 
-device-certs: ## Write devices/keys/<id>.crt from devices/keys/certificates.json
-	$(DEV) python scripts/device-certs.py
+device-certs: ## Write secrets/device-keys/<id>.crt from secrets/device-keys/certificates.json
+	$(DEV) python scripts/device-certs.py --keys-dir $(KEYS_DIR)
 
 smoke-test: ## Test a device against AWS IoT: make smoke-test DEVICE=<id> ENDPOINT=<host> [JOB=1] [INGEST=1]
-	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) $(if $(JOB),--job) $(if $(INGEST),--ingest)
+	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) --keys-dir $(KEYS_DIR) $(if $(JOB),--job) $(if $(INGEST),--ingest)

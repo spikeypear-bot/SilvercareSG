@@ -42,7 +42,7 @@ import paho.mqtt.client as mqtt
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CA_FILE = REPO_ROOT / "devices" / "AmazonRootCA1.pem"
-DEFAULT_KEYS_DIR = REPO_ROOT / "devices" / "keys"
+DEFAULT_KEYS_DIR = REPO_ROOT / "secrets" / "device-keys"
 
 PORT = 8883
 TIMEOUT_S = 10.0

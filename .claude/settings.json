@@ -39,7 +39,9 @@
       "Read(~/.aws/**)",
       "Edit(~/.aws/**)",
       "Read(devices/keys/**)",
-      "Edit(devices/keys/**)"
+      "Edit(devices/keys/**)",
+      "Read(secrets/**)",
+      "Edit(secrets/**)"
     ]
   },
   "hooks": {
