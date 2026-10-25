@@ -46,6 +46,9 @@ DEFAULT_KEYS_DIR = REPO_ROOT / "secrets" / "device-keys"
 
 PORT = 8883
 TIMEOUT_S = 10.0
+# AWS IoT Core allows one connect per second per client ID and drops faster reconnects.
+# Every check opens a new connection with the same client ID, so wait between them.
+RECONNECT_PAUSE_S = 1.5
 SCHEMA_VERSION = 1
 FW_VERSION = "1.0.0"
 
@@ -342,11 +345,17 @@ class Connection:
         return "closed" if self.closed else "timeout"
 
     def close(self) -> None:
-        """Best-effort clean disconnect, so the next check starts fresh."""
+        """Best-effort clean disconnect, so the next check starts fresh.
+
+        After a successful connection, waits RECONNECT_PAUSE_S: the next check usually
+        reconnects with the same client ID, and AWS IoT drops a reconnect within 1 s.
+        """
         with contextlib.suppress(OSError, ValueError):
             if self.connected and not self.closed:
                 self.client.disconnect()
                 self.client.loop(timeout=0.2)
+        if self.connected:
+            time.sleep(RECONNECT_PAUSE_S)
 
 
 def run_checks(

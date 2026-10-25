@@ -5,6 +5,10 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-10-25
 
+- **Problem:** `make smoke-test` failed "publish status to own topic" against real AWS:
+  each check reconnected as the same client ID within a second, and AWS IoT dropped the
+  connection (the user's single-connection test got a PUBACK). **Changed:**
+  `.claude/skills/iot-metric/SKILL.md`: device-side code waits 1 s between reconnects.
 - **Problem:** Claude recommended Data Firehose for the S3 history path, then had to
   retract: Firehose and Kinesis are paid-plan only on AWS free-plan accounts.
   **Changed:** `.claude/skills/tf-change/SKILL.md` (check free-plan availability before
