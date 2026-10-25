@@ -13,6 +13,7 @@ FN ?=
 DEVICE ?=
 ENDPOINT ?=
 JOB ?=
+INGEST ?=
 
 .PHONY: help build up down shell test test-integration lint fmt tf-check check device-keys device-certs smoke-test
 
@@ -58,5 +59,5 @@ device-keys: ## Create missing device keys + CSRs: make device-keys [DEVICE=<id>
 device-certs: ## Write devices/keys/<id>.crt from devices/keys/certificates.json
 	$(DEV) python scripts/device-certs.py
 
-smoke-test: ## Test a device against AWS IoT: make smoke-test DEVICE=<id> ENDPOINT=<host> [JOB=1]
-	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) $(if $(JOB),--job)
+smoke-test: ## Test a device against AWS IoT: make smoke-test DEVICE=<id> ENDPOINT=<host> [JOB=1] [INGEST=1]
+	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) $(if $(JOB),--job) $(if $(INGEST),--ingest)

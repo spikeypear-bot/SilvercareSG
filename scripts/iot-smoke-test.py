@@ -11,8 +11,16 @@ Each check runs on a fresh connection:
   4. publish a message type the device type may not send   -> broker closes connection
   5. connect with a client ID that isn't <id>              -> refused or closed
 
-Prints only check names and PASS / FAIL, never payloads, keys, or certificates. Exits 0
-only if every check passes.
+With --ingest (docs/features/ingest-live.md), after those checks pass it also
+publishes, on one more connection as the device: one valid synthetic message of each
+type the device may send, the first of them again (a duplicate), and one invalid
+message (wearable: vitals with hr_bpm 999; bedroom: bed with occupied "yes"). It then
+prints the message IDs and the scripts/ingest-check.py command that checks they were
+stored, plus its --history variant that also checks the S3 history
+(docs/features/ingest-history.md). Those steps need AWS credentials and run on the host.
+
+Prints only check names, PASS / FAIL, and message IDs, never payloads, keys, or
+certificates. Exits 0 only if every check passes.
 """
 
 from __future__ import annotations
@@ -57,6 +65,18 @@ CHECK_PUBLISH = "2 publish status to own topic (PUBACK)"
 CHECK_OTHER_DEVICE = "3 publish to another device's topic is refused"
 CHECK_DISALLOWED = "4 publish a disallowed message type is refused"
 CHECK_OTHER_CLIENT_ID = "5 connect with another client ID is refused"
+CHECK_INGEST = "6 publish ingest test messages (PUBACK for each)"
+
+# Fall accel_window shape (docs/metrics.md): 25 Hz, 1 s before to 1 s after impact.
+FALL_WINDOW_HZ = 25
+FALL_WINDOW_START_OFFSET_MS = -1000
+FALL_WINDOW_SAMPLES = 50
+
+# The invalid message per device type: (message type, field, invalid value).
+INVALID_INGEST = {
+    "wearable": ("vitals", "hr_bpm", 999),
+    "bedroom": ("bed", "occupied", "yes"),
+}
 
 
 # ---- pure helpers (unit tested, no network) ----
@@ -126,6 +146,113 @@ def build_status_payload(
     else:
         raise ValueError("device type must be wearable or bedroom")
     return payload
+
+
+def build_message_payload(
+    dtype: str, message: str, now: datetime | None = None, message_id: str | None = None
+) -> dict:
+    """A valid synthetic message of any type the device type may send (docs/metrics.md)."""
+    if message not in ALLOWED_MESSAGES.get(dtype, ()):
+        raise ValueError(f"{dtype} devices don't send {message}")
+    if message == "status":
+        return build_status_payload(dtype, now, message_id)
+    payload = build_envelope(now, message_id)
+    if message == "vitals":
+        payload.update(
+            {
+                "hr_bpm": 72,
+                "spo2_pct": 97,
+                "skin_temp_c": 33.4,
+                "activity_pct": 12,
+                "accel_g": {"x": 0.02, "y": -0.11, "z": 0.99},
+            }
+        )
+    elif message == "fall":
+        payload.update(
+            {
+                "confidence": 0.91,
+                "peak_g": 3.8,
+                "still_s": 20,
+                "accel_window": {
+                    "hz": FALL_WINDOW_HZ,
+                    "start_offset_ms": FALL_WINDOW_START_OFFSET_MS,
+                    "samples": [[0.01, -0.1, 0.99]] * FALL_WINDOW_SAMPLES,
+                },
+            }
+        )
+    elif message == "motion":
+        payload["motion"] = True
+    elif message == "bed":
+        payload["occupied"] = False
+    return payload
+
+
+def build_ingest_messages(
+    dtype: str,
+    now: datetime | None = None,
+    new_id: Callable[[], str] | None = None,
+) -> list[tuple[str, str, dict]]:
+    """The --ingest messages in send order, as (kind, message type, payload).
+
+    kind is valid, duplicate, or invalid: one valid message per allowed type, the
+    first valid one again, then one message that fails validation.
+    """
+    if dtype not in ALLOWED_MESSAGES:
+        raise ValueError("device type must be wearable or bedroom")
+    new_id = new_id or (lambda: str(uuid.uuid4()))
+    now = now or datetime.now(UTC)
+    valid = [
+        ("valid", message, build_message_payload(dtype, message, now, new_id()))
+        for message in ALLOWED_MESSAGES[dtype]
+    ]
+    _, first_message, first_payload = valid[0]
+    duplicate = ("duplicate", first_message, dict(first_payload))
+    invalid_message, field, value = INVALID_INGEST[dtype]
+    invalid_payload = build_message_payload(dtype, invalid_message, now, new_id())
+    invalid_payload[field] = value
+    return [*valid, duplicate, ("invalid", invalid_message, invalid_payload)]
+
+
+def ingest_check_command(
+    device_id: str,
+    valid_ids: Iterable[str],
+    invalid_ids: Iterable[str],
+    history: bool = False,
+) -> str:
+    """The command that checks the --ingest messages were stored (run on the host).
+
+    With history=True, the variant that also checks the S3 history.
+    """
+    return (
+        f"python scripts/ingest-check.py --device {device_id}"
+        f" --message-ids {','.join(valid_ids)}"
+        f" --invalid-ids {','.join(invalid_ids)}"
+        f"{' --history' if history else ''}"
+    )
+
+
+def report_ingest(
+    device_id: str, messages: list[tuple[str, str, dict]], out: TextIO | None = None
+) -> None:
+    """Print the sent message IDs (no other fields) and the next step."""
+    out = out or sys.stdout
+    print("Ingest messages sent:", file=out)
+    for kind, message, payload in messages:
+        print(f"  {kind:<9}  {message:<6}  {payload['message_id']}", file=out)
+    valid_ids = [p["message_id"] for k, _, p in messages if k == "valid"]
+    invalid_ids = [p["message_id"] for k, _, p in messages if k == "invalid"]
+    # The plain command stays the last line (scripts and tests read it from there).
+    print(
+        "Next, on the host with your AWS credentials, check silvercare-latest and"
+        " the S3 history (takes up to 7 minutes):",
+        file=out,
+    )
+    print(
+        f"  {ingest_check_command(device_id, valid_ids, invalid_ids, history=True)}",
+        file=out,
+    )
+    print("or silvercare-latest only:", file=out)
+    print(f"  {ingest_check_command(device_id, valid_ids, invalid_ids)}", file=out)
 
 
 def encode_payload(payload: dict) -> bytes:
@@ -283,6 +410,26 @@ def run_checks(
     ]
 
 
+def run_ingest(
+    device_id: str,
+    endpoint: str,
+    tls: dict[str, str],
+    messages: list[tuple[str, str, dict]],
+) -> bool:
+    """Publish the --ingest messages in order on one connection. True if all got PUBACK."""
+    conn = Connection(endpoint, device_id, tls)
+    try:
+        if conn.connect() != "connected":
+            return False
+        for _, message, payload in messages:
+            topic = build_topic(device_id, message)
+            if conn.publish(topic, encode_payload(payload)) != "puback":
+                return False
+        return True
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Smoke test one device against AWS IoT Core."
@@ -295,6 +442,11 @@ def main(argv: list[str] | None = None) -> int:
         "--job",
         action="store_true",
         help="reserved for the ota-updates jobs check (not available yet)",
+    )
+    parser.add_argument(
+        "--ingest",
+        action="store_true",
+        help="after the checks, publish ingest test messages and print the ingest-check command",
     )
     parser.add_argument("--ca-file", type=Path, default=DEFAULT_CA_FILE)
     parser.add_argument("--keys-dir", type=Path, default=DEFAULT_KEYS_DIR)
@@ -330,10 +482,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    results = run_checks(
-        args.device, args.endpoint, {k: str(v) for k, v in tls.items()}
-    )
-    return report(results)
+    tls_paths = {k: str(v) for k, v in tls.items()}
+    results = run_checks(args.device, args.endpoint, tls_paths)
+    if not args.ingest:
+        return report(results)
+
+    if not all(passed for _, passed in results):
+        print("Skipping the ingest messages: an earlier check failed.", file=sys.stderr)
+        return report([*results, (CHECK_INGEST, False)])
+    messages = build_ingest_messages(device_type(args.device))
+    published = run_ingest(args.device, args.endpoint, tls_paths, messages)
+    code = report([*results, (CHECK_INGEST, published)])
+    if published:
+        report_ingest(args.device, messages)
+    return code
 
 
 if __name__ == "__main__":

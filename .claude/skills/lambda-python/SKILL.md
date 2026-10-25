@@ -20,6 +20,10 @@ lambdas/<name>/
 `<name>` is kebab-case and describes the job: `ingest-vitals`, `api-residents`,
 `check-inactivity`.
 
+Functions that share most of their code may share one folder (e.g. `lambdas/ingest/`):
+`handler.py` then has one named entry point per function, and Terraform builds every
+function from the same zip, each with its own role, log group, and failure handling.
+
 ## Handler rules
 
 - Runtime `python3.13`. Dependencies: standard library, `boto3` (in the runtime), and
@@ -33,7 +37,9 @@ lambdas/<name>/
 - **Validate input at the boundary.** IoT payloads are checked against `docs/metrics.md`,
   API bodies against the route's expected shape. Reject unknown fields and versions.
 - **Logging:** Powertools `Logger(service="<name>")`. Log IDs, event types, counts, and
-  outcomes. Never log payload bodies, names, contact details, or health values.
+  outcomes. Never log payload bodies, names, contact details, or health values. An ID
+  that comes from the payload (e.g. `message_id`) is logged only if it matches its
+  expected format, otherwise as `invalid`: a free-text "ID" can carry health data.
 - **Idempotency:** IoT Core and async Lambda invocations retry and can deliver
   duplicates. Writes use deterministic keys or condition expressions.
 - **Errors:**
@@ -59,6 +65,9 @@ Follow `tf-change` and `iam-policy`. Each function gets:
 - its own IAM role with only the actions the code uses
 - `aws_cloudwatch_log_group` named `/aws/lambda/<function-name>` with a retention period
 - `aws_lambda_permission` for whatever invokes it (IoT, API Gateway, EventBridge)
+- for an SQS trigger: the queue's visibility timeout is at least 6 × the function
+  timeout **plus** `maximum_batching_window_in_seconds`, or messages are redelivered
+  while still in flight and reach the DLQ without ever failing
 
 Once two functions exist, put this in a `python-lambda` module (see `tf-module`).
 

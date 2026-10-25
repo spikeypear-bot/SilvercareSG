@@ -57,7 +57,33 @@ cd .. && make device-certs
 make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint)
 ```
 
-Every check should print `PASS`. Published messages aren't stored anywhere yet.
+Every check should print `PASS`.
+
+### Checking ingest
+
+Checks that messages reach the `silvercare-latest` table (`docs/features/ingest-live.md`).
+The second step reads DynamoDB, so it runs on your machine with your own AWS
+credentials, not in the dev container. Once, install its requirements on the host:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
+```
+
+Then publish synthetic test messages as a device, and check them:
+
+```sh
+make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) INGEST=1
+# copy the ingest-check command it prints, and run it with the venv's Python:
+.venv/bin/python scripts/ingest-check.py --device wearable-0001 --message-ids ... --invalid-ids ... --history
+```
+
+It prints `PASS` when every valid message is stored exactly once in `silvercare-latest`
+and the invalid one isn't. With `--history` (the first command the smoke test prints),
+it then waits up to 7 minutes for all the messages, the invalid one included, to appear
+in the S3 history bucket, which is written in batches of up to 5 minutes. Leave out
+`--history` to check only the live table. If it prints `FAIL`, look at the Lambda logs (`/aws/lambda/silvercare-*`) and the
+`silvercare-ingest-failed` queue in the console; for history, the
+`/aws/lambda/silvercare-history` logs and the `silvercare-history-dlq` queue.
 
 ### Adding, removing, or replacing a device
 

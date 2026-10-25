@@ -3,6 +3,30 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-10-25
+
+- **Problem:** Claude recommended Data Firehose for the S3 history path, then had to
+  retract: Firehose and Kinesis are paid-plan only on AWS free-plan accounts.
+  **Changed:** `.claude/skills/tf-change/SKILL.md` (check free-plan availability before
+  proposing a new service) and `.claude/skills/data-model/SKILL.md` (telemetry goes to
+  S3 through the history queue and Lambda).
+- **Problem:** in `ingest-live`, the handler logged any string a device sent as
+  `message_id`, before validation (privacy-reviewer, low). **Changed:**
+  `.claude/skills/lambda-python/SKILL.md`: payload IDs are logged only if they match
+  their format, otherwise as `invalid`.
+- **Problem:** the `silvercare-iot-rules` trust policy had `aws:SourceAccount` but no
+  `aws:SourceArn`, because the spec named only one (iac-reviewer, low). **Changed:**
+  `.claude/skills/iam-policy/SKILL.md`: IoT rule roles get both, with the
+  `rule/silvercare_*` pattern, whatever the spec lists.
+- **Problem:** the `ingest-live` spec (written by Claude) put `aws:SourceAccount` on the
+  Lambda execution roles, which AWS doesn't document for Lambda; an unsupported key
+  would make creating the functions fail. Removed after the user agreed. **Changed:**
+  `.claude/skills/iam-policy/SKILL.md`: Lambda execution roles have no trust conditions.
+- **Problem:** the `ingest-history` spec (written by Claude) set the history queue's
+  visibility timeout to 6 × the Lambda timeout, ignoring the 300 s batching window
+  (iac-reviewer, medium). **Changed:** `.claude/skills/lambda-python/SKILL.md`: SQS
+  trigger visibility timeout = 6 × timeout + batching window.
+
 ## 2026-10-24
 
 - **Problem:** the `iot-core` README told the user to run `terraform output` on their

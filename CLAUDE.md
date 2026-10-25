@@ -35,7 +35,8 @@ structure, not code that exists yet. Update this file as decisions land.
   not create or change resources by hand in the console or with ad-hoc CLI calls.
 - **Device ingestion:** AWS IoT Core over MQTT. Devices publish to topics, IoT Rules route
   messages to Lambda (and/or directly to storage). The metrics contract (topics, payloads,
-  rates) is in `docs/metrics.md` *(planned)*.
+  rates) is in `docs/metrics.md` (approved 2026-10-25); how the rules route messages is
+  in `docs/decisions/0001-iot-rule-routing.md`.
 - **Compute:** AWS Lambda, Python (`python3.13` runtime).
 - **API:** API Gateway HTTP API → Lambda, protected by a Cognito JWT authorizer.
 - **Database:** DynamoDB for live state only: the device registry, the latest 5
@@ -43,7 +44,10 @@ structure, not code that exists yet. Update this file as decisions land.
   limits inside the always-free tier (25 RCU / 25 WCU across all tables and indexes),
   no auto scaling. Tables, keys, and access patterns are in `docs/data-model.md`.
 - **History and analytics:** every telemetry message and alert also goes to S3 for
-  analysis; the data is cleaned later with AWS Lake Formation. Design to follow.
+  analysis; the data is cleaned later with AWS Lake Formation. Each IoT rule also sends
+  messages to an SQS queue, and a `history` Lambda writes them to S3 in 5-minute
+  batches (`docs/decisions/0001-iot-rule-routing.md`, History path). Firehose and
+  Kinesis are not used: they need AWS's paid plan.
 - **Budget:** the AWS account is on the free plan with about US$120 of credits that
   must last until the project ends (end of November 2026). Prefer always-free options,
   and state the cost of any new service before adding it.
@@ -73,7 +77,9 @@ devices/
   keys/              device private keys and certs: git-ignored, never committed
 scripts/             developer scripts (device keys, smoke test); tests in scripts/tests/
 lambdas/<name>/
-  src/handler.py     entry point: lambda_handler(event, context)
+  src/handler.py     entry point: lambda_handler(event, context); a folder may hold
+                     several functions that share code (e.g. lambdas/ingest/), each
+                     with its own entry point in handler.py
   tests/             pytest tests for this function
 frontend/            the React app
 docs/metrics.md      IoT metrics contract
@@ -187,13 +193,13 @@ under Singapore's PDPA. Treat it accordingly:
 
 ## Open decisions
 
-Record the outcome here (and remove the item) once decided.
+Record the outcome here (and remove the item) once decided. Numbers stay fixed because
+other docs refer to them (#1, the metrics contract, was approved 2026-10-25).
 
-1. **IoT metrics contract:** which sensors exist, which metrics each sends, units, sample
-   rate, MQTT topic structure, and payload format. Decide this first, because the
-   DynamoDB table design depends on it.
 2. **Alerting rules:** which conditions trigger alerts (e.g. fall, inactivity, abnormal
-   vitals) and how alerts are delivered (push, SMS, email).
+   vitals) and how alerts are delivered (push, SMS, email). (Decided: wearables also
+   send an instant `vitals_alert` for heart rate <45 or >130 bpm or SpO2 <88 % held
+   10 s, on top of the cloud's per-resident check; see `docs/metrics.md`.)
 3. **User onboarding:** how caregivers/family are linked to residents. (Decided: accounts
    are created by an admin only, no self sign-up.)
 4. **Data retention:** how long history in S3, resolved alerts in DynamoDB, and user

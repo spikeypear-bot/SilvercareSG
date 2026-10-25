@@ -74,3 +74,23 @@ output "device_certificates" {
   value       = module.iot_devices.device_certificates
   sensitive   = true
 }
+
+output "ingest_failed_queue_url" {
+  description = "URL of the silvercare-ingest-failed SQS queue (failed IoT rule actions and Lambda invocations)."
+  value       = aws_sqs_queue.ingest_failed.url
+}
+
+output "history_queue_url" {
+  description = "URL of the silvercare-history SQS queue (second action of every ingest IoT rule)."
+  value       = aws_sqs_queue.history.url
+}
+
+output "history_dlq_url" {
+  description = "URL of the silvercare-history-dlq SQS queue (history messages that failed 5 receives)."
+  value       = aws_sqs_queue.history_dlq.url
+}
+
+output "history_bucket_name" {
+  description = "Name of the S3 bucket holding the telemetry history (gzipped JSON Lines under telemetry/)."
+  value       = aws_s3_bucket.history.bucket
+}

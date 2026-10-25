@@ -1,11 +1,18 @@
 # Data model
 
-Status: **draft** (not yet approved)
+Status: **approved** 2026-10-25, except the parts marked *(proposed)*, which are decided
+with the resident pages feature:
+
+- resident profile fields beyond `display_name` and `home_id`: `year_of_birth`,
+  `medical_notes`, `emergency_contacts`, `photo_key`
+- [Photos](#photos) (patterns 19 and 20)
+- what caregiver and family users see (the first paragraph of
+  [Access patterns](#access-patterns))
 
 DynamoDB holds the **live state** the portal and the backend Lambdas read: the device
 registry, the latest 5 messages per device and message type, and alerts. It does not
-keep history. Every message and alert also goes to S3 for analysis; that design is
-separate and not in this doc.
+keep history. Every message and alert also goes to S3 for analysis; see
+[S3 history](#s3-history).
 
 Built from `docs/metrics.md` and `docs/decisions/0001-iot-rule-routing.md`. Change this
 doc first, then the Terraform.
@@ -38,7 +45,7 @@ Cognito `sub`), never names or other personal data.
 
 ## Access patterns
 
-What each role sees: caregiver and family see the same things for the residents they
+*(proposed)* What each role sees: caregiver and family see the same things for the residents they
 are linked to, including raw vitals, alert `details`, and which staff member
 acknowledged or resolved an alert. The API turns `acknowledged_by` / `resolved_by`
 (staff `sub`) into the staff member's name from Cognito; the `sub` itself is not
@@ -79,6 +86,8 @@ No pattern uses `Scan`.
 Low traffic: written by staff and the seed script, read by everything else.
 
 ### Resident profile
+
+*(proposed: fields beyond `display_name` and `home_id`)*
 
 Visible to staff and to every caregiver and family member linked to the resident.
 Only staff can edit it.
@@ -169,6 +178,8 @@ Lambdas never log names.
 | `by-resident` | `gsi1_pk` | `gsi1_sk` | INCLUDE `device_type`, `relationship` | 10, 15 |
 
 ## Photos
+
+*(proposed)*
 
 Resident photos are images, so they go in S3 rather than DynamoDB.
 
@@ -329,6 +340,37 @@ fields as the item, so `alert_id` is computed once, by the detector.
 `sk` starts with the event time, so the index sorts open alerts by time across all
 residents.
 
+## S3 history
+
+Every device message, as received, for later cleaning and analysis with Lake Formation
+and Athena (docs/features/ingest-history.md; the History path in
+[`docs/decisions/0001-iot-rule-routing.md`](decisions/0001-iot-rule-routing.md#history-path)).
+
+- **Bucket** `silvercare-history-<account_id>` in `ap-southeast-1`: all public access
+  blocked, `BucketOwnerEnforced`, SSE-S3, TLS-only bucket policy. Versioning **off**,
+  so a delete really deletes (e.g. for a PDPA erasure request). One lifecycle rule:
+  abort incomplete multipart uploads after 1 day. No expiry until Open decision #4
+  (retention).
+- **Key layout:**
+  `telemetry/message=<message>/date=<yyyy-mm-dd>/<yyyymmddTHHMMSSZ>-<uuid4>.jsonl.gz`.
+  `<message>` is the body's `message` if it matches `^[a-z]{1,16}$`, else `unknown`;
+  bodies that aren't a JSON object go to `unparseable`. `<date>` is the UTC date of
+  `received_at` (else the SQS sent time). The timestamp is when the file was written;
+  the UUID is random, so keys hold no device or resident IDs. `alerts/` is reserved for
+  `alert-processor` (not built yet).
+- **Format:** gzip-compressed JSON Lines (`Content-Type: application/gzip`, no
+  `Content-Encoding`), UTF-8, one compact JSON object per line in the order received,
+  ending with a newline. Each line is the IoT rule's output (device payload plus
+  `device_id`, `message`, `received_at`), stored as received: invalid messages are
+  kept, and a redelivered batch can store a message twice (duplicates are removed later
+  by `message_id`). Unparseable bodies are stored as `{"raw_body": "<body>"}`.
+- **Writer:** the `history` Lambda (`silvercare-history`), one file per message type and
+  UTC day per batch (up to 1,000 messages or 5 minutes) from the `silvercare-history`
+  queue. It may only add objects under `telemetry/`.
+- **Readers:** developers (the shared IAM user's `ReadProjectBuckets` statement; read
+  only, no write or delete), e.g. `scripts/ingest-check.py --history`. Lake Formation
+  and Athena later.
+
 ## Capacity
 
 Estimated load at 40 devices (from the volume table in `docs/metrics.md`). A write unit
@@ -386,7 +428,7 @@ which absorbs this, but only on a best-effort basis. So:
 | Open and acknowledged alerts | until resolved | — |
 | Resolved alerts | 30 days after `resolved_at` | TTL `expires_at` |
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
-| History | in S3 | separate design |
+| History (S3 `telemetry/`) | not decided (Open decision #4); kept until then | none yet (no expiry rule) |
 
 Point-in-time recovery keeps deleted and TTL-expired items restorable for up to 35
 days, so "deleted" data still exists in backups for that long.

@@ -1,0 +1,3 @@
+# Host-only requirements for developer scripts that call real AWS (scripts/ingest-check.py).
+# Same version as requirements-dev.txt.
+boto3==1.43.114

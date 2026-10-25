@@ -22,8 +22,12 @@ justified by something the code actually does.
   `PowerUserAccess`, `*FullAccess`). Small, specific managed policies are fine
   only if they grant nothing extra; prefer writing it out.
 - **Trust policies** name exactly one service principal
-  (`lambda.amazonaws.com`, `iot.amazonaws.com`). Add `aws:SourceAccount` /
-  `aws:SourceArn` conditions where the service supports them.
+  (`lambda.amazonaws.com`, `iot.amazonaws.com`). Lambda execution roles have no
+  conditions (AWS documents none for them). For other services, add `aws:SourceAccount` /
+  `aws:SourceArn` conditions where the service supports them. IoT rule roles get both:
+  `aws:SourceAccount` and `ArnLike` `aws:SourceArn` on `rule/silvercare_*` (a pattern,
+  because the rules depend on the role). A spec that names only one doesn't remove the
+  other.
 - **Logging:** grant `logs:CreateLogStream` and `logs:PutLogEvents` on the
   function's own log group ARN only. Create the log group in Terraform with a
   retention period so the role does not need `logs:CreateLogGroup`.
