@@ -103,7 +103,7 @@ Who does what:
 
 12. `scripts/device-keys.py`, run with `make device-keys` (in the dev container, no AWS
     access needed). For each device in `devices.json`:
-    - no key at `devices/keys/<id>.key`: creates an EC P-256 private key (file mode
+    - no key at `secrets/device-keys/<id>.key`: creates an EC P-256 private key (file mode
       `0600`) and a CSR at `infra/devices/csr/<id>.csr` with subject `CN=<id>`
     - key exists but no CSR: recreates the CSR from the existing key
     - both exist: does nothing
@@ -115,15 +115,17 @@ Who does what:
 16. Unit tests in `scripts/tests/` (run by `make test`) cover the three cases above,
     `--device` with an unknown ID, file mode `0600`, `CN=<id>` in the CSR, that the
     CSR's public key matches the key, and that output contains no `PRIVATE KEY` text.
-    Tests use a temporary directory, never `devices/keys/`.
+    Tests use a temporary directory, never `secrets/device-keys/`.
 
 ### Key safeguards
 
-17. `.gitignore` and `.dockerignore` both contain `devices/keys/`.
-18. `.claude/settings.json` denies `Read(devices/keys/**)` and `Edit(devices/keys/**)`.
-    `.claude/hooks/guard.sh` blocks Bash commands that contain `devices/keys`.
+17. `.gitignore` and `.dockerignore` both contain `secrets/` (and the old
+    `secrets/device-keys/`).
+18. `.claude/settings.json` denies `Read` and `Edit` on `secrets/**` (and the old
+    `secrets/device-keys/**`). `.claude/hooks/guard.sh` blocks Bash commands that refer to
+    `secrets/` or `devices/keys`.
 19. `checks.yml` gets a step that fails if any file tracked by git is under
-    `devices/keys/` or contains `-----BEGIN` followed by `PRIVATE KEY-----`. The step
+    `secrets/` or `secrets/device-keys/`, or contains `-----BEGIN` followed by `PRIVATE KEY-----`. The step
     prints only file paths, never contents.
 20. `devices/AmazonRootCA1.pem` (Amazon's public root CA, which devices use to verify
     the server) is committed. The developer downloads it once from
@@ -132,9 +134,9 @@ Who does what:
 
 ### Smoke test
 
-21. `make device-certs` reads `devices/keys/certificates.json` (the developer saves it
+21. `make device-certs` reads `secrets/device-keys/certificates.json` (the developer saves it
     from `terraform -chdir=infra output -json device_certificates`) and writes
-    `devices/keys/<id>.crt` for every device. It prints only device IDs.
+    `secrets/device-keys/<id>.crt` for every device. It prints only device IDs.
 22. `scripts/iot-smoke-test.py`, run with
     `make smoke-test DEVICE=<id> ENDPOINT=<iot_endpoint>` in the dev container. It
     authenticates with the device's key and certificate (no AWS credentials), using
@@ -182,7 +184,7 @@ Decided in this spec:
   device on the developer's machine. Terraform registers the certificate from the CSR
   (AWS signs it) and attaches it to the device's thing and policy. Private keys never
   leave that machine and never go into Terraform state.
-- **Keys live in the repo folder, git-ignored** (`devices/keys/`), with the safeguards
+- **Keys live in the repo folder, git-ignored** (`secrets/device-keys/`), with the safeguards
   in criteria 17–19.
 - **Fleet:** 20 wearables + 20 bedroom sensors, no spares.
 - **One policy per device type**, so each device can publish only its own type's

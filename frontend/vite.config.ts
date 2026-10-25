@@ -6,6 +6,9 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // The local .env lives in the repo's git-ignored secrets/ folder. CI sets the VITE_*
+  // values as environment variables instead, which Vite also reads.
+  envDir: '../secrets',
   test: {
     environment: 'jsdom',
     globals: true,

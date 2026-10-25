@@ -4,7 +4,7 @@
 #  - the aws CLI                  (AWS changes go through Terraform + CI only)
 #  - terraform commands that change infrastructure or state
 #  - anything referencing ~/.aws  (keeps the hidden credentials hidden)
-#  - device private keys          (devices/keys/ and the make targets that use them)
+#  - local secrets                (secrets/, the old devices/keys/, and the key make targets)
 # Matching is on command text, so a command that merely mentions these
 # (e.g. in a heredoc) is blocked too. Exit 2 blocks and shows stderr to Claude.
 
@@ -42,8 +42,9 @@ if printf '%s' "$cmd" | grep -Eq '\.aws/|AWS_SHARED_CREDENTIALS_FILE|AWS_CONFIG_
 fi
 
 if printf '%s' "$cmd" | grep -Eq 'devices/keys' ||
+   printf '%s' "$cmd" | grep -Eq "${s}secrets(/|${end})" ||
    printf '%s' "$cmd" | grep -Eq "${s}make${args}[[:space:]]+(device-keys|device-certs|smoke-test)${end}"; then
-  block "Claude must not read or create device private keys. The user runs the device-keys, device-certs, and smoke-test targets."
+  block "Claude must not read or create device private keys or anything in secrets/. The user runs the device-keys, device-certs, and smoke-test targets."
 fi
 
 exit 0

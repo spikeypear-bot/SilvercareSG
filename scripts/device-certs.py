@@ -1,8 +1,8 @@
-"""Write each device's certificate to devices/keys/<id>.crt (docs/features/iot-core.md).
+"""Write each device's certificate to secrets/device-keys/<id>.crt (docs/features/iot-core.md).
 
 Run with `make device-certs` in the dev container, after saving the Terraform output:
 
-    terraform -chdir=infra output -json device_certificates > devices/keys/certificates.json
+    terraform -chdir=infra output -json device_certificates > secrets/device-keys/certificates.json
 
 Accepts the bare map (device ID -> certificate PEM) that `output -json device_certificates`
 prints, or the same map wrapped as {"value": {...}} or {"device_certificates": {"value": ...}}.
@@ -21,7 +21,7 @@ from pathlib import Path
 from cryptography import x509
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_KEYS_DIR = REPO_ROOT / "devices" / "keys"
+DEFAULT_KEYS_DIR = REPO_ROOT / "secrets" / "device-keys"
 
 DEVICE_ID_RE = re.compile(r"^(wearable|bedroom)-[0-9]{4}$")
 CERT_HEADER = "-----BEGIN CERTIFICATE-----"
