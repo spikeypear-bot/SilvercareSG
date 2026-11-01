@@ -199,6 +199,8 @@ Both the nurse and doctor dashboards have:
 
 - Header: logo, page title ("Nurse dashboard" or "Doctor dashboard"), user menu (name,
   role badge "Nurse" or "Doctor", "Account settings", "Sign out").
+- Staff area tabs: "Dashboard" (this page) and "Devices" (the staff-only devices view,
+  `/devices`), with the current tab marked by `aria-current="page"` and a bar.
 - Demo data banner.
 - Greeting ("Good morning, <name>", based on Asia/Singapore time) and current date.
 - Four stat tiles: Residents monitored, Open alerts (critical count shown too), Devices
@@ -277,8 +279,15 @@ acknowledge and resolve; the escalation countdown only displays the demo
 
 - Personal data touched: the user's own email, name, and group (from Cognito/ID token);
   password and TOTP secret go only to Cognito via Amplify. No resident data (demo only).
-- Retention: Cognito accounts stay until an admin deletes them (user-data retention is
-  still Open decision #4 in `CLAUDE.md`). Tokens: Amplify's default token storage
+- Retention (decided 2026-11-01, Open decision #4): when a user leaves (offboarding),
+  an admin **disables** their Cognito account, so they can't sign in, then **deletes**
+  it 90 days later. Accounts are not patient health records, and PDPA data
+  minimisation applies, so they aren't kept longer. Both are manual admin steps in the
+  Cognito console; nothing deletes accounts automatically, so the admin tracks the
+  90 days. Deleting an account doesn't break the threshold change history (or alert
+  history): those records capture the staff member's name when they're written
+  (`changed_by_name`, `acknowledged_by_name`, ...) instead of resolving it from the
+  `sub` (see Actor names in `docs/data-model.md`). Tokens: Amplify's default token storage
   (browser `localStorage`), ID/access tokens expire after 60 min, refresh after 7 days;
   sign-out clears them and revokes the refresh token.
 - Must not be logged or shown: no `console.log` of tokens, emails, names, passwords,

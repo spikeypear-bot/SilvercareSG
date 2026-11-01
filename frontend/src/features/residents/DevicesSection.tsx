@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
-import { BedDouble, Plug, Watch } from 'lucide-react'
+import { BedDouble, Watch } from 'lucide-react'
 import { RelativeTime } from '../../components/RelativeTime'
 import type { BedroomDevice, WearableDevice } from '../../types/resident'
-import { BatteryLevel, OnlineStatus } from '../dashboard/DeviceStatus'
+import { DeviceBattery, OnlineStatus } from '../dashboard/DeviceStatus'
 import { DetailSection } from './DetailSection'
 
 interface DevicesSectionProps {
@@ -49,7 +49,7 @@ function WearableItem({ device, now }: { device: WearableDevice; now: Date }) {
       <Fact label="Connection" value={<OnlineStatus online={device.online} />} />
       {status ? (
         <>
-          <Fact label="Battery" value={<BatteryLevel wearable={status} />} />
+          <Fact label="Battery" value={<DeviceBattery battery_pct={status.battery_pct} charging={status.charging} mainsPowered={false} />} />
           <Fact
             label="State"
             value={`${status.worn ? 'Worn' : 'Not worn'}${status.charging ? ' · Charging' : ''}`}
@@ -75,19 +75,7 @@ function BedroomItem({ device, now }: { device: BedroomDevice; now: Date }) {
       <Fact label="Connection" value={<OnlineStatus online={device.online} />} />
       {status ? (
         <>
-          <Fact
-            label="Battery"
-            value={
-              status.battery_pct === null ? (
-                <span className="inline-flex items-center gap-1.5">
-                  <Plug className="size-5 shrink-0 text-slate-600" aria-hidden="true" />
-                  Mains powered
-                </span>
-              ) : (
-                <BatteryLevel wearable={{ battery_pct: status.battery_pct, charging: false }} />
-              )
-            }
-          />
+          <Fact label="Battery" value={<DeviceBattery battery_pct={status.battery_pct} charging={false} mainsPowered />} />
           <Fact label="Last seen" value={<RelativeTime iso={status.ts} now={now} />} />
           <Fact label="Firmware" value={status.fw_version} />
         </>

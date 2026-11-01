@@ -58,10 +58,16 @@ describe('sortAlertsForInbox', () => {
 describe('offlineDevices and lowBatteryResidents', () => {
   it('lists each offline wearable and bedroom sensor', () => {
     const devices = offlineDevices(data.residents)
+    // Resident order, wearable before bedroom. O (res-0015) has both devices offline.
     expect(devices.map((d) => [d.resident.resident_id, d.kind])).toEqual([
+      ['res-0006', 'bedroom'],
       ['res-0009', 'bedroom'],
+      ['res-0012', 'wearable'],
       ['res-0015', 'wearable'],
+      ['res-0015', 'bedroom'],
+      ['res-0017', 'bedroom'],
     ])
+    expect(devices.every((d) => d.device.online === false)).toBe(true)
   })
 
   it('lists wearables below 20 %', () => {
@@ -77,7 +83,8 @@ describe('dashboardStats', () => {
       residents: 20,
       openAlerts: 12,
       criticalAlerts: 3,
-      devicesOffline: 2,
+      devicesOffline: 6,
+      // Wearables only: res-0004's low bedroom sensor is not counted here.
       lowBattery: 2,
     })
   })

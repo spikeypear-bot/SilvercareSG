@@ -4,6 +4,7 @@ import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { LoginPage } from './features/auth/LoginPage'
 import { RequireAuth, SignedOutOnly } from './features/auth/routeGuards'
 import { MainPage } from './features/dashboard/MainPage'
+import { DevicesPage } from './features/devices/DevicesPage'
 import { ResidentDetailPage } from './features/residents/ResidentDetailPage'
 
 /** Routes. Guards only decide what to show; the API enforces access. */
@@ -31,6 +32,14 @@ export function AppRoutes() {
         element={
           <RequireAuth>
             <MainPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/devices"
+        element={
+          <RequireAuth>
+            <DevicesPage />
           </RequireAuth>
         }
       />

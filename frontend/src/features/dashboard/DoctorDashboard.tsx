@@ -8,6 +8,7 @@ import { AlertRow } from './AlertRow'
 import { DashboardError, LoadingStatus } from './DashboardStates'
 import { MainLayout } from './MainLayout'
 import { ResidentsPanel } from './ResidentsPanel'
+import { StaffNav } from './StaffNav'
 import { StatTiles, StatTilesSkeleton } from './StatTile'
 import { dashboardStats, sortAlertsForInbox, unresolvedAlerts } from './stats'
 import { describeAlert, useAlertAnnouncer } from './useAlertAnnouncer'
@@ -22,7 +23,7 @@ export function DoctorDashboard() {
   const { data, loading, error, retry } = useDashboardData('staff')
 
   return (
-    <MainLayout title="Doctor dashboard">
+    <MainLayout title="Doctor dashboard" before={<StaffNav />}>
       {error ? (
         <DashboardError onRetry={retry} />
       ) : loading || !data ? (

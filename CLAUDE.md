@@ -63,7 +63,8 @@ structure, not code that exists yet. Update this file as decisions land.
   things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
   caregiver/family views and the nurse and doctor dashboards, chosen by Cognito group,
-  plus a staff-only resident page (`/residents/<resident_id>`). Static build
+  plus staff-only pages: the resident page (`/residents/<resident_id>`) and the devices
+  view (`/devices`), a tab in the staff area. Static build
   hosted on S3 behind CloudFront (no server-side rendering).
 
 ## Repo layout *(planned)*
@@ -200,10 +201,13 @@ under Singapore's PDPA. Treat it accordingly:
 
 Record the outcome here (and remove the item) once decided. Numbers stay fixed because
 other docs refer to them (#1, the metrics contract, was approved 2026-10-25; #4, data
-retention, was decided 2026-11-01: patient health records are kept for the patient's
-lifetime + 6 years, per MOH Circular 85/2022 under the Healthcare Services Act 2020,
-which the threshold change history follows; DynamoDB keeps at most the latest 5
-messages per device and type; see Retention in `docs/data-model.md`).
+retention, was decided 2026-11-01, see Retention in `docs/data-model.md`: patient
+health records, meaning the threshold change history and derived records that informed
+care (alerts, daily summaries), are kept for the patient's lifetime + 6 years, per MOH
+Circular 85/2022 under the Healthcare Services Act 2020; raw S3 telemetry is
+downsampled to daily summaries after 90 days and deleted at 365 days (both figures
+proposed); Cognito accounts are disabled at a user's offboarding and deleted 90 days
+later; DynamoDB keeps at most the latest 5 messages per device and type).
 
 2. **Alerting rules:** which conditions trigger alerts (e.g. fall, inactivity, abnormal
    vitals) and how alerts are delivered (push, SMS, email). (Decided: wearables also

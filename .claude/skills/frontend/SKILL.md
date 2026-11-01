@@ -41,7 +41,11 @@ frontend/src/
 Staff and family members watch elderly residents' alerts on these screens, so
 accessibility matters.
 
-- Alerts must never rely on colour alone. Use text and an icon too.
+- Alerts and states (offline, low battery, charging, ...) must never rely on colour or
+  an `aria-hidden` icon alone. Use text too.
+- Text that reads as one phrase ("12% · Low", "Wearable · wearable-0001") goes in one
+  inline element: JSX drops the space between elements on separate lines, and a flex
+  `gap` hides that on screen but not for screen readers.
 - Colour contrast meets WCAG AA. Text is at least 16px. Tap targets are at least 44px.
 - Semantic HTML (`button`, `nav`, headings in order), labelled form fields, and visible
   focus styles.

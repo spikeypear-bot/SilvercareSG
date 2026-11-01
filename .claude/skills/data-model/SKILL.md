@@ -17,6 +17,9 @@ design lives in `docs/data-model.md`; Terraform implements it. Update the doc fi
    |---|---|---|---|---|
    | 1 | Staff dashboard | Latest status of every resident at a site | pk = SITE#<id> | every 30s per open dashboard |
 
+   When a user-facing route reads a pattern (including a new caller of an existing one),
+   note the exact fields it returns and which stored or projected attributes it drops:
+   indexes shared with other callers often project more than that route should show.
 3. Design or extend the keys and GSIs so every listed pattern is a `GetItem` or `Query`.
 4. Update `docs/data-model.md`: tables, key schema, item types with example items, GSIs,
    TTL, and which access pattern each one serves.

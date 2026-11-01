@@ -5,6 +5,17 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-01
 
+- **Problem:** twice the screen-reader text lost a space between JSX elements in a flex
+  row ("Wearable· id", "12%· Low"), and a charging state was shown only by a hidden
+  icon. The tester caught both. **Changed:** `.claude/skills/frontend/SKILL.md`: states
+  need text, not just colour or a hidden icon; one-phrase text goes in one inline element.
+
+- **Problem:** Claude added staff use of patterns 4, 5, and 8 for the devices view
+  without saying which fields the route returns, though the indexes project more
+  (`photo_key`, `worn`, ...). The privacy reviewer caught it. **Changed:**
+  `.claude/skills/data-model/SKILL.md` step 2: for a user-facing route, note the exact
+  fields returned and the projected attributes dropped.
+
 - **Problem:** twice a frontend test run gave wrong counts (21 worker errors; 25 of 26
   files) because it overlapped another run: the tester's tests with its lint, and
   Claude's run with the tester's. **Changed:** `.claude/skills/frontend/SKILL.md`: run

@@ -134,7 +134,9 @@ describe('stat tiles are toggle buttons that pick the panel', () => {
     expect(tileValue('Residents monitored')).toBe('20')
     expect(tileValue('Open alerts')).toBe('12')
     expect(within(tile('Open alerts')).getByText('3 critical')).toBeInTheDocument()
-    expect(tileValue('Devices offline')).toBe('2')
+    // 6 offline devices (L and O wearables; F, I, O, Q bedroom sensors).
+    expect(tileValue('Devices offline')).toBe('6')
+    // Wearables only (F 15%, M 12%); D's 9% bedroom sensor is not a wearable.
     expect(tileValue('Wearables low on battery')).toBe('2')
     expect(within(tile('Wearables low on battery')).getByText('Below 20%')).toBeInTheDocument()
   })
@@ -151,7 +153,7 @@ describe('stat tiles are toggle buttons that pick the panel', () => {
   })
 
   it.each([
-    ['Devices offline', /^Devices offline \(2\)$/],
+    ['Devices offline', /^Devices offline \(6\)$/],
     ['Wearables low on battery', /^Wearables low on battery \(2\)$/],
     ['Residents monitored', /^Residents$/],
   ])('clicking "%s" switches the panel and the pressed tile', async (label, heading) => {
@@ -591,18 +593,31 @@ describe('devices offline panel', () => {
     await user.click(tile('Devices offline'))
     const panel = screen.getByRole('region', { name: /^Devices offline/ })
     const items = within(panel).getAllByRole('listitem')
-    expect(items).toHaveLength(2)
+    expect(items).toHaveLength(6)
 
-    const i = data.residents.find((r) => r.resident_id === 'res-0009')
-    const o = data.residents.find((r) => r.resident_id === 'res-0015')
-    expect(items[0]).toHaveTextContent(`Bedroom sensor offline· ${i?.bedroom.device_id}`)
-    expect(items[0]).toHaveTextContent('Test Resident I')
-    expect(items[0]).toHaveTextContent('res-0009')
-    expect(items[0]).toHaveTextContent(i?.home_id ?? 'missing')
-    expect(items[0]).toHaveTextContent('Last seen 1 h ago')
-    expect(items[1]).toHaveTextContent(`Wearable offline· ${o?.wearable.device_id}`)
-    expect(items[1]).toHaveTextContent('Test Resident O')
-    expect(items[1]).toHaveTextContent('Last seen 52 min ago')
+    const byId = (id: string) => {
+      const resident = data.residents.find((r) => r.resident_id === id)
+      if (!resident) throw new Error(`No demo resident ${id}`)
+      return resident
+    }
+    // Resident order, wearable before bedroom.
+    const expected = [
+      ['res-0006', 'Test Resident F', 'bedroom', 'Last seen 1 day ago'],
+      ['res-0009', 'Test Resident I', 'bedroom', 'Last seen 1 h ago'],
+      ['res-0012', 'Test Resident L', 'wearable', 'Last seen 18 min ago'],
+      ['res-0015', 'Test Resident O', 'wearable', 'Last seen 52 min ago'],
+      ['res-0015', 'Test Resident O', 'bedroom', 'Last seen 3 h ago'],
+      ['res-0017', 'Test Resident Q', 'bedroom', 'Last seen 2 days ago'],
+    ] as const
+    expected.forEach(([id, name, kind, lastSeen], n) => {
+      const resident = byId(id)
+      const label = kind === 'wearable' ? 'Wearable' : 'Bedroom sensor'
+      expect(items[n]).toHaveTextContent(`${label} offline· ${resident[kind].device_id}`)
+      expect(items[n]).toHaveTextContent(name)
+      expect(items[n]).toHaveTextContent(id)
+      expect(items[n]).toHaveTextContent(resident.home_id)
+      expect(items[n]).toHaveTextContent(lastSeen)
+    })
   })
 
   it('shows "All devices are online." when none are offline', async () => {
@@ -759,5 +774,37 @@ describe('accessibility', { timeout: 30_000 }, () => {
     screen.getAllByRole('button', { name: /^(Acknowledge|Resolve): / }).forEach((button) => {
       expect(button).toHaveAccessibleName(/^(Acknowledge|Resolve): .+, Test Resident [A-T]$/)
     })
+  })
+})
+
+describe('staff area nav', () => {
+  it('shows the "Staff area" tabs above the banner, with Dashboard as the current page', async () => {
+    await renderLoaded()
+    const nav = screen.getByRole('navigation', { name: 'Staff area' })
+    const links = within(nav).getAllByRole('link')
+    expect(links.map((l) => l.textContent)).toEqual(['Dashboard', 'Devices'])
+    expect(within(nav).getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/')
+    expect(within(nav).getByRole('link', { name: 'Dashboard' })).toHaveAttribute('aria-current', 'page')
+    expect(within(nav).getByRole('link', { name: 'Devices' })).toHaveAttribute('href', '/devices')
+    expect(within(nav).getByRole('link', { name: 'Devices' })).not.toHaveAttribute('aria-current')
+    const banner = screen.getByRole('note', { name: 'Demo data' })
+    expect(nav.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('is shown in the loading and error states too', async () => {
+    dashboardLoader.mockReturnValue(deferred<DashboardData>().promise)
+    renderNurse()
+    expect(screen.getByRole('navigation', { name: 'Staff area' })).toBeInTheDocument()
+    cleanup()
+    dashboardLoader.mockRejectedValue(new Error('boom'))
+    renderNurse()
+    await screen.findByRole('alert')
+    expect(screen.getByRole('navigation', { name: 'Staff area' })).toBeInTheDocument()
+  })
+
+  it('clicking Devices goes to /devices', async () => {
+    const { user } = await renderLoaded()
+    await user.click(screen.getByRole('link', { name: 'Devices' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/devices')
   })
 })

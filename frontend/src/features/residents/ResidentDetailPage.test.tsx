@@ -267,6 +267,34 @@ describe('devices section (pattern 10)', () => {
     expect(fact(deviceBox(device), label)).toHaveTextContent(text)
   })
 
+  it.each([
+    ['res-0004', /^Bedroom sensor/, /^9%\s?· Low$/],
+    ['res-0006', /^Wearable/, /^15%\s?· Low$/],
+    ['res-0013', /^Wearable/, /^12%\s?· Low$/],
+  ] as const)('%s: %s battery below 20%% shows %s as text', async (id, device, text) => {
+    await renderLoaded(id)
+    const battery = fact(deviceBox(device), 'Battery')
+    expect(battery).toHaveTextContent(text)
+    expect(battery.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+  })
+
+  it.each([
+    ['res-0004', /^Wearable/, '45%'],
+    ['res-0002', /^Bedroom sensor/, /^\d+%$/],
+    ['res-0020', /^Wearable/, '27%'],
+  ] as const)('%s: %s battery at or above 20%% has no "Low" marker', async (id, device, text) => {
+    await renderLoaded(id)
+    const battery = fact(deviceBox(device), 'Battery')
+    expect(battery).toHaveTextContent(text)
+    expect(battery).not.toHaveTextContent('Low')
+  })
+
+  it('does not show the "Staff area" nav (it has its own back link)', async () => {
+    await renderLoaded('res-0003')
+    expect(screen.queryByRole('navigation', { name: 'Staff area' })).not.toBeInTheDocument()
+    expect(document.querySelector('a[href="/devices"]')).toBeNull()
+  })
+
   it('shows empty texts when one device is missing', async () => {
     const detail = demoDetail('res-0001')
     await renderLoaded('res-0001', TEST_USERS.nurse, { ...detail, wearable: null })

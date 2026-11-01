@@ -14,6 +14,7 @@ import { LOW_BATTERY_DISPLAY_PCT } from './labels'
 import { MainLayout } from './MainLayout'
 import { ResidentLine } from './ResidentLine'
 import { ResidentsPanel } from './ResidentsPanel'
+import { StaffNav } from './StaffNav'
 import { StatTiles, StatTilesSkeleton, type StatId } from './StatTile'
 import {
   dashboardStats,
@@ -31,7 +32,7 @@ export function NurseDashboard() {
   const { data, loading, error, retry, acknowledgeAlert, resolveAlert } = useDashboardData('staff')
 
   return (
-    <MainLayout title="Nurse dashboard">
+    <MainLayout title="Nurse dashboard" before={<StaffNav />}>
       {error ? (
         <DashboardError onRetry={retry} />
       ) : loading || !data ? (

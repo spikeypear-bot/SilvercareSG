@@ -4,12 +4,19 @@
  * bodies of `loadDashboardData` and `loadResidentDetail` with calls through
  * src/lib/api.ts, the alert actions with the acknowledge/resolve call
  * (docs/data-model.md pattern 16), and `updateThresholds` with the thresholds call
- * (pattern 21, proposed); the hooks and the views stay the same.
+ * (pattern 21, proposed), and `loadDeviceFleet` with the devices call (patterns 4, 5, 8);
+ * the hooks and the views stay the same.
  */
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { DashboardData, ResidentAlert } from '../../types/dashboard'
+import type { FleetDevice } from '../../types/devices'
 import type { ResidentDetail, VitalsThresholds } from '../../types/resident'
-import { FAMILY_LINKED_RESIDENT_IDS, createDemoData, createResidentDetail } from './demoData'
+import {
+  FAMILY_LINKED_RESIDENT_IDS,
+  createDemoData,
+  createDeviceFleet,
+  createResidentDetail,
+} from './demoData'
 
 export type DashboardView = 'staff' | 'family'
 
@@ -40,8 +47,15 @@ export async function loadResidentDetail(residentId: string): Promise<ResidentDe
   return createResidentDetail(residentId, new Date())
 }
 
+/** Every device, assigned or not, with its newest status (staff only). */
+export async function loadDeviceFleet(): Promise<FleetDevice[]> {
+  await delay(DEMO_DELAY_MS)
+  return createDeviceFleet(new Date())
+}
+
 export type DashboardLoader = (view: DashboardView) => Promise<DashboardData>
 export type ResidentDetailLoader = (residentId: string) => Promise<ResidentDetail | null>
+export type DeviceFleetLoader = () => Promise<FleetDevice[]>
 
 interface AlertActionsState {
   /**
@@ -209,4 +223,17 @@ export function useResidentDetail(
 
   const notFound = !loading && !error && data === null
   return { data, loading, error, notFound, retry, updateThresholds, ...actions }
+}
+
+export interface DeviceFleetState {
+  data: FleetDevice[] | null
+  loading: boolean
+  error: boolean
+  retry: () => void
+}
+
+/** The devices view: read-only, no device actions. */
+export function useDeviceFleet(loader: DeviceFleetLoader = loadDeviceFleet): DeviceFleetState {
+  const { data, loading, error, retry } = useLoaded('fleet', loader)
+  return { data, loading, error, retry }
 }

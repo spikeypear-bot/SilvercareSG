@@ -1,8 +1,7 @@
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
 import type { Resident, ResidentAlert } from '../../types/dashboard'
 import { ALERT_TYPE_LABELS } from './labels'
-
-const NO_BREAK_SPACE = String.fromCharCode(0xa0)
+import { useAnnouncer } from './useAnnouncer'
 
 /** "Fall detected, Test Resident C" */
 export function describeAlert(alert: ResidentAlert, residentsById: Map<string, Resident>): string {
@@ -30,13 +29,8 @@ export function useAlertAnnouncer(
   alerts: ResidentAlert[],
   residentsById: Map<string, Resident>,
 ): { message: string; announce: (message: string) => void } {
-  // `count` alternates a trailing no-break space, so repeating the same text still
-  // changes the region and screen readers read it again.
-  const [{ text, count }, setState] = useState({ text: '', count: 0 })
+  const { message, announce } = useAnnouncer()
   const [previous, setPrevious] = useState(alerts)
-  const announce = useCallback((next: string) => {
-    setState((s) => ({ text: next, count: s.count + 1 }))
-  }, [])
 
   // Compare with the previous render's alerts (React's "adjust state on prop change").
   if (alerts !== previous) {
@@ -46,5 +40,5 @@ export function useAlertAnnouncer(
     if (fresh.length > 0) announce(newAlertsMessage(fresh, residentsById))
   }
 
-  return { message: count % 2 ? text + NO_BREAK_SPACE : text, announce }
+  return { message, announce }
 }

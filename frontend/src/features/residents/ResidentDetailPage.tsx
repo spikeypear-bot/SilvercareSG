@@ -16,7 +16,7 @@ import { AlertAnnouncer } from '../dashboard/AlertAnnouncer'
 import { DashboardError, LoadingStatus } from '../dashboard/DashboardStates'
 import { WearableStatusText } from '../dashboard/DeviceStatus'
 import { MainLayout } from '../dashboard/MainLayout'
-import { NoAccessPage } from '../dashboard/NoAccessPage'
+import { StaffOnly, type StaffRole } from '../dashboard/StaffOnly'
 import { describeAlert, useAlertAnnouncer } from '../dashboard/useAlertAnnouncer'
 import { useResidentDetail } from '../dashboard/useDashboardData'
 import { useEscalationWatcher } from '../dashboard/useEscalationWatcher'
@@ -35,31 +35,10 @@ const TITLE = 'Resident details'
  * no-access screen. This only hides things; the API enforces access.
  */
 export function ResidentDetailPage() {
-  const { view } = useAuth()
-  if (view === 'nurse' || view === 'doctor') return <StaffResidentDetail role={view} />
-  if (view === 'family') return <StaffOnlyNotice />
-  return <NoAccessPage />
+  return <StaffOnly>{(role) => <StaffResidentDetail role={role} />}</StaffOnly>
 }
 
-/** For signed-in caregiver/family users who reach a staff-only page. Loads no data. */
-function StaffOnlyNotice() {
-  return (
-    <MainLayout title="Staff only" showGreeting={false}>
-      <Card className="flex flex-col items-start gap-4 p-6">
-        <h2 className="text-xl font-semibold text-slate-900">This page is for care staff.</h2>
-        <p className="text-base text-slate-700">
-          Your dashboard shows the residents linked to your account.
-        </p>
-        <Link to="/" className={cx(buttonBase, 'bg-teal-700 text-white hover:bg-teal-800')}>
-          <ArrowLeft className="size-5" aria-hidden="true" />
-          Back to my dashboard
-        </Link>
-      </Card>
-    </MainLayout>
-  )
-}
-
-function StaffResidentDetail({ role }: { role: 'nurse' | 'doctor' }) {
+function StaffResidentDetail({ role }: { role: StaffRole }) {
   const { id = '' } = useParams()
   const detail = useResidentDetail(id)
   const backRef = useRef<HTMLAnchorElement>(null)

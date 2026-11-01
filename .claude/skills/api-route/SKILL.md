@@ -45,11 +45,12 @@ Follow `lambda-python`, plus:
 4. Validate the path, query, and body. Accept only the body keys the route documents
    (400 for any other) and build the item from the validated values, never by copying
    the body. Take the actor for any `*_by` field (`acknowledged_by`, `updated_by`,
-   `linked_by`, ...) from the `sub` claim and store the `sub`; ignore any actor sent in
-   the body.
+   `linked_by`, ...) from the `sub` claim and store the `sub`, plus that user's Cognito
+   `name` in `*_by_name`; ignore any actor sent in the body.
 5. Return only the fields this role may see. Build the response explicitly; never return
-   raw DynamoDB items. Return `*_by` actors as the staff member's name from Cognito,
-   never the `sub`.
+   raw DynamoDB items. Return `*_by` actors as the stored `*_by_name` (copied from the
+   user's Cognito `name` at write time, so it survives account deletion), never the
+   `sub`.
 6. Errors are `{"error": {"code": "...", "message": "..."}}` with the right status code.
    No stack traces or internal details.
 

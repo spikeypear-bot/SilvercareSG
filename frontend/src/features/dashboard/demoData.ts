@@ -23,6 +23,7 @@ import type {
   VitalsThresholds,
   WearableDevice,
 } from '../../types/resident'
+import type { FleetDevice } from '../../types/devices'
 
 /** The demo residents linked to every caregiver/family account. */
 export const FAMILY_LINKED_RESIDENT_IDS: readonly string[] = ['res-0002', 'res-0005']
@@ -42,11 +43,21 @@ interface ResidentSeed {
   battery: number
   worn: boolean
   charging: boolean
-  wearableOnline: boolean
-  bedroomOnline: boolean
+  /** Minutes since the wearable's last `status` (sent every 5 min while it is online). */
+  wearableLastSeenMin: number
+  bedroomLastSeenMin: number
+  /** Bedroom sensor battery; `null` = mains-powered. Defaults from the resident number. */
+  bedroomBattery?: number | null
   /** Minutes since the newest vitals reading. */
   vitalsAgeMin: number
 }
+
+/**
+ * A device is offline after 15 minutes with no `status` message (docs/metrics.md, still
+ * proposed). The backend applies this rule and sends `online`; the demo applies it here
+ * so the UI never computes it.
+ */
+export const DEMO_OFFLINE_TIMEOUT_MIN = 15
 
 const ok = (overrides: Partial<ResidentSeed> = {}): ResidentSeed => ({
   status: 'ok',
@@ -57,8 +68,8 @@ const ok = (overrides: Partial<ResidentSeed> = {}): ResidentSeed => ({
   battery: 80,
   worn: true,
   charging: false,
-  wearableOnline: true,
-  bedroomOnline: true,
+  wearableLastSeenMin: 2,
+  bedroomLastSeenMin: 3,
   vitalsAgeMin: 1,
   ...overrides,
 })
@@ -68,20 +79,30 @@ const SEEDS: readonly ResidentSeed[] = [
   ok({ hr: 68, battery: 82, activity: 22 }), // A
   ok({ status: 'attention', hr: 64, activity: 0, battery: 64, temp: 33.1 }), // B (family)
   ok({ status: 'urgent', hr: 96, spo2: 95, activity: 3, battery: 71 }), // C
-  ok({ hr: 75, spo2: 98, battery: 45, activity: 30 }), // D
+  ok({ hr: 75, spo2: 98, battery: 45, activity: 30, bedroomBattery: 9 }), // D: bedroom sensor low
   ok({ hr: 70, spo2: 97, temp: 34.0, battery: 91, activity: 26 }), // E (family)
-  ok({ status: 'attention', hr: 78, battery: 15, activity: 12 }), // F
+  ok({ status: 'attention', hr: 78, battery: 15, activity: 12, bedroomLastSeenMin: 26 * 60 }), // F
   ok({ status: 'urgent', hr: 128, spo2: 94, temp: 34.6, battery: 77, activity: 5 }), // G
   ok({ hr: 66, battery: 77, activity: 9 }), // H
-  ok({ status: 'attention', hr: 74, battery: 69, bedroomOnline: false }), // I
+  // I: bedroom sensor offline, wearable fine.
+  ok({ status: 'attention', hr: 74, battery: 69, bedroomLastSeenMin: 70 }), // I
   ok({ hr: 71, battery: 58, worn: false, charging: true, vitalsAgeMin: 35 }), // J
   ok({ hr: 80, spo2: 96, battery: 88, activity: 41 }), // K
-  ok({ status: 'attention', hr: 88, battery: 54, activity: 2 }), // L
+  // L: wearable offline just past the 15 min timeout.
+  ok({ status: 'attention', hr: 88, battery: 54, activity: 2, wearableLastSeenMin: 18, vitalsAgeMin: 18 }), // L
   ok({ hr: 69, battery: 12, activity: 15 }), // M
   ok({ hr: 73, spo2: 99, battery: 69, activity: 20 }), // N
-  ok({ status: 'attention', hr: 76, battery: 38, wearableOnline: false, vitalsAgeMin: 52 }), // O
+  // O: both devices offline.
+  ok({
+    status: 'attention',
+    hr: 76,
+    battery: 38,
+    wearableLastSeenMin: 52,
+    vitalsAgeMin: 52,
+    bedroomLastSeenMin: 185,
+  }), // O
   ok({ hr: 62, battery: 95, temp: 33.0, activity: 7 }), // P
-  ok({ status: 'urgent', hr: 102, spo2: 95, battery: 60, activity: 1 }), // Q
+  ok({ status: 'urgent', hr: 102, spo2: 95, battery: 60, activity: 1, bedroomLastSeenMin: 2 * 24 * 60 }), // Q
   ok({ hr: 77, battery: 73, activity: 33 }), // R
   ok({ status: 'attention', hr: 82, spo2: 91, battery: 66, activity: 10 }), // S
   ok({ hr: 70, battery: 27, activity: 24 }), // T
@@ -201,16 +222,16 @@ export function createDemoData(now: Date = new Date()): DashboardData {
       status_text: STATUS_TEXT[seed.status],
       wearable: {
         device_id: `wearable-${pad4(wearableNumber(i))}`,
-        ts: minutesBefore(now, seed.wearableOnline ? 2 : seed.vitalsAgeMin),
+        ts: minutesBefore(now, seed.wearableLastSeenMin),
         battery_pct: seed.battery,
         worn: seed.worn,
         charging: seed.charging,
-        online: seed.wearableOnline,
+        online: seed.wearableLastSeenMin < DEMO_OFFLINE_TIMEOUT_MIN,
       },
       bedroom: {
         device_id: `bedroom-${pad4(bedroomNumber(i))}`,
-        ts: minutesBefore(now, seed.bedroomOnline ? 3 : 70),
-        online: seed.bedroomOnline,
+        ts: minutesBefore(now, seed.bedroomLastSeenMin),
+        online: seed.bedroomLastSeenMin < DEMO_OFFLINE_TIMEOUT_MIN,
       },
       vitals,
     }
@@ -399,7 +420,7 @@ function wearableDevice(resident: Resident, alerts: ResidentAlert[], i: number):
         battery_pct: clamp(wearable.battery_pct + (wearable.charging ? -2 * r : r), 0, 100),
         worn: wearable.worn,
         charging: wearable.charging,
-        fw_version: '1.0.0',
+        fw_version: DEMO_FW_VERSION,
       })),
     },
   }
@@ -407,6 +428,15 @@ function wearableDevice(resident: Resident, alerts: ResidentAlert[], i: number):
 
 const MOTION_MINUTES = [8, 20, 47, 95, 160]
 const BED_MINUTES = [15, 62, 130, 410, 480]
+
+/** Bedroom sensor battery for resident index `i`: every fourth sensor is mains-powered (`null`). */
+function bedroomBattery(i: number): number | null {
+  const seed = SEEDS[i]
+  if (seed.bedroomBattery !== undefined) return seed.bedroomBattery
+  return i % 4 === 0 ? null : 60 + ((i * 7) % 35)
+}
+
+const DEMO_FW_VERSION = '1.0.0'
 
 function bedroomDevice(resident: Resident, alerts: ResidentAlert[], i: number): BedroomDevice {
   const { bedroom } = resident
@@ -435,12 +465,11 @@ function bedroomDevice(resident: Resident, alerts: ResidentAlert[], i: number): 
         ts,
         occupied: r % 2 === 0 ? firstOccupied : !firstOccupied,
       })),
-      // Every fourth sensor is mains-powered (`battery_pct: null`).
       status: MOTION_MINUTES.map((_, r) => ({
         message_id: demoUuid(`${i}6`, r),
         ts: at(r * 5),
-        battery_pct: i % 4 === 0 ? null : 60 + ((i * 7) % 35),
-        fw_version: '1.0.0',
+        battery_pct: bedroomBattery(i),
+        fw_version: DEMO_FW_VERSION,
       })),
     },
   }
@@ -498,4 +527,44 @@ export function createResidentDetail(id: string, now: Date = new Date()): Reside
     thresholds,
     threshold_history: history,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Devices view (patterns 4, 5, 8)
+
+/**
+ * Every device in the demo fleet (one wearable and one bedroom sensor per resident),
+ * built from the same data as the dashboards and resident pages so they agree.
+ */
+export function createDeviceFleet(now: Date = new Date()): FleetDevice[] {
+  const { residents } = createDemoData(now)
+  return residents.flatMap((resident, i): FleetDevice[] => {
+    const assigned_to = {
+      resident_id: resident.resident_id,
+      name: resident.name,
+      home_id: resident.home_id,
+    }
+    return [
+      {
+        device_id: resident.wearable.device_id,
+        device_type: 'wearable',
+        assigned_to,
+        online: resident.wearable.online,
+        last_seen: resident.wearable.ts,
+        battery_pct: resident.wearable.battery_pct,
+        charging: resident.wearable.charging,
+        fw_version: DEMO_FW_VERSION,
+      },
+      {
+        device_id: resident.bedroom.device_id,
+        device_type: 'bedroom',
+        assigned_to,
+        online: resident.bedroom.online,
+        last_seen: resident.bedroom.ts,
+        battery_pct: bedroomBattery(i),
+        charging: false,
+        fw_version: DEMO_FW_VERSION,
+      },
+    ]
+  })
 }

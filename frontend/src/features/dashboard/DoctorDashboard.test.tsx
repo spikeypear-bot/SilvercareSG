@@ -114,7 +114,9 @@ describe('review only: no alert actions, static tiles', () => {
     expect(tileValue('Residents monitored')).toBe('20')
     expect(tileValue('Open alerts')).toBe('12')
     expect(within(statsSection()).getByText('3 critical')).toBeInTheDocument()
-    expect(tileValue('Devices offline')).toBe('2')
+    // 6 offline devices (L and O wearables; F, I, O, Q bedroom sensors).
+    expect(tileValue('Devices offline')).toBe('6')
+    // Wearables only (F 15%, M 12%).
     expect(tileValue('Wearables low on battery')).toBe('2')
     expect(within(statsSection()).getByText('Below 20%')).toBeInTheDocument()
   })
@@ -494,5 +496,22 @@ describe('accessibility', { timeout: 30_000 }, () => {
     const levels = screen.getAllByRole('heading').map((h) => Number(h.tagName.slice(1)))
     expect(levels[0]).toBe(1)
     levels.slice(1).forEach((level, i) => expect(level - levels[i]).toBeLessThanOrEqual(1))
+  })
+})
+
+describe('staff area nav', () => {
+  it('shows the "Staff area" tabs, with Dashboard as the current page', async () => {
+    await renderLoaded()
+    const nav = screen.getByRole('navigation', { name: 'Staff area' })
+    expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(['Dashboard', 'Devices'])
+    expect(within(nav).getByRole('link', { name: 'Dashboard' })).toHaveAttribute('aria-current', 'page')
+    expect(within(nav).getByRole('link', { name: 'Devices' })).toHaveAttribute('href', '/devices')
+    expect(within(nav).getByRole('link', { name: 'Devices' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('is shown in the loading state too', () => {
+    dashboardLoader.mockReturnValue(deferred<DashboardData>().promise)
+    renderDoctor()
+    expect(screen.getByRole('navigation', { name: 'Staff area' })).toBeInTheDocument()
   })
 })

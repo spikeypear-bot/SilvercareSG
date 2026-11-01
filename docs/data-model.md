@@ -13,8 +13,11 @@ with the resident pages feature:
 - the thresholds shape and who edits them: [Resident thresholds](#resident-thresholds)
   and pattern 21, decided with the alerting spec (Open decision #2)
 - [Threshold change history](#threshold-change-history) (pattern 22)
+- the staff devices view reading patterns 4, 5, and 8
 - recording a resident's date of death: a gap, with no field or access pattern yet
   (see [Threshold change history](#threshold-change-history))
+- the S3 history retention figures (90 / 365 days) and daily summaries (see
+  [S3 history](#s3-history) and [Retention](#retention))
 
 DynamoDB holds the **live state** the portal and the backend Lambdas read: the device
 registry, the latest 5 messages per device and message type, and alerts. It does not
@@ -54,9 +57,15 @@ Cognito `sub`), never names or other personal data.
 
 *(proposed)* What each role sees: caregiver and family see the same things for the residents they
 are linked to, including raw vitals, alert `details`, and which staff member
-acknowledged or resolved an alert. The API turns `acknowledged_by` / `resolved_by`
-(staff `sub`) into the staff member's name from Cognito; the `sub` itself is not
-returned.
+acknowledged or resolved an alert.
+
+**Actor names** (decided 2026-11-01): every `*_by` actor field stores the staff `sub`
+(from the token, for audit) **and** the staff member's name, copied from their Cognito
+`name` when the record is written (`acknowledged_by_name`, `resolved_by_name`,
+`updated_by_name`, `changed_by_name`). The API returns the stored name, never the
+`sub`. Records outlive Cognito accounts (deleted 90 days after a user's offboarding),
+so resolving the name from the `sub` on read would lose who acted. The name is as it
+was at the time; a later rename doesn't change past records.
 
 Caller groups (Cognito): **staff** means the `doctor` and `nurse` groups and can read every resident. **caregiver/family** can read a
 resident only after the link check (pattern 13) passes, and the API also checks the
@@ -68,11 +77,11 @@ go stale. Lambdas without a caller are marked *backend*.
 | 1 | `telemetry`, `device-health`, `fall-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | every message (cached ~5 min per Lambda container) |
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | every `vitals` message (cached ~5 min) |
 | 3 | `telemetry`, `device-health`, `fall-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
-| 4 | backend: `watchdog` | Every device, assigned or not | registry `by-type` | Query `entity_type = DEVICE` | every 5 min |
-| 5 | backend: `watchdog`; staff only: nurse and doctor dashboards | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>` (watchdog: `status`, `bed`, `motion`; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
+| 4 | backend: `watchdog`; *(proposed)* staff only: devices view | Every device, assigned or not | registry `by-type` | Query `entity_type = DEVICE` | every 5 min; per devices-view load |
+| 5 | backend: `watchdog`; staff only: nurse and doctor dashboards, *(proposed)* devices view (`status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>` (watchdog: `status`, `bed`, `motion`; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | `telemetry`, `watchdog` | This resident's alerts (to avoid re-raising one that is still open) | alerts | Query `pk = RESIDENT#<resident_id>` | per abnormal reading |
-| 8 | Staff only: nurse and doctor dashboards | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
+| 8 | Staff only: nurse and doctor dashboards, *(proposed)* devices view (names for assigned devices) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
 | 9 | Staff only: nurse and doctor dashboards | All open alerts, newest first | alerts `open` | Query `open_pk = OPEN`, descending | every 30 s per open dashboard |
 | 10 | Resident page: staff, or caregiver/family after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
 | 11 | Resident page: staff, or caregiver/family after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (3 items per device: wearable `vitals`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
@@ -95,6 +104,19 @@ authorisation boundary is staff vs caregiver/family. That nurses handle alerts i
 workflow, shown only in the UI (the doctor dashboard and the resident page show doctors
 no acknowledge or resolve buttons). `attribute_exists(pk)` stops an acknowledge or
 resolve for a mistyped or expired alert from creating an item.
+
+*(proposed)* **Devices view** (patterns 4, 5, and 8, staff only): the route returns
+exactly, per device, `device_id`, `device_type`, `online`, `last_seen` (the newest
+`status` `ts`), `battery_pct`, `charging`, `fw_version`, and `assigned_to`
+(`resident_id`, `display_name`, `home_id`, or null for a spare). It looks up names only
+for the `resident_id`s on DEVICE items, so residents with no device aren't returned, and
+it drops everything else the indexes project: `photo_key` (pattern 8), and `worn`,
+`received_at`, `clock_skew`, and `message_id` from `latest` (pattern 5). `worn` shows
+when a resident took the wearable off, which this view doesn't need. A route test checks
+the exact response keys. Pattern 4 doesn't project `assigned_at`, so the route can't
+drop status entries older than the assignment: it relies on reassignment being one
+transaction (see [Device assignment](#device-assignment)). Adding `assigned_at` to the
+`by-type` projection would replace that index, so it's decided when the route is built.
 
 ## `silvercare-registry`
 
@@ -141,7 +163,8 @@ partitions starting with `DEVICE#` and `THRESHOLDS#`. The `device-health` and
 | `hr_bpm` | `{"min": 0, "max": 0}` | values come from the alerting spec |
 | `spo2_pct` | `{"min": 0}` | |
 | `skin_temp_c` | `{"min": 0, "max": 0}` | |
-| `updated_at`, `updated_by` | `2026-10-18T03:00:00Z`, staff `sub` | `updated_by` is returned to staff only |
+| `updated_at`, `updated_by` | `2026-10-18T03:00:00Z`, staff `sub` | `updated_by` is never returned |
+| `updated_by_name` | `Test Doctor A` | copied from Cognito at write time (see Actor names); returned to staff only |
 
 *(proposed)* The resident page uses this shape: `hr_bpm` has `min` and `max`, `spo2_pct`
 only `min`, `skin_temp_c` `min` and `max`, so a reading below a `min` or above a `max`
@@ -153,21 +176,21 @@ is outside the limits. Only doctors change them (pattern 21). The API:
   2026-11-01): faster revocation would need token revocation (signing the user out
   everywhere, which stops refresh) plus shorter access-token lifetimes;
 - accepts exactly `hr_bpm.min`, `hr_bpm.max`, `spo2_pct.min`, `skin_temp_c.min`, and
-  `skin_temp_c.max`, rejects any other key (including `updated_by` / `updated_at`) with
+  `skin_temp_c.max`, rejects any other key (including `updated_by`, `updated_by_name`, `updated_at`) with
   400, and builds the item itself rather than copying the body;
 - rejects values outside the `vitals` valid ranges in `docs/metrics.md` (heart rate
   20–250, SpO2 50–100, skin temperature 20.0–45.0), a `min` that isn't below its
   `max`, decimals in heart rate or SpO2, or more than 1 decimal place in skin
   temperature;
-- sets `updated_by` from the token's `sub` and `updated_at` from the server clock;
+- sets `updated_by` from the token's `sub`, `updated_by_name` from that user's Cognito
+  `name`, and `updated_at` from the server clock;
 - updates only an existing item (`attribute_exists(pk)`), so it can't create
   thresholds for a mistyped or offboarded resident; a failed condition returns 404;
 - records the change in the same transaction (see
   [Threshold change history](#threshold-change-history)).
 
-On read (pattern 18) the API turns `updated_by` into the staff member's name from
-Cognito, as for alert actors; the `sub` itself is not returned. Nurses see the
-thresholds read-only. `telemetry` caches thresholds for
+On read (pattern 18) the API returns `updated_by_name`, as for alert actors; the `sub`
+itself is not returned. Nurses see the thresholds read-only. `telemetry` caches thresholds for
 about 5 minutes (pattern 2), so a change takes up to 5 minutes to apply. The frontend
 demo uses heart rate 50–110 bpm, SpO2 at least 92 %, and skin temperature
 31.0–36.0 °C, with two residents' own limits; these are demo values, not clinically
@@ -185,7 +208,8 @@ reviewed, and the real ones come from the alerting spec.
 | `sk` | `CHANGE#2026-10-20T03:00:00Z#9b2f0c1e-0000-4000-8000-000000000001` | `CHANGE#<changed_at>#<change_id>`, so a Query sorts by time |
 | `change_id` | `9b2f0c1e-0000-4000-8000-000000000001` | UUID v4 |
 | `changed_at` | `2026-10-20T03:00:00Z` | server clock, same as the thresholds' new `updated_at` |
-| `changed_by` | staff `sub` | from the token, never the request body. Returned as the staff member's name from Cognito, never the `sub` |
+| `changed_by` | staff `sub` | from the token, never the request body. Never returned |
+| `changed_by_name` | `Test Doctor A` | copied from Cognito at write time, so the history keeps the name after the account is deleted (see Actor names) |
 | `changes` | `[{"field": "hr_bpm.max", "old_value": 110, "new_value": 120}]` | only the values that changed; `field` is one of `hr_bpm.min`, `hr_bpm.max`, `spo2_pct.min`, `skin_temp_c.min`, `skin_temp_c.max` |
 
 - **Write path: not implemented.** It lands with the pattern 21 route. The route reads
@@ -386,8 +410,10 @@ gets enough write capacity for every vitals write.
 | `status` | `open` | `open`, `acknowledged`, `resolved` |
 | `source_message_id` | `c2a1d4f0-8b6e-4f0a-a3c9-7e15d2b9f804` | for message-triggered alerts |
 | `details` | `{"confidence": 0.91, "peak_g": 3.8}` | small, type-specific |
-| `acknowledged_by`, `acknowledged_at` | staff `sub`, timestamp | |
-| `resolved_by`, `resolved_at` | staff `sub`, timestamp | |
+| `acknowledged_by`, `acknowledged_at` | staff `sub`, timestamp | `sub` never returned |
+| `acknowledged_by_name` | `Test Nurse B` | copied from Cognito at write time (see Actor names) |
+| `resolved_by`, `resolved_at` | staff `sub`, timestamp | `sub` never returned |
+| `resolved_by_name` | `Test Nurse B` | copied from Cognito at write time |
 | `escalates_at` | `2026-10-18T03:16:07.360Z` | *(proposed)* when an alert still in its confirmation window (caregiver/family can confirm it first) escalates to nurses. Absent for alerts that go to nurses at once. Which types get a window, and how long, comes from the alerting spec; the frontend demo uses 2 minutes. The caregiver/family confirm action would be a new access pattern (not pattern 16, which is staff only) that checks the caller's current group and the link (pattern 13) on the server |
 | `open_pk` | `OPEN` | present until resolved; removing it takes the alert out of the `open` index |
 | `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days. See [Retention](#retention) |
@@ -428,16 +454,35 @@ and Athena (docs/features/ingest-history.md; the History path in
 - **Bucket** `silvercare-history-<account_id>` in `ap-southeast-1`: all public access
   blocked, `BucketOwnerEnforced`, SSE-S3, TLS-only bucket policy. Versioning **off**,
   so a delete really deletes (e.g. for a PDPA erasure request). One lifecycle rule:
-  abort incomplete multipart uploads after 1 day. No expiry yet: whether telemetry
-  history counts as a patient health record (kept for lifetime + 6 years, Open
-  decision #4) is still to confirm; see [Retention](#retention).
+  abort incomplete multipart uploads after 1 day. Retention is decided (see
+  [Retention](#retention)) but not in Terraform yet: `telemetry/` needs an expiry
+  rule at 365 days *(proposed)*, added only once daily summaries exist.
 - **Key layout:**
   `telemetry/message=<message>/date=<yyyy-mm-dd>/<yyyymmddTHHMMSSZ>-<uuid4>.jsonl.gz`.
   `<message>` is the body's `message` if it matches `^[a-z]{1,16}$`, else `unknown`;
   bodies that aren't a JSON object go to `unparseable`. `<date>` is the UTC date of
   `received_at` (else the SQS sent time). The timestamp is when the file was written;
   the UUID is random, so keys hold no device or resident IDs. `alerts/` is reserved for
-  `alert-processor` (not built yet).
+  `alert-processor` (not built yet), and `summaries/` for the daily summaries
+  *(proposed, not built)*.
+- **Retention** (decided 2026-11-01; see [Retention](#retention)):
+  - **Derived records that informed care** (alerts under `alerts/`, daily summaries
+    under `summaries/`): the resident's lifetime + 6 years, the same rule as the
+    threshold change history (MOH Circular 85/2022, Licence Conditions on the
+    Retention Periods of Patient Health Records, under the Healthcare Services Act
+    2020).
+  - **Raw telemetry** (`telemetry/`): downsampled to daily summaries per resident and
+    metric after 90 days *(proposed)*, and the raw files deleted at 365 days
+    *(proposed)* by a lifecycle expiry rule. Raw readings aren't themselves the clinical
+    record, and keeping every reading for lifetime + 6 years would cost more and serve
+    no clinical purpose.
+  - *(proposed)* **Gap: deleting one resident's derived records.** Lifetime + 6 years
+    is per resident, but today's key layout batches many devices into one file with
+    no resident ID. `alerts/` and `summaries/` need a layout that allows deleting one
+    resident's records at date of death + 6 years (for example, one object per
+    resident and day, tagged with the opaque `resident_id` like photos), designed with
+    `alert-processor` and the summary job. This needs the date-of-death field too (see
+    [Threshold change history](#threshold-change-history)).
 - **Format:** gzip-compressed JSON Lines (`Content-Type: application/gzip`, no
   `Content-Encoding`), UTF-8, one compact JSON object per line in the order received,
   ending with a newline. Each line is the IoT rule's output (device payload plus
@@ -509,7 +554,9 @@ which absorbs this, but only on a best-effort basis. So:
 | Resolved alerts | 30 days after `resolved_at` | TTL `expires_at` |
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
 | Threshold change history *(proposed)* | the resident's lifetime + 6 years (MOH Circular 85/2022); kept after offboarding | TTL `expires_at` = date of death + 6 years, set when a date of death is recorded (no field for it yet); no expiry until then |
-| History (S3 `telemetry/`) | not set yet: to confirm whether it counts as a patient health record (lifetime + 6 years, Open decision #4); kept until then | none yet (no expiry rule) |
+| History (S3 `telemetry/`, raw) | daily summaries made by 90 days, raw deleted at 365 days *(both proposed)* | S3 lifecycle expiry on `telemetry/` at 365 days (not in Terraform yet) |
+| Alerts and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; layout and date of death are gaps (see [S3 history](#s3-history)) |
+| User accounts (Cognito) | disabled at the user's offboarding, deleted 90 days later | admin steps in the Cognito console (see `docs/features/sign-in.md`) |
 
 Point-in-time recovery keeps deleted and TTL-expired items restorable for up to 35
 days, so "deleted" data still exists in backups for that long.

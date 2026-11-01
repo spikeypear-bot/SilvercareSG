@@ -86,6 +86,13 @@ describe('linked residents (criterion 21)', () => {
     expect(screen.queryByText('Test Resident A')).not.toBeInTheDocument()
   })
 
+  it('has no "Staff area" nav and no link to the Devices page', async () => {
+    await renderLoaded()
+    expect(screen.queryByRole('navigation', { name: 'Staff area' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Devices' })).not.toBeInTheDocument()
+    expect(document.querySelector('a[href="/devices"]')).toBeNull()
+  })
+
   it('each card shows a status badge with the provided sentence', async () => {
     await renderLoaded()
     expect(residentCard('Test Resident B').getByText('Attention')).toBeInTheDocument()
