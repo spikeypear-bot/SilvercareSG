@@ -5,8 +5,8 @@ description: Conventions for the React + TypeScript + Tailwind frontend in front
 
 # Frontend
 
-One Vite app in `frontend/` that serves the caregiver/family views and the staff
-dashboard, chosen by Cognito group.
+One Vite app in `frontend/` that serves the caregiver/family views, the nurse and doctor
+dashboards, and the staff-only resident page, chosen by Cognito group.
 
 ## Structure
 
@@ -59,5 +59,7 @@ accessibility matters.
 ## Checks
 
 From `frontend/`: `npm run lint`, `npm run test` (Vitest + React Testing Library), and
-`npm run build` must all pass before finishing. Summarise the screens and API calls
-changed.
+`npm run build` must all pass before finishing. Run them one after another, and never
+while another test run is going (e.g. a `frontend-tester` agent's): overlapping runs
+skip files or fail workers, and the counts can't be trusted. Summarise the screens and
+API calls changed.

@@ -214,7 +214,7 @@ Both the nurse and doctor dashboards have:
   (All / Urgent / Attention / OK, with counts), and a responsive grid of resident cards:
   initials avatar, name, resident ID, status badge, latest heart rate, SpO2, skin
   temperature, wearable battery and worn/charging state, and "last updated" time.
-  Cards are not clickable yet.
+  Each card links to the staff-only resident page (`/residents/<resident_id>`).
 - Loading: skeleton tiles and panels. Empty: "No residents yet", or if search/filter
   matches nothing, `EmptyState` "No residents match your search" with a "Clear filters"
   button; "No open alerts." for an empty alert list. Error: a notice "We couldn't load

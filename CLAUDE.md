@@ -54,13 +54,16 @@ structure, not code that exists yet. Update this file as decisions land.
   A US$40/month AWS Budget (`infra/bootstrap/budget.tf`) emails alerts at 50/80/100% of
   actual and 100% of forecast spend, counted before credits.
 - **Auth:** one Cognito user pool (`silvercare-users`) with groups `doctor`, `nurse`,
-  `caregiver`, `family`. "Staff" in the docs means `doctor` or `nurse`: they get the
-  staff dashboard and see every resident. `caregiver` and `family` get the family view
+  `caregiver`, `family`. "Staff" in the docs means `doctor` or `nurse`: both see every
+  resident; nurses get the nurse dashboard (alert response: acknowledge and resolve) and
+  doctors the doctor dashboard (clinical review: trends, editing thresholds), and a user
+  in both groups gets the nurse view. `caregiver` and `family` get the family view
   and see only linked residents. Sign-in is email + password, MFA (authenticator app)
   optional. Groups decide what a user can see; the API enforces it, the UI only hides
   things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
-  caregiver/family views and the staff dashboard, chosen by Cognito group. Static build
+  caregiver/family views and the nurse and doctor dashboards, chosen by Cognito group,
+  plus a staff-only resident page (`/residents/<resident_id>`). Static build
   hosted on S3 behind CloudFront (no server-side rendering).
 
 ## Repo layout *(planned)*
@@ -196,7 +199,11 @@ under Singapore's PDPA. Treat it accordingly:
 ## Open decisions
 
 Record the outcome here (and remove the item) once decided. Numbers stay fixed because
-other docs refer to them (#1, the metrics contract, was approved 2026-10-25).
+other docs refer to them (#1, the metrics contract, was approved 2026-10-25; #4, data
+retention, was decided 2026-11-01: patient health records are kept for the patient's
+lifetime + 6 years, per MOH Circular 85/2022 under the Healthcare Services Act 2020,
+which the threshold change history follows; DynamoDB keeps at most the latest 5
+messages per device and type; see Retention in `docs/data-model.md`).
 
 2. **Alerting rules:** which conditions trigger alerts (e.g. fall, inactivity, abnormal
    vitals) and how alerts are delivered (push, SMS, email). (Decided: wearables also
@@ -204,8 +211,5 @@ other docs refer to them (#1, the metrics contract, was approved 2026-10-25).
    10 s, on top of the cloud's per-resident check; see `docs/metrics.md`.)
 3. **User onboarding:** how caregivers/family are linked to residents. (Decided: accounts
    are created by an admin only, no self sign-up.)
-4. **Data retention:** how long history in S3, resolved alerts in DynamoDB, and user
-   data are kept. (Decided: DynamoDB keeps at most the latest 5 messages per device and
-   type.)
 5. **Lambda packaging for third-party packages**, if a function ever needs more than
    the standard library, boto3, and Powertools.

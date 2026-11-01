@@ -1,5 +1,5 @@
 /**
- * Synthetic demo data for the main page. No real resident information.
+ * Synthetic demo data for the main page and the resident page. No real resident information.
  *
  * Shapes and units follow docs/metrics.md (`vitals`, `status`) and the alerts table in
  * docs/data-model.md. `status`, `status_text`, and alert `severity` are provided here as
@@ -13,6 +13,16 @@ import type {
   ResidentAlert,
   ResidentStatus,
 } from '../../types/dashboard'
+import type {
+  BedroomDevice,
+  ResidentDetail,
+  ResidentThresholds,
+  ThresholdChangeEntry,
+  ThresholdKey,
+  ThresholdValueChange,
+  VitalsThresholds,
+  WearableDevice,
+} from '../../types/resident'
 
 /** The demo residents linked to every caregiver/family account. */
 export const FAMILY_LINKED_RESIDENT_IDS: readonly string[] = ['res-0002', 'res-0005']
@@ -230,4 +240,262 @@ export function createDemoData(now: Date = new Date()): DashboardData {
   }).sort((a, b) => b.event_ts.localeCompare(a.event_ts))
 
   return { residents, alerts }
+}
+
+// ---------------------------------------------------------------------------
+// Resident detail page (patterns 10, 11, 12, 18)
+
+/**
+ * Demo thresholds, not clinically reviewed. Real values come from the alerting spec
+ * (Open decision #2).
+ */
+export const DEMO_DEFAULT_THRESHOLDS: VitalsThresholds = {
+  hr_bpm: { min: 50, max: 110 },
+  spo2_pct: { min: 92 },
+  skin_temp_c: { min: 31.0, max: 36.0 },
+}
+
+const DEMO_STAFF = ['Test Nurse A', 'Test Nurse B', 'Test Nurse C'] as const
+const DEMO_DOCTORS = ['Test Doctor A', 'Test Doctor B'] as const
+
+interface ThresholdChangeSeed {
+  daysAgo: number
+  by: string
+  changes: ThresholdValueChange[]
+}
+
+/**
+ * Earlier threshold changes, newest first (1-based resident number). Every resident
+ * starts from DEMO_DEFAULT_THRESHOLDS, so applying these oldest first gives today's
+ * limits: K and S have their own limits because of the change listed here.
+ */
+function thresholdChangeSeeds(n: number): ThresholdChangeSeed[] {
+  if (n === 11) {
+    // K: higher resting heart rate, like the simulator's baselines.
+    return [{ daysAgo: 12, by: DEMO_DOCTORS[0], changes: [{ field: 'hr_bpm.max', old_value: 110, new_value: 120 }] }]
+  }
+  if (n === 19) {
+    // S: lower normal SpO2.
+    return [{ daysAgo: 9, by: DEMO_DOCTORS[1], changes: [{ field: 'spo2_pct.min', old_value: 92, new_value: 88 }] }]
+  }
+  const by = DEMO_DOCTORS[n % 2]
+  switch (n % 3) {
+    // Lowered or widened for a while, then set back, so the limits are the defaults again
+    // and every old_value is the value before it.
+    case 1:
+      return [
+        { daysAgo: 4 + n, by, changes: [{ field: 'skin_temp_c.min', old_value: 30.5, new_value: 31.0 }] },
+        { daysAgo: 10 + n, by, changes: [{ field: 'skin_temp_c.min', old_value: 31.0, new_value: 30.5 }] },
+      ]
+    case 2:
+      return [
+        {
+          daysAgo: 3 + n,
+          by,
+          changes: [
+            { field: 'hr_bpm.min', old_value: 45, new_value: 50 },
+            { field: 'hr_bpm.max', old_value: 115, new_value: 110 },
+          ],
+        },
+        {
+          daysAgo: 6 + n,
+          by,
+          changes: [
+            { field: 'hr_bpm.min', old_value: 50, new_value: 45 },
+            { field: 'hr_bpm.max', old_value: 110, new_value: 115 },
+          ],
+        },
+      ]
+    default:
+      return []
+  }
+}
+
+function withValue(t: VitalsThresholds, field: ThresholdKey, value: number): VitalsThresholds {
+  switch (field) {
+    case 'hr_bpm.min':
+      return { ...t, hr_bpm: { ...t.hr_bpm, min: value } }
+    case 'hr_bpm.max':
+      return { ...t, hr_bpm: { ...t.hr_bpm, max: value } }
+    case 'spo2_pct.min':
+      return { ...t, spo2_pct: { min: value } }
+    case 'skin_temp_c.min':
+      return { ...t, skin_temp_c: { ...t.skin_temp_c, min: value } }
+    case 'skin_temp_c.max':
+      return { ...t, skin_temp_c: { ...t.skin_temp_c, max: value } }
+  }
+}
+
+const HISTORY_TYPES: ReadonlyArray<{ type: AlertType; severity: AlertSeverity; device: 'wearable' | 'bedroom' }> = [
+  { type: 'low_battery', severity: 'info', device: 'wearable' },
+  { type: 'vitals', severity: 'warning', device: 'wearable' },
+  { type: 'possible_fall', severity: 'warning', device: 'bedroom' },
+  { type: 'device_offline', severity: 'warning', device: 'bedroom' },
+  { type: 'fall', severity: 'critical', device: 'wearable' },
+  { type: 'inactivity', severity: 'warning', device: 'bedroom' },
+]
+
+/** Resident with no alerts at all, so the empty alert history shows (Test Resident N). */
+const NO_HISTORY_RESIDENT = 14
+
+/** Synthetic UUID v4-shaped ID. Deterministic so the same page load shows the same data. */
+const demoUuid = (group: string, n: number) =>
+  `0d3e0000-0000-4000-8${group.padStart(3, '0')}-${String(n).padStart(12, '0')}`
+
+/**
+ * Resolved alerts from the last 30 days (resolved alerts expire 30 days after
+ * `resolved_at`, docs/data-model.md Retention). Some were acknowledged first.
+ */
+function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[] {
+  if (i + 1 === NO_HISTORY_RESIDENT) return []
+  const count = 1 + (i % 4)
+  return Array.from({ length: count }, (_, k): ResidentAlert => {
+    const kind = HISTORY_TYPES[(i + k * 2) % HISTORY_TYPES.length]
+    const minutesAgo = ((k + 1) * (3 + (i % 5)) * 24 - (i % 7)) * 60
+    const staff = DEMO_STAFF[(i + k) % DEMO_STAFF.length]
+    const acknowledgedFirst = (i + k) % 3 !== 0
+    return {
+      alert_id: `6f1c2e0a-5b3d-5e8f-9a47-1${String(i + 1).padStart(3, '0')}${String(k + 1).padStart(8, '0')}`,
+      resident_id: resident.resident_id,
+      device_id: kind.device === 'wearable' ? resident.wearable.device_id : resident.bedroom.device_id,
+      alert_type: kind.type,
+      severity: kind.severity,
+      status: 'resolved',
+      event_ts: minutesBefore(now, minutesAgo),
+      ...(acknowledgedFirst && {
+        acknowledged_by: staff,
+        acknowledged_at: minutesBefore(now, minutesAgo - 3),
+      }),
+      resolved_by: staff,
+      resolved_at: minutesBefore(now, minutesAgo - 25),
+    }
+  })
+}
+
+function wearableDevice(resident: Resident, alerts: ResidentAlert[], i: number): WearableDevice {
+  const { wearable } = resident
+  const statusTs = Date.parse(wearable.ts)
+  return {
+    device_id: wearable.device_id,
+    device_type: 'wearable',
+    online: wearable.online,
+    latest: {
+      vitals: resident.vitals.map((v, r) => ({ message_id: demoUuid(`${i}1`, r), ...v })),
+      // Each fall alert came from a `fall` message with the same `ts` (data-model `event_ts`).
+      fall: alerts
+        .filter((a) => a.alert_type === 'fall')
+        .slice(0, 5)
+        .map((a, r) => ({
+          message_id: demoUuid(`${i}2`, r),
+          ts: a.event_ts,
+          confidence: 0.82 + ((i + r) % 4) * 0.04,
+          peak_g: Math.round((2.9 + ((i * 3 + r) % 7) * 0.2) * 10) / 10,
+          still_s: 15 + ((i + r * 5) % 25),
+        })),
+      // Heartbeat every 5 min; the battery was a little higher before (lower if charging).
+      status: HR_WOBBLE.map((_, r) => ({
+        message_id: demoUuid(`${i}3`, r),
+        ts: new Date(statusTs - r * 5 * 60_000).toISOString(),
+        battery_pct: clamp(wearable.battery_pct + (wearable.charging ? -2 * r : r), 0, 100),
+        worn: wearable.worn,
+        charging: wearable.charging,
+        fw_version: '1.0.0',
+      })),
+    },
+  }
+}
+
+const MOTION_MINUTES = [8, 20, 47, 95, 160]
+const BED_MINUTES = [15, 62, 130, 410, 480]
+
+function bedroomDevice(resident: Resident, alerts: ResidentAlert[], i: number): BedroomDevice {
+  const { bedroom } = resident
+  const base = Date.parse(bedroom.ts)
+  const at = (minutes: number) => new Date(base - minutes * 60_000).toISOString()
+  // A possible fall starts with the bed being vacated (data-model `event_ts`), so an
+  // unresolved one is the newest `bed` event.
+  const possibleFall = alerts.find((a) => a.alert_type === 'possible_fall' && a.status !== 'resolved')
+  const bedTimes = possibleFall
+    ? [possibleFall.event_ts, ...BED_MINUTES.slice(0, 4).map((m) => minutesBefore(new Date(possibleFall.event_ts), m * 3))]
+    : BED_MINUTES.map(at)
+  const firstOccupied = possibleFall ? false : i % 3 !== 0
+
+  return {
+    device_id: bedroom.device_id,
+    device_type: 'bedroom',
+    online: bedroom.online,
+    latest: {
+      motion: MOTION_MINUTES.map((m, r) => ({
+        message_id: demoUuid(`${i}4`, r),
+        ts: at(m),
+        motion: (r % 2 === 0) === (i % 2 === 0),
+      })),
+      bed: bedTimes.map((ts, r) => ({
+        message_id: demoUuid(`${i}5`, r),
+        ts,
+        occupied: r % 2 === 0 ? firstOccupied : !firstOccupied,
+      })),
+      // Every fourth sensor is mains-powered (`battery_pct: null`).
+      status: MOTION_MINUTES.map((_, r) => ({
+        message_id: demoUuid(`${i}6`, r),
+        ts: at(r * 5),
+        battery_pct: i % 4 === 0 ? null : 60 + ((i * 7) % 35),
+        fw_version: '1.0.0',
+      })),
+    },
+  }
+}
+
+/** Today's thresholds and the changes that led to them, which agree with each other. */
+function thresholdsFor(
+  n: number,
+  now: Date,
+): { thresholds: ResidentThresholds; history: ThresholdChangeEntry[] } {
+  const history = thresholdChangeSeeds(n).map(
+    (seed, k): ThresholdChangeEntry => ({
+      change_id: demoUuid(`${n}7`, k),
+      changed_at: minutesBefore(now, seed.daysAgo * 24 * 60),
+      changed_by: seed.by,
+      changes: seed.changes,
+    }),
+  )
+  const values = [...history]
+    .reverse()
+    .flatMap((entry) => entry.changes)
+    .reduce((t, c) => withValue(t, c.field, c.new_value), DEMO_DEFAULT_THRESHOLDS)
+  // Without changes, the thresholds are as first set when the resident joined.
+  const newest = history[0]
+  return {
+    thresholds: {
+      ...values,
+      updated_at: newest?.changed_at ?? minutesBefore(now, (20 + n) * 24 * 60),
+      updated_by: newest?.changed_by ?? DEMO_DOCTORS[0],
+    },
+    history,
+  }
+}
+
+/**
+ * Everything the resident page shows, built from the same data as the dashboards so the
+ * two agree. `null` if there is no resident with that ID.
+ */
+export function createResidentDetail(id: string, now: Date = new Date()): ResidentDetail | null {
+  const { residents, alerts: openAlerts } = createDemoData(now)
+  const i = residents.findIndex((r) => r.resident_id === id)
+  if (i === -1) return null
+  const resident = residents[i]
+  const alerts = [
+    ...openAlerts.filter((a) => a.resident_id === id),
+    ...historyAlerts(resident, i, now),
+  ].sort((a, b) => b.event_ts.localeCompare(a.event_ts))
+  const { thresholds, history } = thresholdsFor(i + 1, now)
+
+  return {
+    resident,
+    wearable: wearableDevice(resident, alerts, i),
+    bedroom: bedroomDevice(resident, alerts, i),
+    alerts,
+    thresholds,
+    threshold_history: history,
+  }
 }

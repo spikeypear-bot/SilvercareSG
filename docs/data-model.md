@@ -10,6 +10,11 @@ with the resident pages feature:
   [Access patterns](#access-patterns))
 - `escalates_at` on alerts (the confirmation window before an alert escalates to
   nurses), decided with the alerting spec (Open decision #2)
+- the thresholds shape and who edits them: [Resident thresholds](#resident-thresholds)
+  and pattern 21, decided with the alerting spec (Open decision #2)
+- [Threshold change history](#threshold-change-history) (pattern 22)
+- recording a resident's date of death: a gap, with no field or access pattern yet
+  (see [Threshold change history](#threshold-change-history))
 
 DynamoDB holds the **live state** the portal and the backend Lambdas read: the device
 registry, the latest 5 messages per device and message type, and alerts. It does not
@@ -29,8 +34,8 @@ doc first, then the Terraform.
   account and region, shared by all tables and indexes. On-demand requests are not
   covered. The account is on the AWS free plan with US$120 of credits that must last
   until the end of November 2026. (Check the current terms under Billing → Free Tier.)
-- **Staff dashboard shows every resident's latest vitals**, by polling the API every
-  30 s (pattern 5).
+- **The staff dashboards (nurse and doctor) show every resident's latest vitals**, by
+  polling the API every 30 s (pattern 5).
 - **Fixed capacity, no auto scaling.** Auto scaling adds CloudWatch alarms (a small
   monthly cost) and could scale past the free tier. See [Capacity](#capacity).
 
@@ -38,7 +43,7 @@ doc first, then the Terraform.
 
 | Table | Holds | Keys | Indexes | Stream | TTL |
 |---|---|---|---|---|---|
-| `silvercare-registry` | residents, device assignments, user ↔ resident links | `pk`, `sk` | `by-type`, `by-resident` | no | no |
+| `silvercare-registry` | residents, device assignments, user ↔ resident links, threshold changes *(proposed)* | `pk`, `sk` | `by-type`, `by-resident` | no | no; *(proposed)* `expires_at`, set only on threshold changes once a date of death is recorded |
 | `silvercare-latest` | latest 5 messages per device and message type | `pk`, `sk` | `by-message` (sparse) | no | no |
 | `silvercare-alerts` | alerts | `pk`, `sk` | `open` (sparse) | no | `expires_at` |
 
@@ -64,24 +69,32 @@ go stale. Lambdas without a caller are marked *backend*.
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | every `vitals` message (cached ~5 min) |
 | 3 | `telemetry`, `device-health`, `fall-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
 | 4 | backend: `watchdog` | Every device, assigned or not | registry `by-type` | Query `entity_type = DEVICE` | every 5 min |
-| 5 | backend: `watchdog`; staff only: dashboard | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>` (watchdog: `status`, `bed`, `motion`; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
+| 5 | backend: `watchdog`; staff only: nurse and doctor dashboards | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>` (watchdog: `status`, `bed`, `motion`; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | `telemetry`, `watchdog` | This resident's alerts (to avoid re-raising one that is still open) | alerts | Query `pk = RESIDENT#<resident_id>` | per abnormal reading |
-| 8 | Staff only: dashboard | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
-| 9 | Staff only: dashboard | All open alerts, newest first | alerts `open` | Query `open_pk = OPEN`, descending | every 30 s per open dashboard |
+| 8 | Staff only: nurse and doctor dashboards | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
+| 9 | Staff only: nurse and doctor dashboards | All open alerts, newest first | alerts `open` | Query `open_pk = OPEN`, descending | every 30 s per open dashboard |
 | 10 | Resident page: staff, or caregiver/family after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
 | 11 | Resident page: staff, or caregiver/family after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (3 items per device: wearable `vitals`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
 | 12 | Resident page: staff, or caregiver/family after 13 | This resident's alerts | alerts | Query `pk = RESIDENT#<resident_id>`, descending | per page view |
 | 13 | API, caregiver/family | Is this user linked to this resident? | registry | GetItem `pk = USER#<sub>`, `sk = RESIDENT#<resident_id>` | every caregiver/family request for a resident |
 | 14 | API, caregiver/family | Which residents can this user see? | registry | Query `pk = USER#<sub>`, `begins_with(sk, "RESIDENT#")` | caregiver/family home page |
 | 15 | backend: `alert-processor` | Who is linked to this resident (to notify) | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "USER#")` | per new alert |
-| 16 | Staff only | Acknowledge or resolve an alert | alerts | UpdateItem `pk`, `sk` | per action |
+| 16 | Staff only | Acknowledge or resolve an alert | alerts | UpdateItem `pk`, `sk`, condition `attribute_exists(pk)` | per action |
 | 17 | Staff only, seed script | Add or edit a resident, assign a device, link a user | registry | PutItem / UpdateItem / DeleteItem | rare |
 | 18 | Resident page: staff, or caregiver/family after 13 | This resident's profile and thresholds | registry | BatchGetItem `RESIDENT#<resident_id>` / `PROFILE` and `THRESHOLDS#<resident_id>` / `THRESHOLDS` | per page view |
 | 19 | Resident page: staff, or caregiver/family after 13 | This resident's photo | S3 `silvercare-photos-<account_id>` | API returns a presigned GET URL for `photo_key`, valid 5 min | per page view |
 | 20 | Staff only | Upload or replace a photo | S3 | API returns a presigned POST (JPEG only, max 2 MB) | rare |
+| 21 | *(proposed)* Doctor only: resident page | Change this resident's thresholds, and record the change (22) | registry | TransactWriteItems: UpdateItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS`, condition `attribute_exists(pk)` and `updated_at` unchanged since the read; PutItem of the change | rare |
+| 22 | *(proposed)* Resident page: staff only | This resident's threshold changes, newest first | registry | Query `pk = THRESHOLD_LOG#<resident_id>`, descending | per page view |
 
 No pattern uses `Scan`.
+
+Pattern 16 is open to every staff member, doctor or nurse (decided 2026-11-01): the
+authorisation boundary is staff vs caregiver/family. That nurses handle alerts is
+workflow, shown only in the UI (the doctor dashboard and the resident page show doctors
+no acknowledge or resolve buttons). `attribute_exists(pk)` stops an acknowledge or
+resolve for a mistyped or expired alert from creating an item.
 
 ## `silvercare-registry`
 
@@ -129,6 +142,69 @@ partitions starting with `DEVICE#` and `THRESHOLDS#`. The `device-health` and
 | `spo2_pct` | `{"min": 0}` | |
 | `skin_temp_c` | `{"min": 0, "max": 0}` | |
 | `updated_at`, `updated_by` | `2026-10-18T03:00:00Z`, staff `sub` | `updated_by` is returned to staff only |
+
+*(proposed)* The resident page uses this shape: `hr_bpm` has `min` and `max`, `spo2_pct`
+only `min`, `skin_temp_c` `min` and `max`, so a reading below a `min` or above a `max`
+is outside the limits. Only doctors change them (pattern 21). The API:
+
+- checks that the `cognito:groups` claim of the caller's access token includes
+  `doctor`, so a doctor removed from the group can still change thresholds until the
+  token expires (up to 60 minutes). This is a deliberate trade-off (decided
+  2026-11-01): faster revocation would need token revocation (signing the user out
+  everywhere, which stops refresh) plus shorter access-token lifetimes;
+- accepts exactly `hr_bpm.min`, `hr_bpm.max`, `spo2_pct.min`, `skin_temp_c.min`, and
+  `skin_temp_c.max`, rejects any other key (including `updated_by` / `updated_at`) with
+  400, and builds the item itself rather than copying the body;
+- rejects values outside the `vitals` valid ranges in `docs/metrics.md` (heart rate
+  20–250, SpO2 50–100, skin temperature 20.0–45.0), a `min` that isn't below its
+  `max`, decimals in heart rate or SpO2, or more than 1 decimal place in skin
+  temperature;
+- sets `updated_by` from the token's `sub` and `updated_at` from the server clock;
+- updates only an existing item (`attribute_exists(pk)`), so it can't create
+  thresholds for a mistyped or offboarded resident; a failed condition returns 404;
+- records the change in the same transaction (see
+  [Threshold change history](#threshold-change-history)).
+
+On read (pattern 18) the API turns `updated_by` into the staff member's name from
+Cognito, as for alert actors; the `sub` itself is not returned. Nurses see the
+thresholds read-only. `telemetry` caches thresholds for
+about 5 minutes (pattern 2), so a change takes up to 5 minutes to apply. The frontend
+demo uses heart rate 50–110 bpm, SpO2 at least 92 %, and skin temperature
+31.0–36.0 °C, with two residents' own limits; these are demo values, not clinically
+reviewed, and the real ones come from the alerting spec.
+
+### Threshold change history
+
+*(proposed)* Who changed which resident's thresholds, when, and the old and new values
+(pattern 22). One item per save. Its own partition, so the `telemetry` role (limited to
+`DEVICE#` and `THRESHOLDS#` partitions) can't read who changed what.
+
+| Attribute | Example | Notes |
+|---|---|---|
+| `pk` | `THRESHOLD_LOG#res-0011` | |
+| `sk` | `CHANGE#2026-10-20T03:00:00Z#9b2f0c1e-0000-4000-8000-000000000001` | `CHANGE#<changed_at>#<change_id>`, so a Query sorts by time |
+| `change_id` | `9b2f0c1e-0000-4000-8000-000000000001` | UUID v4 |
+| `changed_at` | `2026-10-20T03:00:00Z` | server clock, same as the thresholds' new `updated_at` |
+| `changed_by` | staff `sub` | from the token, never the request body. Returned as the staff member's name from Cognito, never the `sub` |
+| `changes` | `[{"field": "hr_bpm.max", "old_value": 110, "new_value": 120}]` | only the values that changed; `field` is one of `hr_bpm.min`, `hr_bpm.max`, `spo2_pct.min`, `skin_temp_c.min`, `skin_temp_c.max` |
+
+- **Write path: not implemented.** It lands with the pattern 21 route. The route reads
+  the thresholds, then writes the new values and this item in one `TransactWriteItems`,
+  with the condition that `updated_at` hasn't changed since the read, so two doctors
+  saving at once can't record the wrong old values. A save that changes nothing writes
+  no item.
+- Read by staff only (nurses and doctors), read-only for everyone. Not shown to
+  caregiver or family.
+- Retention (decided 2026-11-01, Open decision #4): the resident's lifetime + 6 years,
+  as for electronic patient health records (MOH Circular 85/2022, Licence Conditions on the Retention Periods of Patient Health Records, under the Healthcare Services Act 2020). Offboarding does **not** delete
+  them or set `expires_at`. When a date of death is recorded, each item gets
+  `expires_at` = date of death + 6 years, and TTL on `silvercare-registry` deletes them
+  (enabling TTL on an existing table doesn't replace it). Until then they have no
+  expiry.
+- *(proposed)* **Gap: recording a date of death.** There is no field or access pattern
+  for it yet: the resident profile has no date of death, and no route sets one or the
+  `expires_at` that follows from it. Both are needed before this TTL can ever apply;
+  until they exist, these items are never deleted automatically.
 
 ### Device assignment
 
@@ -289,7 +365,7 @@ separate state item is needed.
 |---|---|---|---|---|
 | `by-message` | `watch_type` | `pk` | INCLUDE `device_type`, `latest`, `latest_ts` | 5 |
 
-The staff dashboard polls this index every 30 s for every device's newest vitals and
+The nurse and doctor dashboards poll this index every 30 s for every device's newest vitals and
 state. `fall` items have no `watch_type`: falls reach the dashboard as alerts.
 
 A write that changes an index entry also needs write capacity on the index. If the
@@ -330,7 +406,7 @@ belongs in the alerting spec. It uses pattern 7.
 
 Alerts reach this table through the alerts queue: `telemetry`, `fall-alert`, and
 `watchdog` send a message to SQS, and `alert-processor` notifies caregivers through SNS,
-writes the item here for the staff dashboard, and writes the alert to S3 for tracking
+writes the item here for the nurse and doctor dashboards, and writes the alert to S3 for tracking
 (see `docs/decisions/0001-iot-rule-routing.md`). The queue message carries the same
 fields as the item, so `alert_id` is computed once, by the detector.
 
@@ -352,8 +428,9 @@ and Athena (docs/features/ingest-history.md; the History path in
 - **Bucket** `silvercare-history-<account_id>` in `ap-southeast-1`: all public access
   blocked, `BucketOwnerEnforced`, SSE-S3, TLS-only bucket policy. Versioning **off**,
   so a delete really deletes (e.g. for a PDPA erasure request). One lifecycle rule:
-  abort incomplete multipart uploads after 1 day. No expiry until Open decision #4
-  (retention).
+  abort incomplete multipart uploads after 1 day. No expiry yet: whether telemetry
+  history counts as a patient health record (kept for lifetime + 6 years, Open
+  decision #4) is still to confirm; see [Retention](#retention).
 - **Key layout:**
   `telemetry/message=<message>/date=<yyyy-mm-dd>/<yyyymmddTHHMMSSZ>-<uuid4>.jsonl.gz`.
   `<message>` is the body's `message` if it matches `^[a-z]{1,16}$`, else `unknown`;
@@ -431,7 +508,8 @@ which absorbs this, but only on a best-effort basis. So:
 | Open and acknowledged alerts | until resolved | — |
 | Resolved alerts | 30 days after `resolved_at` | TTL `expires_at` |
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
-| History (S3 `telemetry/`) | not decided (Open decision #4); kept until then | none yet (no expiry rule) |
+| Threshold change history *(proposed)* | the resident's lifetime + 6 years (MOH Circular 85/2022); kept after offboarding | TTL `expires_at` = date of death + 6 years, set when a date of death is recorded (no field for it yet); no expiry until then |
+| History (S3 `telemetry/`) | not set yet: to confirm whether it counts as a patient health record (lifetime + 6 years, Open decision #4); kept until then | none yet (no expiry rule) |
 
 Point-in-time recovery keeps deleted and TTL-expired items restorable for up to 35
 days, so "deleted" data still exists in backups for that long.
@@ -442,11 +520,14 @@ runs in one go:
 1. Resolve the resident's open and acknowledged alerts, which sets their TTL.
 2. Unassign their devices, which also deletes the devices' `latest` items.
 3. Delete their photo from S3 (before the profile, see [Photos](#photos)).
-4. Delete their user links, then their `PROFILE` and `THRESHOLDS` items.
+4. Delete their user links, then their `PROFILE` and `THRESHOLDS` items. Their
+   `THRESHOLD_LOG#` items (pattern 22) are **kept**, and this step does not set
+   `expires_at`: that waits for a recorded date of death (see
+   [Threshold change history](#threshold-change-history)).
 
 Acknowledged alerts that are never resolved have no TTL, on purpose: deleting an
-unhandled alert automatically could hide a fall. The staff dashboard lists them until
-someone resolves them.
+unhandled alert automatically could hide a fall. The nurse dashboard lists them until
+someone resolves them, and the doctor dashboard counts them in its alert summary.
 
 ## Notes for later specs
 
@@ -457,3 +538,5 @@ someone resolves them.
 
 None for the tables. Threshold values and alert rules come from the alerting spec
 (Open decision #2); how links are created comes from user onboarding (Open decision #3).
+Recording a date of death (needed for the threshold change history's TTL) has no field
+or access pattern yet.

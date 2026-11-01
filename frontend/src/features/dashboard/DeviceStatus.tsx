@@ -11,7 +11,7 @@ import {
 import type { BedroomSensorState, WearableState } from '../../types/dashboard'
 import { LOW_BATTERY_DISPLAY_PCT } from './labels'
 
-export function BatteryLevel({ wearable }: { wearable: WearableState }) {
+export function BatteryLevel({ wearable }: { wearable: Pick<WearableState, 'battery_pct' | 'charging'> }) {
   const { battery_pct: pct, charging } = wearable
   const Icon = charging
     ? BatteryCharging
@@ -50,17 +50,22 @@ export function BedroomStatusText({ bedroom }: { bedroom: BedroomSensorState }) 
   return (
     <span className="inline-flex items-center gap-1.5">
       <BedDouble className="size-5 shrink-0 text-slate-600" aria-hidden="true" />
-      {bedroom.online ? (
-        <span className="inline-flex items-center gap-1">
-          <Wifi className="size-4 text-emerald-700" aria-hidden="true" />
-          Online
-        </span>
-      ) : (
-        <span className="inline-flex items-center gap-1 font-medium text-rose-800">
-          <WifiOff className="size-4" aria-hidden="true" />
-          Offline
-        </span>
-      )}
+      <OnlineStatus online={bedroom.online} />
+    </span>
+  )
+}
+
+/** "Online" / "Offline": icon + text. */
+export function OnlineStatus({ online }: { online: boolean }) {
+  return online ? (
+    <span className="inline-flex items-center gap-1">
+      <Wifi className="size-4 text-emerald-700" aria-hidden="true" />
+      Online
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 font-medium text-rose-800">
+      <WifiOff className="size-4" aria-hidden="true" />
+      Offline
     </span>
   )
 }

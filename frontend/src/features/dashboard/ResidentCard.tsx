@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { Avatar } from '../../components/Avatar'
 import { RelativeTime } from '../../components/RelativeTime'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -30,11 +31,20 @@ export function ResidentCard({ resident, now, showTrends = false }: ResidentCard
   const oldestFirst = [...resident.vitals].reverse()
 
   return (
-    <article className="flex h-full flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4">
+    <article className="relative flex h-full flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 hover:border-teal-600 hover:bg-slate-50">
       <div className="flex items-start gap-3">
         <Avatar name={resident.name} />
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-base font-semibold text-slate-900">{resident.name}</h3>
+          <h3 className="truncate text-base font-semibold text-slate-900">
+            {/* The link's ::after covers the card, so the whole card opens the resident page
+                while only the name is the link text. The URL holds the opaque ID only. */}
+            <Link
+              to={`/residents/${encodeURIComponent(resident.resident_id)}`}
+              className="after:absolute after:inset-0 after:rounded-2xl hover:underline focus-visible:outline-none focus-visible:after:ring-4 focus-visible:after:ring-teal-600/40"
+            >
+              {resident.name}
+            </Link>
+          </h3>
           <p className="text-sm text-slate-600">{resident.resident_id}</p>
         </div>
         <StatusBadge tone={resident.status} />

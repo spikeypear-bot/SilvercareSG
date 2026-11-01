@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { Bell, CircleArrowUp, CircleCheckBig, Timer, UserCheck } from 'lucide-react'
+import { Bell, CircleArrowUp, CircleCheckBig, Timer, UserCheck, type LucideIcon } from 'lucide-react'
 import { Button } from '../../components/Button'
 import { RelativeTime } from '../../components/RelativeTime'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -22,6 +22,8 @@ interface AlertRowProps {
   actions?: AlertActions
   /** `list`: divided rows in a list. `tile`: a bordered box, for a grid. */
   variant?: 'list' | 'tile'
+  /** The resident line. Left out on the resident's own page. */
+  showResident?: boolean
 }
 
 /** One alert: severity, type, resident, home, time, lifecycle, and optional actions. */
@@ -31,6 +33,7 @@ export function AlertRow({
   now,
   actions,
   variant = 'list',
+  showResident = true,
 }: AlertRowProps) {
   const resolveRef = useRef<HTMLButtonElement>(null)
   const typeLabel = ALERT_TYPE_LABELS[alert.alert_type]
@@ -59,14 +62,19 @@ export function AlertRow({
         </span>
       </div>
       <p className="text-base font-semibold text-slate-900">{typeLabel}</p>
-      <ResidentLine resident={resident} residentId={alert.resident_id} />
+      {showResident && <ResidentLine resident={resident} residentId={alert.resident_id} />}
       {alert.status === 'open' && alert.escalates_at && (
         <EscalationStatus escalatesAt={alert.escalates_at} />
       )}
-      {alert.status === 'acknowledged' && alert.acknowledged_by && alert.acknowledged_at && (
+      {alert.acknowledged_by && alert.acknowledged_at && (
         <p className="text-base text-slate-700">
           Acknowledged by {alert.acknowledged_by},{' '}
           <RelativeTime iso={alert.acknowledged_at} now={now} />
+        </p>
+      )}
+      {alert.status === 'resolved' && alert.resolved_by && alert.resolved_at && (
+        <p className="text-base text-slate-700">
+          Resolved by {alert.resolved_by}, <RelativeTime iso={alert.resolved_at} now={now} />
         </p>
       )}
       {actions && (
@@ -87,13 +95,18 @@ export function AlertRow({
   )
 }
 
+const LIFECYCLE: Record<ResidentAlert['status'], { label: string; Icon: LucideIcon }> = {
+  open: { label: 'Open', Icon: Bell },
+  acknowledged: { label: 'Acknowledged', Icon: UserCheck },
+  resolved: { label: 'Resolved', Icon: CircleCheckBig },
+}
+
 function LifecycleLabel({ alert }: { alert: ResidentAlert }) {
-  const acknowledged = alert.status === 'acknowledged'
-  const Icon = acknowledged ? UserCheck : Bell
+  const { label, Icon } = LIFECYCLE[alert.status]
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-sm font-medium text-slate-800">
       <Icon className="size-4 shrink-0" aria-hidden="true" />
-      {acknowledged ? 'Acknowledged' : 'Open'}
+      {label}
     </span>
   )
 }

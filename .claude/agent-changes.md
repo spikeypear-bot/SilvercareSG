@@ -5,6 +5,19 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-01
 
+- **Problem:** twice a frontend test run gave wrong counts (21 worker errors; 25 of 26
+  files) because it overlapped another run: the tester's tests with its lint, and
+  Claude's run with the tester's. **Changed:** `.claude/skills/frontend/SKILL.md`: run
+  the checks one after another, never alongside another test run.
+
+- **Problem:** Claude's proposed pattern 21 (doctor edits thresholds) used `UpdateItem`
+  without `attribute_exists(pk)`, so it could create orphan items for mistyped or
+  offboarded residents; it also didn't reject unknown body keys or say the actor is
+  returned as a name. The privacy reviewer caught it. **Changed:**
+  `.claude/skills/data-model/SKILL.md` (updates to existing items use
+  `attribute_exists(pk)`) and `.claude/skills/api-route/SKILL.md` (accept only
+  documented body keys and build the item; return `*_by` as a name, never the `sub`).
+
 - **Problem:** four "live region is quiet" assertions used `toHaveTextContent('')`,
   which passes for any text, so they tested nothing. **Changed:**
   `.claude/agents/frontend-tester.md`: use `toBeEmptyDOMElement()` for emptiness.
