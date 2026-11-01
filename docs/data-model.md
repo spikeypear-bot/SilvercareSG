@@ -8,6 +8,8 @@ with the resident pages feature:
 - [Photos](#photos) (patterns 19 and 20)
 - what caregiver and family users see (the first paragraph of
   [Access patterns](#access-patterns))
+- `escalates_at` on alerts (the confirmation window before an alert escalates to
+  nurses), decided with the alerting spec (Open decision #2)
 
 DynamoDB holds the **live state** the portal and the backend Lambdas read: the device
 registry, the latest 5 messages per device and message type, and alerts. It does not
@@ -310,6 +312,7 @@ gets enough write capacity for every vitals write.
 | `details` | `{"confidence": 0.91, "peak_g": 3.8}` | small, type-specific |
 | `acknowledged_by`, `acknowledged_at` | staff `sub`, timestamp | |
 | `resolved_by`, `resolved_at` | staff `sub`, timestamp | |
+| `escalates_at` | `2026-10-18T03:16:07.360Z` | *(proposed)* when an alert still in its confirmation window (caregiver/family can confirm it first) escalates to nurses. Absent for alerts that go to nurses at once. Which types get a window, and how long, comes from the alerting spec; the frontend demo uses 2 minutes. The caregiver/family confirm action would be a new access pattern (not pattern 16, which is staff only) that checks the caller's current group and the link (pattern 13) on the server |
 | `open_pk` | `OPEN` | present until resolved; removing it takes the alert out of the `open` index |
 | `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days. See [Retention](#retention) |
 

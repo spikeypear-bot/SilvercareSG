@@ -3,6 +3,24 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-01
+
+- **Problem:** four "live region is quiet" assertions used `toHaveTextContent('')`,
+  which passes for any text, so they tested nothing. **Changed:**
+  `.claude/agents/frontend-tester.md`: use `toBeEmptyDOMElement()` for emptiness.
+
+- **Problem:** escalation announcements ran inside alert rows, so they were lost while
+  the nurse viewed another panel. The tester caught it. **Changed:**
+  `.claude/skills/frontend/SKILL.md`: one live region per page, fed from the data, and
+  no ticking lists inside live regions.
+
+- **Problem:** the nurse dashboard's acknowledge/resolve hook took the staff name from
+  the client and was documented as the future API seam, inviting an API that trusts a
+  client-chosen actor. The privacy reviewer caught it. **Changed:**
+  `.claude/skills/api-route/SKILL.md` (handler takes `*_by` actors from the `sub` claim,
+  ignores the body) and `.claude/skills/frontend/SKILL.md` (never send who did an
+  action; a name shown early is display only).
+
 ## 2026-10-25
 
 - **Problem:** `make smoke-test` failed "publish status to own topic" against real AWS:

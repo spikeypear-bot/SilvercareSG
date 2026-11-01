@@ -2,7 +2,7 @@
 export type CognitoGroup = 'doctor' | 'nurse' | 'caregiver' | 'family'
 
 /** Which main page a signed-in user sees. Decided from groups; the API enforces access. */
-export type AppView = 'staff' | 'family' | 'no-access'
+export type AppView = 'nurse' | 'doctor' | 'family' | 'no-access'
 
 /** The signed-in user's own profile, from Cognito attributes and the ID token. */
 export interface AuthUser {

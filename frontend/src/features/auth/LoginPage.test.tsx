@@ -64,8 +64,8 @@ describe('login page layout', () => {
 
 describe('valid credentials (criterion 10)', () => {
   it.each([
-    ['doctor', 'Staff dashboard'],
-    ['nurse', 'Staff dashboard'],
+    ['doctor', 'Doctor dashboard'],
+    ['nurse', 'Nurse dashboard'],
     ['caregiver', 'My family'],
     ['family', 'My family'],
     ['noGroup', "Your account isn't set up yet"],
@@ -248,7 +248,7 @@ describe('temporary password: new password required (criterion 12)', () => {
     await user.type(confirmPw(), VALID_PASSWORD)
     await user.click(screen.getByRole('button', { name: 'Save password and sign in' }))
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Staff dashboard' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Nurse dashboard' })).toBeInTheDocument()
     expect(authMock.completeNewPassword).toHaveBeenCalledWith(VALID_PASSWORD)
   })
 

@@ -30,7 +30,8 @@ frontend/src/
 - **Config** from `import.meta.env.VITE_*` (API URL, user pool ID, client ID). Everything
   in the bundle is public, so no secrets.
 - **API calls** only go through `lib/api.ts`, which attaches the access token and turns
-  error responses into typed errors.
+  error responses into typed errors. Never send who did an action (name, email, sub):
+  the server takes it from the token. A name shown before the response is display only.
 - **Role-based views:** route guards read the user's groups. This only decides what to
   show; the API enforces access.
 - Handle loading, empty, and error states on every data view.
@@ -44,7 +45,9 @@ accessibility matters.
 - Colour contrast meets WCAG AA. Text is at least 16px. Tap targets are at least 44px.
 - Semantic HTML (`button`, `nav`, headings in order), labelled form fields, and visible
   focus styles.
-- Use an `aria-live` region for new alerts.
+- Use an `aria-live` region for new alerts, rendered once per page and fed from the
+  data, not from list rows that a tab or filter can unmount. Don't put lists with
+  ticking times or countdowns inside a live region.
 
 ## Privacy
 

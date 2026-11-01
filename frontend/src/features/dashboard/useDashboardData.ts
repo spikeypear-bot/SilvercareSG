@@ -1,10 +1,11 @@
 /**
  * Main-page data loader. Today it reads synthetic demo data with a simulated delay so
  * loading and error states are real. Later, replace the body of `loadDashboardData`
- * with calls through src/lib/api.ts; the hook and the views stay the same.
+ * with calls through src/lib/api.ts, and the alert actions with the acknowledge/resolve
+ * call (docs/data-model.md pattern 16); the hook and the views stay the same.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DashboardData } from '../../types/dashboard'
+import type { DashboardData, ResidentAlert } from '../../types/dashboard'
 import { FAMILY_LINKED_RESIDENT_IDS, createDemoData } from './demoData'
 
 export type DashboardView = 'staff' | 'family'
@@ -38,6 +39,15 @@ export interface DashboardDataState {
   error: boolean
   /** Loads again after an error. */
   retry: () => void
+  /**
+   * Marks an open alert acknowledged. Local state only for now. `by` is the signed-in
+   * staff member's display name, used only to show the change on screen: the API call
+   * sends just the alert ID and action, and the server takes the actor from the JWT
+   * `sub`, stores the sub, and ignores any actor sent by the client.
+   */
+  acknowledgeAlert: (alertId: string, by: string) => void
+  /** Marks an unresolved alert resolved. `by` is for display only, as for `acknowledgeAlert`. */
+  resolveAlert: (alertId: string, by: string) => void
 }
 
 export function useDashboardData(
@@ -78,5 +88,39 @@ export function useDashboardData(
     setAttempt((a) => a + 1)
   }, [])
 
-  return { data, loading, error, retry }
+  const updateAlert = useCallback(
+    (alertId: string, change: (alert: ResidentAlert) => ResidentAlert | null) => {
+      setData((current) =>
+        current && {
+          ...current,
+          alerts: current.alerts.map((a) => (a.alert_id === alertId ? (change(a) ?? a) : a)),
+        },
+      )
+    },
+    [],
+  )
+
+  const acknowledgeAlert = useCallback(
+    (alertId: string, by: string) => {
+      updateAlert(alertId, (a) =>
+        a.status === 'open'
+          ? { ...a, status: 'acknowledged', acknowledged_by: by, acknowledged_at: new Date().toISOString() }
+          : null,
+      )
+    },
+    [updateAlert],
+  )
+
+  const resolveAlert = useCallback(
+    (alertId: string, by: string) => {
+      updateAlert(alertId, (a) =>
+        a.status === 'resolved'
+          ? null
+          : { ...a, status: 'resolved', resolved_by: by, resolved_at: new Date().toISOString() },
+      )
+    },
+    [updateAlert],
+  )
+
+  return { data, loading, error, retry, acknowledgeAlert, resolveAlert }
 }

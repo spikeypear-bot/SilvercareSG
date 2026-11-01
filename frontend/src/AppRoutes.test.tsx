@@ -58,7 +58,19 @@ describe('signed in', () => {
   it.each(['/login', '/forgot-password'])('redirects %s to /', async (path) => {
     authMock.getCurrentUser.mockResolvedValue(TEST_USERS.nurse)
     renderApp(path)
-    expect(await screen.findByRole('heading', { name: 'Staff dashboard' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Nurse dashboard' })).toBeInTheDocument()
+    expect(location()).toBe('/')
+  })
+
+  it.each([
+    ['nurse', 'Nurse dashboard'],
+    ['doctor', 'Doctor dashboard'],
+    ['caregiver', 'My family'],
+    ['family', 'My family'],
+  ] as const)('a %s user sees "%s" at /', async (key, heading) => {
+    authMock.getCurrentUser.mockResolvedValue(TEST_USERS[key])
+    renderApp('/')
+    expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
     expect(location()).toBe('/')
   })
 

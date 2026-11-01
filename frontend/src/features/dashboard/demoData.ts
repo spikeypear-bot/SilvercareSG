@@ -77,25 +77,79 @@ const SEEDS: readonly ResidentSeed[] = [
   ok({ hr: 70, battery: 27, activity: 24 }), // T
 ]
 
+/**
+ * How long a caregiver/family member has to confirm an alert before it escalates to
+ * nurses. Demo value only: the real window comes from the alerting spec (Open decision #2).
+ */
+export const DEMO_CONFIRMATION_WINDOW_MS = 2 * 60_000
+
 interface AlertSeed {
   resident: number // 1-based resident number
   type: AlertType
   severity: AlertSeverity
   device: 'wearable' | 'bedroom'
   minutesAgo: number
+  /** Acknowledged by this synthetic staff member, this many minutes ago. */
+  acknowledged?: { by: string; minutesAgo: number }
+  /** Goes through the confirmation window first, so it carries `escalates_at`. */
+  confirmationWindow?: boolean
 }
 
 const ALERT_SEEDS: readonly AlertSeed[] = [
+  // Mid-countdown on every page load: 30 s into the 2 min window.
+  {
+    resident: 8,
+    type: 'possible_fall',
+    severity: 'warning',
+    device: 'bedroom',
+    minutesAgo: 0.5,
+    confirmationWindow: true,
+  },
   { resident: 3, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 4 },
-  { resident: 7, type: 'vitals', severity: 'critical', device: 'wearable', minutesAgo: 9 },
-  { resident: 12, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 15 },
+  {
+    resident: 7,
+    type: 'vitals',
+    severity: 'critical',
+    device: 'wearable',
+    minutesAgo: 9,
+    acknowledged: { by: 'Test Nurse B', minutesAgo: 6 },
+  },
+  {
+    resident: 12,
+    type: 'possible_fall',
+    severity: 'warning',
+    device: 'bedroom',
+    minutesAgo: 15,
+    confirmationWindow: true,
+  },
   { resident: 17, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 22 },
   { resident: 19, type: 'vitals', severity: 'warning', device: 'wearable', minutesAgo: 27 },
-  { resident: 2, type: 'inactivity', severity: 'warning', device: 'bedroom', minutesAgo: 38 },
-  { resident: 15, type: 'device_offline', severity: 'warning', device: 'wearable', minutesAgo: 48 },
+  {
+    resident: 2,
+    type: 'inactivity',
+    severity: 'warning',
+    device: 'bedroom',
+    minutesAgo: 38,
+    confirmationWindow: true,
+  },
+  {
+    resident: 15,
+    type: 'device_offline',
+    severity: 'warning',
+    device: 'wearable',
+    minutesAgo: 48,
+    acknowledged: { by: 'Test Nurse C', minutesAgo: 40 },
+  },
   { resident: 6, type: 'low_battery', severity: 'warning', device: 'wearable', minutesAgo: 55 },
   { resident: 9, type: 'device_offline', severity: 'warning', device: 'bedroom', minutesAgo: 70 },
-  { resident: 13, type: 'low_battery', severity: 'info', device: 'wearable', minutesAgo: 125 },
+  {
+    resident: 13,
+    type: 'low_battery',
+    severity: 'info',
+    device: 'wearable',
+    minutesAgo: 125,
+    acknowledged: { by: 'Test Nurse B', minutesAgo: 110 },
+  },
   { resident: 2, type: 'possible_fall', severity: 'info', device: 'bedroom', minutesAgo: 410 },
 ]
 
@@ -113,6 +167,7 @@ const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(mi
 // Device numbers are opaque (no relationship to resident numbers), as in docs/metrics.md.
 const wearableNumber = (i: number) => ((i * 7) % 20) + 1
 const bedroomNumber = (i: number) => ((i * 13 + 5) % 20) + 1
+const homeNumber = (i: number) => ((i * 11 + 3) % 20) + 1
 
 export const residentId = (n: number) => `res-${pad4(n)}`
 
@@ -131,6 +186,7 @@ export function createDemoData(now: Date = new Date()): DashboardData {
     return {
       resident_id: residentId(i + 1),
       name: `Test Resident ${LETTERS[i]}`,
+      home_id: `home-${pad4(homeNumber(i))}`,
       status: seed.status,
       status_text: STATUS_TEXT[seed.status],
       wearable: {
@@ -152,14 +208,24 @@ export function createDemoData(now: Date = new Date()): DashboardData {
 
   const alerts: ResidentAlert[] = ALERT_SEEDS.map((seed, i): ResidentAlert => {
     const resident = residents[seed.resident - 1]
+    const eventTs = minutesBefore(now, seed.minutesAgo)
     return {
       alert_id: `6f1c2e0a-5b3d-5e8f-9a47-${String(i + 1).padStart(12, '0')}`,
       resident_id: resident.resident_id,
       device_id: seed.device === 'wearable' ? resident.wearable.device_id : resident.bedroom.device_id,
       alert_type: seed.type,
       severity: seed.severity,
-      status: 'open',
-      event_ts: minutesBefore(now, seed.minutesAgo),
+      status: seed.acknowledged ? 'acknowledged' : 'open',
+      event_ts: eventTs,
+      ...(seed.acknowledged && {
+        acknowledged_by: seed.acknowledged.by,
+        acknowledged_at: minutesBefore(now, seed.acknowledged.minutesAgo),
+      }),
+      ...(seed.confirmationWindow && {
+        escalates_at: new Date(
+          new Date(eventTs).getTime() + DEMO_CONFIRMATION_WINDOW_MS,
+        ).toISOString(),
+      }),
     }
   }).sort((a, b) => b.event_ts.localeCompare(a.event_ts))
 

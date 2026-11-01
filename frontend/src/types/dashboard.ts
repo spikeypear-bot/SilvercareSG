@@ -48,6 +48,8 @@ export interface BedroomSensorState {
 export interface Resident {
   resident_id: string
   name: string
+  /** Opaque ID of the home the devices are in (docs/data-model.md). No address is stored. */
+  home_id: string
   status: ResidentStatus
   /** Plain sentence describing the status, provided with the data. */
   status_text: string
@@ -57,15 +59,28 @@ export interface Resident {
   vitals: VitalsReading[]
 }
 
+/** Alert lifecycle (docs/data-model.md pattern 16). */
+export type AlertStatus = 'open' | 'acknowledged' | 'resolved'
+
 export interface ResidentAlert {
   alert_id: string
   resident_id: string
   device_id: string
   alert_type: AlertType
   severity: AlertSeverity
-  status: 'open'
+  status: AlertStatus
   /** ISO 8601 UTC of the triggering event */
   event_ts: string
+  /** Staff display name, never a Cognito sub (the API maps the sub to a name). */
+  acknowledged_by?: string
+  /** ISO 8601 UTC */
+  acknowledged_at?: string
+  /** Staff display name, never a Cognito sub. */
+  resolved_by?: string
+  /** ISO 8601 UTC */
+  resolved_at?: string
+  /** ISO 8601 UTC: when an alert still in its confirmation window escalates to nurses. */
+  escalates_at?: string
 }
 
 export interface DashboardData {
