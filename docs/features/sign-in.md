@@ -8,22 +8,25 @@ status: built          # draft | ready | built
 
 A Cognito user pool with four groups (`doctor`, `nurse`, `caregiver`, `family`) and a
 React sign-in flow (email + password, optional authenticator-app MFA). After signing in,
-users land on a main page whose layout depends on their group: doctors and nurses get
-the **staff dashboard**, caregivers and family get the **family view**. There is no API
-yet, so the main page shows clearly labelled synthetic demo data from one local module.
+users land on a main page whose layout depends on their group: nurses get the **nurse
+dashboard** (alert response), doctors get the **doctor dashboard** (clinical review),
+caregivers and family get the **family view**. There is no API yet, so the main page
+shows clearly labelled synthetic demo data from one local module.
 
 ## Users and access
 
 | Group | View | Can see | Can do |
 |---|---|---|---|
-| doctor | staff dashboard | every (demo) resident, all (demo) open alerts | sign in/out, set up or remove MFA, change password |
-| nurse | staff dashboard | same as doctor | same as doctor |
+| nurse | nurse dashboard | every (demo) resident, all (demo) open and acknowledged alerts | sign in/out, set up or remove MFA, change password; acknowledge and resolve alerts (local state only until the API exists) |
+| doctor | doctor dashboard | every (demo) resident with vitals trends, a summary of the most urgent (demo) alerts | sign in/out, set up or remove MFA, change password; no acknowledge or resolve |
 | caregiver | family view | only the (demo) residents linked to them | sign in/out, set up or remove MFA, change password |
 | family | family view | only the (demo) residents linked to them | sign in/out, set up or remove MFA, change password |
 
-- `doctor` and `nurse` together are what the rest of the docs call **staff**.
-- A user in several groups: if any group is `doctor` or `nurse`, show the staff
-  dashboard; otherwise if any is `caregiver` or `family`, show the family view.
+- `doctor` and `nurse` together are what the rest of the docs call **staff**: both see
+  every resident. The two dashboards are the **staff dashboards**.
+- A user in several groups: if any group is `nurse`, show the nurse dashboard;
+  otherwise if any is `doctor`, the doctor dashboard; otherwise if any is `caregiver`
+  or `family`, the family view. The header role badge follows the same order.
 - A signed-in user with none of the four groups sees a "no access" screen (see Screens).
 - How access to a specific resident is decided: in this feature all data is demo data,
   so nothing is enforced. When the API exists, staff see every resident, and caregiver/
@@ -119,11 +122,14 @@ yet, so the main page shows clearly labelled synthetic demo data from one local 
 20. A "Demo data" banner is visible on the main page in both views, with text (not
     only colour): "You are viewing synthetic demo data. No real resident information is
     shown."
-21. Staff dashboard shows 20 demo residents and their open demo alerts; the family view
-    shows the 2 demo residents linked to the signed-in demo account (the same 2 for every
-    caregiver/family user).
+21. The nurse and doctor dashboards show 20 demo residents and their open demo alerts;
+    the family view shows the 2 demo residents linked to the signed-in demo account (the
+    same 2 for every caregiver/family user).
 22. Statuses and alert severities are always shown with an icon **and** a text label,
-    never colour alone. The alerts list is inside an `aria-live="polite"` region.
+    never colour alone. In the family view the alerts timeline is inside an
+    `aria-live="polite"` region. The staff dashboards instead have one screen-reader
+    announcer per page, fed from the alert data (new alerts, escalations, nurse
+    actions); their alert lists are not live regions, so countdowns aren't read out.
 23. `npm run lint`, `npm run test`, and `npm run build` pass in `frontend/`.
 
 ### Dependencies
@@ -136,9 +142,11 @@ Allowed runtime npm packages (already installed by the app scaffold): `react`,
 
 - Reads: none from AWS. Main page reads only `demoData.ts`. Auth reads the user's own
   Cognito attributes (`name`, `email`) and groups from the ID token.
-- Writes: Cognito only, the user's own password and MFA settings.
-- New access patterns or tables: none. When the API exists, the staff dashboard maps to
-  patterns 5, 8, 9 and the family view to patterns 14, 10–12 in `docs/data-model.md`.
+- Writes: Cognito only, the user's own password and MFA settings. The nurse dashboard's
+  acknowledge and resolve change only local state.
+- New access patterns or tables: none. When the API exists, both staff dashboards map
+  to patterns 5, 8, 9, the nurse dashboard's acknowledge and resolve to pattern 16, and
+  the family view to patterns 14, 10–12 in `docs/data-model.md`.
 
 ## IoT
 
@@ -185,27 +193,52 @@ in `src/components/` (at least: `Button`, `TextField`, `PasswordField`, `Card`,
 - Loading / error: busy buttons; "That code is invalid or has expired." for a bad
   code; generic error for anything else; "Back to sign in" link on every step.
 
-### Main page (`/`), staff dashboard — doctor, nurse
+### Main page (`/`), staff dashboards — shared parts
 
-- Header: logo, "Staff dashboard", user menu (name, role badge e.g. "Doctor",
-  "Account settings", "Sign out").
+Both the nurse and doctor dashboards have:
+
+- Header: logo, page title ("Nurse dashboard" or "Doctor dashboard"), user menu (name,
+  role badge "Nurse" or "Doctor", "Account settings", "Sign out").
 - Demo data banner.
 - Greeting ("Good morning, <name>", based on Asia/Singapore time) and current date.
 - Four stat tiles: Residents monitored, Open alerts (critical count shown too), Devices
   offline, Wearables low on battery (< 20 %, computed from demo `battery_pct`: this is a
   display filter, not an alert threshold).
-- Open alerts panel, newest first: severity badge, alert type (Fall detected, Possible
-  fall, Inactivity, Vitals need attention, Device offline, Low battery), resident name
-  and ID, relative time ("12 min ago") with the exact time in a tooltip/`<time>`.
-  No acknowledge/resolve buttons.
+- Alert rows: severity badge, alert type (Fall detected, Possible fall, Inactivity,
+  Vitals need attention, Device offline, Low battery), "Open" or "Acknowledged" label,
+  resident name, resident ID and home ID, relative time ("12 min ago") with the exact
+  time in a tooltip/`<time>`, "Acknowledged by <name>, <time>" once acknowledged, and,
+  for an alert with `escalates_at`, a live countdown "Escalates to nurses in N s" or
+  "Escalated to nurses".
 - Residents panel: search by name or resident ID, filter chips by status
   (All / Urgent / Attention / OK, with counts), and a responsive grid of resident cards:
   initials avatar, name, resident ID, status badge, latest heart rate, SpO2, skin
   temperature, wearable battery and worn/charging state, and "last updated" time.
   Cards are not clickable yet.
-- Loading: skeleton tiles and cards. Empty: if search/filter matches nothing,
-  `EmptyState` "No residents match your search" with a "Clear filters" button.
-  Error: a notice "We couldn't load the dashboard." with a "Try again" button.
+- Loading: skeleton tiles and panels. Empty: "No residents yet", or if search/filter
+  matches nothing, `EmptyState` "No residents match your search" with a "Clear filters"
+  button; "No open alerts." for an empty alert list. Error: a notice "We couldn't load
+  the dashboard." with a "Try again" button.
+
+### Main page (`/`), nurse dashboard — nurse
+
+- The stat tiles are toggle buttons that choose the panel below: Open alerts (the
+  default), Devices offline, Wearables low on battery, or Residents.
+- Open alerts inbox: open and acknowledged alerts, critical pinned to the top, then
+  newest first. Each row has "Acknowledge" (open alerts) and "Resolve" buttons, which
+  record the nurse's display name and the time in local state. Resolved alerts move to
+  a collapsed "Resolved since this page opened" list.
+- Devices offline panel (empty: "All devices are online.") and low-battery panel,
+  lowest first (empty: "No wearables are below 20%.").
+
+### Main page (`/`), doctor dashboard — doctor
+
+- The stat tiles are plain cards, not buttons.
+- Open alerts summary: the critical and acknowledged counts, "Nurses respond to
+  alerts", and the 3 most urgent alerts as tiles, with no acknowledge or resolve
+  buttons.
+- Residents panel as above, with a sparkline of the last 5 readings for heart rate,
+  SpO2, and skin temperature on each card.
 
 ### Main page (`/`), family view — caregiver, family
 
@@ -219,7 +252,7 @@ in `src/components/` (at least: `Button`, `TextField`, `PasswordField`, `Card`,
   (wearable battery, worn/charging, bedroom sensor online/offline), and a "Recent
   alerts" timeline for that resident (up to 5).
 - Loading: skeleton cards. Empty: `EmptyState` "No residents are linked to your account
-  yet. Your care provider can link you." Error: as staff.
+  yet. Your care provider can link you." Error: as the staff dashboards.
 
 ### No access (`/`, signed in but none of the four groups)
 
@@ -236,7 +269,9 @@ in `src/components/` (at least: `Button`, `TextField`, `PasswordField`, `Card`,
 
 ## Alerts and notifications
 
-None delivered. Demo alerts are display-only; alerting rules are still Open decision #2.
+None delivered. Demo alerts are display-only apart from the nurse dashboard's local
+acknowledge and resolve; the escalation countdown only displays the demo
+`escalates_at`. Alerting rules are still Open decision #2.
 
 ## Privacy
 
@@ -256,8 +291,8 @@ None delivered. Demo alerts are display-only; alerting rules are still Open deci
 
 ## Out of scope
 
-- API Gateway, Lambdas, real resident data, resident detail pages, acknowledging or
-  resolving alerts.
+- API Gateway, Lambdas, real resident data, resident detail pages, saving acknowledged
+  or resolved alerts (the nurse dashboard keeps them in local state only).
 - Self sign-up, admin screens for creating users or linking them to residents.
 - Hosted UI / OAuth / social login, SMS or email MFA, SES.
 - Required MFA for staff (MFA is optional pool-wide for now).
