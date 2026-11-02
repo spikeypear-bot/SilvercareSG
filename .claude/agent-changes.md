@@ -5,6 +5,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-02
 
+- **Problem:** the `alerts-core` deploy failed: both SNS topic policies used `sns:*` in
+  a TLS-only Deny, which SNS rejects at apply ("action out of service scope"); tf-check
+  and both reviewers missed it. **Changed:** `.claude/skills/iam-policy/SKILL.md`: list
+  explicit SNS topic actions, never `sns:*`.
+
 - **Problem:** a "only fall-alert may send" Deny on `silvercare-alerts` (added on the
   2026-11-02 rule below) blocked DLQ redrive for every human, admins included
   (iac-reviewer, medium). **Changed:** `.claude/skills/iam-policy/SKILL.md`: no such
