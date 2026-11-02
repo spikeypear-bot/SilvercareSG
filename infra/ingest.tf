@@ -3,11 +3,17 @@
 # which validate each message and add it to the device's latest 5 in silvercare-latest.
 #
 # Each rule also sends every message it matches to the silvercare-history queue (second
-# action, docs/features/ingest-history.md; see history.tf). No alerts yet. Invalid
-# messages are dropped by the Lambdas (logged with a reason code). There is no
+# action, docs/features/ingest-history.md; see history.tf). Invalid messages are dropped
+# by the Lambdas (logged with a reason code). device-health and telemetry have no
 # failed-message queue (user's decision): an invocation that still fails after Lambda's
 # two automatic retries is dropped and shows only as an error in the function's logs.
 # The raw message is still in S3 history.
+#
+# fall-alert also raises fall alerts (docs/features/alerts-core.md): it reads the
+# device's assignment in silvercare-registry and sends an alert message to the
+# silvercare-alerts queue (alerts.tf) before storing the fall. A lost fall is a lost
+# alert, so its failed async invocations and the silvercare_alert rule's failed actions
+# go to silvercare-fall-alert-dlq.
 #
 # Cost: pay per use only (IoT rules, Lambda requests, SQS requests), about US$2/month
 # with the simulator running 24/7, US$0 when it is stopped. No fixed fees.
@@ -32,7 +38,7 @@ locals {
     fall_alert = {
       name        = "silvercare-fall-alert"
       handler     = "handler.fall_alert_handler"
-      description = "Validates fall messages and stores the latest 5 per device. Sends no alerts yet."
+      description = "Validates fall messages, sends a fall alert to the alerts queue, and stores the latest 5 per device."
     }
   }
 
@@ -93,6 +99,34 @@ data "aws_iam_policy_document" "ingest_latest_table" {
   }
 }
 
+# fall-alert only (alerts-core criterion 26): today's statement plus the registry
+# lookup (GetItem on the device's assignment item, DEVICE# partitions only) and sending
+# alert messages to the alerts queue. device-health and telemetry keep
+# ingest_latest_table alone. The module adds sending to the on-failure destination.
+data "aws_iam_policy_document" "fall_alert" {
+  source_policy_documents = [data.aws_iam_policy_document.ingest_latest_table.json]
+
+  statement {
+    sid       = "RegistryDeviceAssignment"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [module.registry_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["DEVICE#*"]
+    }
+  }
+
+  statement {
+    sid       = "AlertsQueue"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.alerts.arn]
+  }
+}
+
 module "ingest_lambda" {
   source   = "./modules/python-lambda"
   for_each = local.ingest_functions
@@ -106,24 +140,39 @@ module "ingest_lambda" {
   memory_size   = 128
   timeout       = 10
 
-  environment = {
-    LATEST_TABLE            = module.latest_table.name
-    POWERTOOLS_SERVICE_NAME = each.value.name
-  }
+  environment = merge(
+    {
+      LATEST_TABLE            = module.latest_table.name
+      POWERTOOLS_SERVICE_NAME = each.value.name
+    },
+    each.key == "fall_alert" ? {
+      ALERTS_QUEUE_URL = aws_sqs_queue.alerts.url
+      REGISTRY_TABLE   = module.registry_table.name
+    } : {},
+  )
 
-  policy_json        = data.aws_iam_policy_document.ingest_latest_table.json
+  policy_json = (each.key == "fall_alert"
+    ? data.aws_iam_policy_document.fall_alert.json
+    : data.aws_iam_policy_document.ingest_latest_table.json
+  )
   log_retention_days = 30
 
-  # No on_failure_destination (no failed-message queue, user's decision), so the module
-  # creates no async invoke config: Lambda's defaults apply (2 retries, then dropped).
+  # fall-alert only: 2 retries within an hour, then the event goes to
+  # silvercare-fall-alert-dlq (alerts-core criterion 9). device-health and telemetry get
+  # none (no failed-message queue, user's decision), so the module creates no async
+  # invoke config for them: Lambda's defaults apply (2 retries, then dropped).
+  on_failure_destination       = each.key == "fall_alert" ? { arn = aws_sqs_queue.fall_alert_dlq.arn } : null
+  maximum_retry_attempts       = 2
+  maximum_event_age_in_seconds = 3600
 }
 
 # ---------------------------------------------------------------------------------------
 # IoT rules
 # ---------------------------------------------------------------------------------------
 
-# Used by the rules' SQS action to the history queue. Invoking the
-# Lambdas is granted by the aws_lambda_permission resources below, not by this role.
+# Used by the rules' SQS action to the history queue and by the silvercare_alert rule's
+# error action. Invoking the Lambdas is granted by the aws_lambda_permission resources
+# below, not by this role.
 data "aws_iam_policy_document" "iot_rules_assume" {
   statement {
     sid     = "IotAssume"
@@ -155,7 +204,7 @@ data "aws_region" "current" {}
 
 resource "aws_iam_role" "iot_rules" {
   name               = "silvercare-iot-rules"
-  description        = "Lets the silvercare ingest IoT rules send messages to silvercare-history."
+  description        = "Lets the silvercare ingest IoT rules send messages to silvercare-history and silvercare-fall-alert-dlq."
   assume_role_policy = data.aws_iam_policy_document.iot_rules_assume.json
 }
 
@@ -166,6 +215,14 @@ data "aws_iam_policy_document" "iot_rules" {
     effect    = "Allow"
     actions   = ["sqs:SendMessage"]
     resources = [aws_sqs_queue.history.arn]
+  }
+
+  # Error action of the silvercare_alert rule (alerts-core criteria 10, 28).
+  statement {
+    sid       = "FallAlertDlq"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.fall_alert_dlq.arn]
   }
 }
 
@@ -195,8 +252,22 @@ resource "aws_iot_topic_rule" "ingest" {
     use_base64 = false
   }
 
-  # No error_action (no failed-message queue, user's decision). If the Lambda action
-  # fails, the history action still runs, so the message is still kept in S3.
+  # silvercare_alert only (alerts-core criterion 10): a fall the rule can't hand to
+  # fall-alert (or to the history queue) goes to silvercare-fall-alert-dlq, whose alarm
+  # emails the team. The other rules have no error_action (no failed-message queue,
+  # user's decision): if their Lambda action fails, the history action still runs, so
+  # the message is still kept in S3.
+  dynamic "error_action" {
+    for_each = each.key == "silvercare_alert" ? [aws_sqs_queue.fall_alert_dlq.id] : []
+
+    content {
+      sqs {
+        queue_url  = error_action.value
+        role_arn   = aws_iam_role.iot_rules.arn
+        use_base64 = false
+      }
+    }
+  }
 
   depends_on = [aws_iam_role_policy.iot_rules]
 }

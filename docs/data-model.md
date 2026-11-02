@@ -72,12 +72,14 @@ go stale. Lambdas without a caller are marked *backend*.
 | 12 | Resident page: staff, or caregiver/family after 13 | This resident's alerts | alerts | Query `pk = RESIDENT#<resident_id>`, descending | per page view |
 | 13 | API, caregiver/family | Is this user linked to this resident? | registry | GetItem `pk = USER#<sub>`, `sk = RESIDENT#<resident_id>` | every caregiver/family request for a resident |
 | 14 | API, caregiver/family | Which residents can this user see? | registry | Query `pk = USER#<sub>`, `begins_with(sk, "RESIDENT#")` | caregiver/family home page |
-| 15 | backend: `alert-processor` | Who is linked to this resident (to notify) | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "USER#")` | per new alert |
+| 15 | *(not used yet)* backend: `alert-processor` | Who is linked to this resident (to notify) | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "USER#")` | per new alert. Not used by alerts-core: it notifies through SNS email subscriptions whose filter policy matches `resident_id`, set in Terraform variables (docs/features/alerts-core.md, criteria 21 and 24), because SNS can only email confirmed subscribers |
 | 16 | Staff only | Acknowledge or resolve an alert | alerts | UpdateItem `pk`, `sk` | per action |
 | 17 | Staff only, seed script | Add or edit a resident, assign a device, link a user | registry | PutItem / UpdateItem / DeleteItem | rare |
 | 18 | Resident page: staff, or caregiver/family after 13 | This resident's profile and thresholds | registry | BatchGetItem `RESIDENT#<resident_id>` / `PROFILE` and `THRESHOLDS#<resident_id>` / `THRESHOLDS` | per page view |
 | 19 | Resident page: staff, or caregiver/family after 13 | This resident's photo | S3 `silvercare-photos-<account_id>` | API returns a presigned GET URL for `photo_key`, valid 5 min | per page view |
 | 20 | Staff only | Upload or replace a photo | S3 | API returns a presigned POST (JPEG only, max 2 MB) | rare |
+| 21 | backend: `alert-processor` | A wearable's newest vitals, to add to a fall alert | latest | GetItem `pk = DEVICE#<device_id>`, `sk = MSG#vitals` (uses `entries[0]`) | per fall alert |
+| 22 | backend: `alert-processor` | Re-read an alert that already exists (a redelivered message) | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent | per redelivered alert message |
 
 No pattern uses `Scan`.
 
@@ -304,14 +306,22 @@ gets enough write capacity for every vitals write.
 | `alert_type` | `fall` | full list in the alerting spec |
 | `device_id` | `wearable-0007` | |
 | `event_ts` | `2026-10-18T03:14:07.360Z` | see below |
-| `created_at` | `2026-10-18T03:14:07.900Z` | |
+| `received_at` | `2026-10-18T03:14:07.410Z` | when the IoT rule received the triggering message (from the alert message) |
+| `created_at` | `2026-10-18T03:14:07.900Z` | when `alert-processor` stored the item |
 | `status` | `open` | `open`, `acknowledged`, `resolved` |
 | `source_message_id` | `c2a1d4f0-8b6e-4f0a-a3c9-7e15d2b9f804` | for message-triggered alerts |
-| `details` | `{"confidence": 0.91, "peak_g": 3.8}` | small, type-specific |
+| `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals) |
+| `notified_at` | `2026-10-18T03:14:08.300Z` | set once, after the SNS email was published; guards against a second email on redelivery. Absent for unassigned alerts |
+| `notification` | `skipped_unassigned` | only on unassigned alerts (`pk = RESIDENT#unassigned`): nobody is emailed |
 | `acknowledged_by`, `acknowledged_at` | staff `sub`, timestamp | |
 | `resolved_by`, `resolved_at` | staff `sub`, timestamp | |
 | `open_pk` | `OPEN` | present until resolved; removing it takes the alert out of the `open` index |
 | `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days. See [Retention](#retention) |
+
+An alert from a device with no assignment (no `DEVICE#<id>` / `ASSIGNMENT` item in the
+registry, or one without `resident_id`) is still stored, with
+`resident_id = unassigned`, so `pk = RESIDENT#unassigned` (docs/features/alerts-core.md).
+It is never emailed.
 
 `event_ts` is the time of the triggering event, so `alert_id` and the key are the same
 however many times the same event is processed:
@@ -330,6 +340,14 @@ Alerts reach this table through the alerts queue: `telemetry`, `fall-alert`, and
 writes the item here for the staff dashboard, and writes the alert to S3 for tracking
 (see `docs/decisions/0001-iot-rule-routing.md`). The queue message carries the same
 fields as the item, so `alert_id` is computed once, by the detector.
+
+`alert-processor` handles each alert message in this order (docs/features/alerts-core.md):
+add `details.latest_vitals` for a fall (pattern 21); PutItem with
+`attribute_not_exists(pk)` (pattern 6), or, if the item already exists, re-read it
+(pattern 22) and use it from there; write it to S3 `alerts/` (see
+[S3 history](#s3-history)); then, if the resident is assigned and the item has no
+`notified_at`, publish the email and `SET notified_at` with
+`attribute_not_exists(notified_at)`. No `expires_at` until the alert is resolved.
 
 ### Index
 
@@ -356,17 +374,24 @@ and Athena (docs/features/ingest-history.md; the History path in
   `<message>` is the body's `message` if it matches `^[a-z]{1,16}$`, else `unknown`;
   bodies that aren't a JSON object go to `unparseable`. `<date>` is the UTC date of
   `received_at` (else the SQS sent time). The timestamp is when the file was written;
-  the UUID is random, so keys hold no device or resident IDs. `alerts/` is reserved for
-  `alert-processor` (not built yet).
+  the UUID is random, so keys hold no device or resident IDs.
+- **Alerts:** `alerts/date=<yyyy-mm-dd>/<alert_id>.json`, one object per alert:
+  `<date>` is the UTC date of `event_ts`, the body is the `silvercare-alerts` item as
+  one JSON object (`Content-Type: application/json`), as stored before the email is
+  sent (so without `notified_at`). A redelivered message overwrites the same key. Only
+  `alert-processor` may write `alerts/` (its role, plus a Deny for every other
+  principal in the bucket policy). The `alert_id` key reveals neither the resident nor
+  the type of event.
 - **Format:** gzip-compressed JSON Lines (`Content-Type: application/gzip`, no
   `Content-Encoding`), UTF-8, one compact JSON object per line in the order received,
   ending with a newline. Each line is the IoT rule's output (device payload plus
   `device_id`, `message`, `received_at`), stored as received: invalid messages are
   kept, and a redelivered batch can store a message twice (duplicates are removed later
   by `message_id`). Unparseable bodies are stored as `{"raw_body": "<body>"}`.
-- **Writer:** the `history` Lambda (`silvercare-history`), one file per message type and
+- **Writers:** the `history` Lambda (`silvercare-history`), one file per message type and
   UTC day per batch (up to 1,000 messages or 5 minutes) from the `silvercare-history`
-  queue. It may only add objects under `telemetry/`.
+  queue. It may only add objects under `telemetry/`. `alert-processor` writes
+  `alerts/` only.
 - **Readers:** developers (the shared IAM user's `ReadProjectBuckets` statement; read
   only, no write or delete), e.g. `scripts/ingest-check.py --history`. Lake Formation
   and Athena later.
@@ -407,7 +432,16 @@ which absorbs this, but only on a best-effort basis. So:
 - The simulator spreads devices across the minute (random offset per device).
 - Lambdas use boto3's `adaptive` retry mode, so throttled writes back off and retry.
 - IoT rules invoke Lambdas asynchronously, with Lambda's two automatic retries. There
-  is no failed-message queue (see `docs/decisions/0001-iot-rule-routing.md`).
+  is no failed-message queue for `telemetry` and `device-health` (see
+  `docs/decisions/0001-iot-rule-routing.md`); `fall-alert` sends events that still fail
+  to `silvercare-fall-alert-dlq` (docs/features/alerts-core.md).
+
+**`silvercare-fall-alert-dlq` contents:** raw fall payloads (including `accel_window`)
+linked to the `device_id` from the topic, plus Lambda error details (from fall-alert's
+on-failure destination and the `silvercare_alert` rule's error action). Kept up to 14
+days (SQS maximum retention), encrypted with SSE-SQS, and the queue policy denies
+requests without TLS and sends from any role other than fall-alert and
+`silvercare-iot-rules`.
 
 ## Settings (all tables)
 
@@ -429,6 +463,8 @@ which absorbs this, but only on a best-effort basis. So:
 | Resolved alerts | 30 days after `resolved_at` | TTL `expires_at` |
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
 | History (S3 `telemetry/`) | not decided (Open decision #4); kept until then | none yet (no expiry rule) |
+| Alert copies (S3 `alerts/`) | not decided (Open decision #4); kept until then | none yet (no expiry rule) |
+| Failed fall events (SQS `silvercare-fall-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
 
 Point-in-time recovery keeps deleted and TTL-expired items restorable for up to 35
 days, so "deleted" data still exists in backups for that long.

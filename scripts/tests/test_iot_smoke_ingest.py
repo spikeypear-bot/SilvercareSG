@@ -360,6 +360,14 @@ def test_main_ingest_output_has_no_payload_values_or_keys(
 
     captured = capsys.readouterr()
     text = captured.out + captured.err
+    # The output prints the sent message IDs on purpose. They are random UUIDs, which
+    # can contain "999", so remove them before checking for leaked values.
+    sent_ids = [
+        json.loads(p)["message_id"] for _, p in fake_conn.instances[-1].published
+    ]
+    assert sent_ids
+    for message_id in sent_ids:
+        text = text.replace(message_id, "<id>")
     for value in ("999", "33.4", "hr_bpm", "accel", "{", PRIVATE_KEY_TEXT, "synthetic"):
         assert value not in text
 

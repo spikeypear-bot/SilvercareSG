@@ -62,6 +62,13 @@ still in S3 history, because each rule action runs independently. Revisit this f
 `fall-alert` when it starts raising alerts, where a dropped message would be a lost
 fall alert.
 
+Amended 2026-11-02 (`docs/features/alerts-core.md`): `fall-alert` now has both. A fall
+that still fails after Lambda's two retries goes to `silvercare-fall-alert-dlq` (Lambda
+on-failure destination), and the `alert` rule has an error action to the same queue for
+messages it can't hand to the Lambda. A CloudWatch alarm emails the team when that
+queue, or the alerts queue's DLQ, holds a message. `device-health` and `telemetry` are
+unchanged.
+
 Responsibilities:
 
 - **`device-health`**: validate, add the `status` to the device's latest 5 (the newest

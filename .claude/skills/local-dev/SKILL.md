@@ -25,6 +25,16 @@ host. The container has no AWS credentials: AWS calls go to moto or DynamoDB Loc
 For one-off commands: `docker compose run --rm -T dev <command>` (or
 `docker compose exec -T dev <command>` while `make up` is running).
 
+On a Windows host without `make`, run what the target runs (see the `Makefile`), e.g.
+`docker compose up -d dev dynamodb-local`, then
+`docker compose exec -T dev sh docker/run-lambda-tests.sh unit [<name>]`. Shell scripts
+must stay LF (`.gitattributes`), or `sh` fails in the container with `: not found`.
+Fix a CRLF script by stripping `\r` from that file only (`sed -i 's/\r$//' <file>`).
+Never suggest `git checkout-index --force --all` or `git reset --hard` to refresh line
+endings while anything is uncommitted: they silently overwrite uncommitted edits. If
+port 8000 is taken by another container, the dev container still runs and unit tests
+work; only DynamoDB Local (integration tests) needs the port.
+
 ## Levels of testing
 
 1. **Unit tests (default):** pytest + moto. See `lambda-test`.

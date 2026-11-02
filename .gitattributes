@@ -1,0 +1,9 @@
+# Check out text files with LF on every OS. Scripts run inside the Linux dev container
+# and CI, where CRLF breaks them (e.g. `sh docker/run-lambda-tests.sh`), and Windows
+# clones with core.autocrlf=true would otherwise get CRLF.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
