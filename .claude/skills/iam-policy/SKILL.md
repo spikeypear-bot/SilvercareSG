@@ -36,6 +36,11 @@ justified by something the code actually does.
   `cloudwatch.amazonaws.com` publishing alarms) still need an Allow. Such a Deny also
   blocks admins and root, so never put one on an action operators need for recovery,
   e.g. `sqs:SendMessage` on a queue a DLQ redrives into.
+- **SNS topic policies** reject `sns:*` ("Policy statement action out of service
+  scope"), and only fail at apply: `tf-check` doesn't catch it. List the topic actions
+  instead (`sns:AddPermission`, `DeleteTopic`, `GetTopicAttributes`,
+  `ListSubscriptionsByTopic`, `Publish`, `RemovePermission`, `SetTopicAttributes`,
+  `Subscribe`), e.g. for a TLS-only Deny. SQS (`sqs:*`) and S3 (`s3:*`) accept wildcards.
 - **Logging:** grant `logs:CreateLogStream` and `logs:PutLogEvents` on the
   function's own log group ARN only. Create the log group in Terraform with a
   retention period so the role does not need `logs:CreateLogGroup`.
