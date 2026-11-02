@@ -287,10 +287,18 @@ reads, one DynamoDB Query per vitals alert. No new resources with fees.
   check).
 - Alerts on `activity_pct`.
 
+## Known gap (to raise with the team)
+
+**`telemetry` has no dead-letter queue** (user's decision, 2026-11-02: not on the
+architecture diagram's telemetry path, so not added in A2). A `telemetry` invocation
+that still fails after Lambda's two retries is dropped, so a vitals **warning** raised
+there can be lost; the raw `vitals` message is still in S3 history. Critical
+`vitals_alert`s and falls are not affected: they go through `fall-alert`, which has a
+DLQ. To close the gap later: an on-failure destination `silvercare-telemetry-dlq`
+(14 days, alarm to the ops topic), which would also hold failed raw `vitals`,
+`motion`, and `bed` messages for 14 days. Worth stating in the report as a known
+trade-off against the "zero lost alerts" goal.
+
 ## Open questions
 
-- **`telemetry` failures:** vitals alerts raised in `telemetry` have no dead-letter
-  queue. Today a `telemetry` invocation that fails twice is dropped (decided
-  2026-10-25, before alerts existed). Add an on-failure destination
-  `silvercare-telemetry-dlq` (14 days, alarm to the ops topic) like `fall-alert`? It
-  would also hold failed raw `vitals`, `motion`, and `bed` messages for 14 days.
+None.
