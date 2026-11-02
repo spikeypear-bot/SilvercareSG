@@ -3,6 +3,31 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-02
+
+- **Problem:** a "only fall-alert may send" Deny on `silvercare-alerts` (added on the
+  2026-11-02 rule below) blocked DLQ redrive for every human, admins included
+  (iac-reviewer, medium). **Changed:** `.claude/skills/iam-policy/SKILL.md`: no such
+  Deny on actions operators need for recovery, e.g. sends into a redrive target.
+
+- **Problem:** in `alerts-core`, queue and topic policies had Allow statements naming
+  roles created in the same apply, which can fail the first apply with PrincipalNotFound
+  (iac-reviewer, low). **Changed:** `.claude/skills/iam-policy/SKILL.md`: limit resource
+  policies to our roles with a Deny on `aws:PrincipalArn`, no role-principal Allow.
+
+- **Problem:** `test_main_ingest_output_has_no_payload_values_or_keys` flaked (~3%):
+  it asserted `"999"` was absent from output that prints random UUIDs. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: strip random IDs or use fixed ones before
+  "not in output" checks.
+- **Problem:** on a Windows host without `make`, tests failed: CRLF checkouts broke
+  `sh docker/run-lambda-tests.sh`, ruff EXE002 flagged every file, and port 8000 was
+  taken. **Changed:** `.claude/skills/local-dev/SKILL.md`: Windows commands, LF
+  scripts, port note. (Repo fixes outside `.claude/`: `.gitattributes`, `ruff.toml`.)
+- **Problem:** Claude told the user to run `git checkout-index --force --all` to refresh
+  line endings; it overwrote three uncommitted edits, which had to be redone.
+  **Changed:** `.claude/skills/local-dev/SKILL.md`: fix CRLF per file, never suggest
+  bulk checkout or reset while anything is uncommitted.
+
 ## 2026-10-25
 
 - **Problem:** `make smoke-test` failed "publish status to own topic" against real AWS:

@@ -3,3 +3,8 @@ target-version = "py313"   # matches the Lambda runtime
 
 # Ruff also formats code blocks in Markdown; keep it off the docs and skills.
 extend-exclude = ["*.md"]
+
+[lint]
+# Docker Desktop shows every file bind-mounted from a Windows host as executable, so
+# EXE002 ("executable but no shebang") fails on every Python file there, never in CI.
+extend-ignore = ["EXE002"]

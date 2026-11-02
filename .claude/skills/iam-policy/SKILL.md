@@ -28,6 +28,14 @@ justified by something the code actually does.
   `aws:SourceAccount` and `ArnLike` `aws:SourceArn` on `rule/silvercare_*` (a pattern,
   because the rules depend on the role). A spec that names only one doesn't remove the
   other.
+- **Resource policies** (SQS queue, SNS topic, S3 bucket) limiting a resource to our
+  own roles: don't add an Allow naming a role ARN as principal. Same-account roles get
+  the action from their IAM policy, and SNS/SQS check that named principals exist, so a
+  role created in the same apply can fail it (PrincipalNotFound). Use a Deny with an
+  `aws:PrincipalArn` condition instead. Service principals (e.g.
+  `cloudwatch.amazonaws.com` publishing alarms) still need an Allow. Such a Deny also
+  blocks admins and root, so never put one on an action operators need for recovery,
+  e.g. `sqs:SendMessage` on a queue a DLQ redrives into.
 - **Logging:** grant `logs:CreateLogStream` and `logs:PutLogEvents` on the
   function's own log group ARN only. Create the log group in Terraform with a
   retention period so the role does not need `logs:CreateLogGroup`.

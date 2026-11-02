@@ -8,7 +8,7 @@ import handler
 import pytest
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
-from conftest import TABLE_NAME
+from conftest import REGISTRY_TABLE, TABLE_NAME
 from events import (
     BEDROOM,
     DELETE,
@@ -39,7 +39,16 @@ CASES = [
 
 # Keys Powertools adds to every record; anything else must be from our allow-list.
 POWERTOOLS_KEYS = {"level", "location", "message", "timestamp", "service"}
-OUR_KEYS = {"device_id", "message_id", "outcome", "reason", "error"}
+OUR_KEYS = {
+    "device_id",
+    "message_id",
+    "outcome",
+    "reason",
+    "error",
+    # fall-alert only, once the alert is queued (alerts-core criterion 7)
+    "alert_id",
+    "alert_outcome",
+}
 
 _d = TypeDeserializer()
 
@@ -529,16 +538,34 @@ class CallRecorder:
         return wrapper
 
 
-@pytest.mark.parametrize(("message", "device_id"), CASES)
+@pytest.mark.parametrize(("message", "device_id"), [c for c in CASES if c[0] != "fall"])
 def test_only_get_and_put_on_the_latest_table(
-    latest_table, monkeypatch, message, device_id
+    latest_table, alerts_queue, monkeypatch, message, device_id
 ):
+    """device-health and telemetry never read the registry or touch the queue."""
     recorder = CallRecorder(latest_table)
     monkeypatch.setattr(handler, "dynamodb_client", lambda: recorder)
 
     invoke(rule_event(message, device_id))
 
     assert recorder.calls == [("get_item", TABLE_NAME), ("put_item", TABLE_NAME)]
+    assert handler.sqs_client.cache_info().currsize == 0
+    assert alerts_queue.receive_all() == []
+
+
+def test_fall_reads_the_registry_then_gets_and_puts_on_the_latest_table(
+    latest_table, monkeypatch
+):
+    recorder = CallRecorder(latest_table)
+    monkeypatch.setattr(handler, "dynamodb_client", lambda: recorder)
+
+    invoke(rule_event("fall"))
+
+    assert recorder.calls == [
+        ("get_item", REGISTRY_TABLE),
+        ("get_item", TABLE_NAME),
+        ("put_item", TABLE_NAME),
+    ]
 
 
 def test_table_name_comes_from_environment(latest_table, monkeypatch):

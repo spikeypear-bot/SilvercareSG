@@ -90,3 +90,28 @@ output "history_bucket_name" {
   description = "Name of the S3 bucket holding the telemetry history (gzipped JSON Lines under telemetry/)."
   value       = aws_s3_bucket.history.bucket
 }
+
+output "alerts_queue_url" {
+  description = "URL of the silvercare-alerts SQS queue (fall-alert sends alert messages here; alert-processor reads it)."
+  value       = aws_sqs_queue.alerts.url
+}
+
+output "alerts_dlq_url" {
+  description = "URL of the silvercare-alerts-dlq SQS queue (alert messages that failed 5 receives)."
+  value       = aws_sqs_queue.alerts_dlq.url
+}
+
+output "fall_alert_dlq_url" {
+  description = "URL of the silvercare-fall-alert-dlq SQS queue (failed fall-alert invocations and silvercare_alert rule errors)."
+  value       = aws_sqs_queue.fall_alert_dlq.url
+}
+
+output "alerts_topic_arn" {
+  description = "ARN of the silvercare-alerts SNS topic (alert emails, filtered by resident_id)."
+  value       = aws_sns_topic.alerts.arn
+}
+
+output "ops_topic_arn" {
+  description = "ARN of the silvercare-ops SNS topic (DLQ alarm emails)."
+  value       = aws_sns_topic.ops.arn
+}

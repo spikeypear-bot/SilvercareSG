@@ -62,7 +62,7 @@ module "latest_table" {
   ]
 }
 
-# Alerts. Written by alert-processor from the alerts queue (built later). No stream.
+# Alerts. Written by alert-processor from the alerts queue (alerts.tf). No stream.
 module "alerts_table" {
   source = "./modules/dynamodb-table"
 

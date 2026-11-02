@@ -119,3 +119,79 @@ in the S3 history bucket, which is written in batches of up to 5 minutes. Leave 
 - **Replace a lost or leaked key:** delete `secrets/device-keys/<id>.key` and
   `infra/devices/csr/<id>.csr`, run `make device-keys DEVICE=<id>`, commit the new CSR,
   and merge. The plan shows that device's certificate as replaced, which is expected.
+
+## Alerts
+
+A wearable `fall` becomes an alert: `fall-alert` sends it to the `silvercare-alerts`
+queue, and `alert-processor` stores it in `silvercare-alerts`, archives it in S3
+`alerts/`, and emails the resident's subscribers. The spec is
+`docs/features/alerts-core.md`.
+
+### Subscribers
+
+Keep your working copy in the git-ignored `secrets/subscribers.json` and share it
+privately with the rest of `secrets/`:
+
+```json
+{
+  "subscriber_emails": { "family-c1": "you@example.com", "ops-1": "you@example.com" },
+  "alert_subscribers": { "family-c1": { "resident_ids": ["res-0001"] } },
+  "ops_subscribers": ["ops-1"]
+}
+```
+
+CI can't read `secrets/`. A repo admin copies the values into GitHub (Settings →
+Secrets and variables → Actions), each as compact JSON:
+
+| Name | Kind | Value |
+|---|---|---|
+| `SUBSCRIBER_EMAILS` | secret | `subscriber_emails` (label → email) |
+| `ALERT_SUBSCRIBERS` | variable | `alert_subscribers` (label → resident IDs) |
+| `OPS_SUBSCRIBERS` | variable | `ops_subscribers` (labels that get DLQ alarm emails) |
+
+- Labels appear in the public plan comment: use `family-c1`, `ops-1`, never names.
+- Use team addresses, not real family members': emails are stored in the Terraform
+  state, which developers can read.
+- The next deploy creates one subscription per label. Each address gets an AWS
+  "Subscription Confirmation" email: click **Confirm subscription**, or nothing is
+  delivered. Unconfirmed subscriptions expire after 3 days and can't be deleted by
+  Terraform until then.
+- The "unsubscribe" link at the bottom of alert emails removes the subscription
+  without Terraform noticing. To get it back, remove the label, deploy, add it again,
+  deploy.
+
+### Seeding the registry
+
+Alerts need device → resident assignments. Once, with your own AWS credentials (the
+venv from "Checking ingest"):
+
+```sh
+.venv/bin/python scripts/seed-registry.py --dry-run   # prints the keys it would write
+.venv/bin/python scripts/seed-registry.py
+```
+
+It creates synthetic residents `res-0001`–`res-0003`, assigns `wearable-000N` and
+`bedroom-000N` (N = 1–3) to `res-000N`, and adds every other device as an unassigned
+spare. Existing items are left alone (`exists`), so running it again is safe.
+
+### Checking alerts
+
+After the deploy, the subscription confirmations, and the seed:
+
+```sh
+make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) INGEST=1
+```
+
+The smoke test sends a valid `fall`. Expect, within a minute:
+
+- one email to `res-0001`'s subscribers, and none to anyone else;
+- one item under `RESIDENT#res-0001` in `silvercare-alerts`, and one object under
+  `alerts/date=<today, UTC>/` in the history bucket;
+- both `silvercare-alerts-dlq` and `silvercare-fall-alert-dlq` empty;
+- a datapoint for the `AlertDispatchLatency` metric (CloudWatch → Metrics →
+  `SilverCare`).
+
+Then run it with `DEVICE=wearable-0010` (unassigned): one item under
+`RESIDENT#unassigned`, and no email. If a DLQ alarm email arrives, look at the queue's
+messages and the `/aws/lambda/silvercare-fall-alert` and
+`/aws/lambda/silvercare-alert-processor` logs.
