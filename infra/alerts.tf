@@ -203,11 +203,27 @@ resource "aws_sns_topic" "alerts" {
   kms_master_key_id = "alias/aws/sns"
 }
 
-# Only alert-processor may publish; nothing without TLS. sns:* and principal * in the
-# Deny statements are intentional (narrower access, not broader). No Allow naming the
+# Only alert-processor may publish; nothing without TLS. All topic actions and principal
+# * in the Deny statements are intentional (narrower access, not broader). No Allow naming the
 # alert-processor role: its own IAM policy grants sns:Publish, and a role principal in
 # the topic policy can fail the first apply (PrincipalNotFound) and drifts if the role
 # is recreated.
+locals {
+  # Every action a topic policy may name. SNS rejects "sns:*" in a topic policy
+  # ("Policy statement action out of service scope"), so the TLS-only Deny lists them.
+  # Same list as the default policy SNS gives a new topic.
+  sns_topic_actions = [
+    "sns:AddPermission",
+    "sns:DeleteTopic",
+    "sns:GetTopicAttributes",
+    "sns:ListSubscriptionsByTopic",
+    "sns:Publish",
+    "sns:RemovePermission",
+    "sns:SetTopicAttributes",
+    "sns:Subscribe",
+  ]
+}
+
 data "aws_iam_policy_document" "alerts_topic" {
   statement {
     sid       = "DenyPublishFromOthers"
@@ -230,7 +246,7 @@ data "aws_iam_policy_document" "alerts_topic" {
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"
-    actions   = ["sns:*"]
+    actions   = local.sns_topic_actions
     resources = [aws_sns_topic.alerts.arn]
 
     principals {
@@ -276,7 +292,7 @@ resource "aws_sns_topic" "ops" {
 }
 
 # Only CloudWatch alarms named silvercare-* in this account may publish; nothing
-# without TLS. sns:* and principal * in the Deny statements are intentional.
+# without TLS. All topic actions and principal * in the Deny statements are intentional.
 data "aws_iam_policy_document" "ops_topic" {
   statement {
     sid       = "AllowPublishFromAccountAlarms"
@@ -324,7 +340,7 @@ data "aws_iam_policy_document" "ops_topic" {
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"
-    actions   = ["sns:*"]
+    actions   = local.sns_topic_actions
     resources = [aws_sns_topic.ops.arn]
 
     principals {
