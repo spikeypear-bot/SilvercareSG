@@ -28,6 +28,7 @@ POWERTOOLS_KEYS = {"level", "location", "message", "timestamp", "service"}
 OUR_KEYS = {
     "alert_id",
     "alert_type",
+    "severity",
     "device_id",
     "resident_id",
     "outcome",
@@ -36,7 +37,7 @@ OUR_KEYS = {
     "dispatch_latency_ms",
 }
 ARCHIVE_KEY = f"alerts/date=2026-10-18/{ALERT_ID}.json"
-SUBJECT = "SilverCare alert: Fall - res-0003"
+SUBJECT = "SilverCare CRITICAL alert: Fall - res-0003"
 
 _d = TypeDeserializer()
 _s = TypeSerializer()
@@ -143,6 +144,7 @@ def test_valid_alert_is_stored_with_data_model_attributes(aws):
         "sk",
         "alert_id",
         "alert_type",
+        "severity",
         "device_id",
         "event_ts",
         "received_at",
@@ -157,6 +159,7 @@ def test_valid_alert_is_stored_with_data_model_attributes(aws):
     assert item["sk"] == f"ALERT#{EVENT_TS}#{ALERT_ID}"
     assert item["alert_id"] == ALERT_ID
     assert item["alert_type"] == "fall"
+    assert item["severity"] == "critical"
     assert item["device_id"] == DEVICE
     assert item["event_ts"] == EVENT_TS
     assert item["received_at"] == RECEIVED_AT
@@ -579,6 +582,7 @@ def test_one_log_line_per_message_with_ids_and_outcome(aws, logs):
     assert rec["message"] == "alert"
     assert rec["alert_id"] == ALERT_ID
     assert rec["alert_type"] == "fall"
+    assert rec["severity"] == "critical"
     assert rec["device_id"] == DEVICE
     assert rec["resident_id"] == RESIDENT
     assert rec["outcome"] == "notified"

@@ -1,4 +1,5 @@
-"""alert-processor Lambda (docs/features/alerts-core.md, criteria 13-20).
+"""alert-processor Lambda (docs/features/alerts-core.md, criteria 13-20;
+docs/features/vitals-alerts.md, criteria 17-22).
 
 Fed by an SQS event source mapping on silvercare-alerts (batch size 10, no batching
 window, ReportBatchItemFailures). Each record is handled on its own; a failed record
@@ -9,6 +10,13 @@ For each record:
 
 0. Parse and validate the alert message (message.py). An invalid body is logged with
    a reason code and reported as a failure, so it ends in the DLQ, never dropped.
+0b. Hold back repeats (every type except fall): Query the resident's alerts with
+   event_ts after (event_ts - 30 min) and up to this one's, same event_ts included
+   (pattern 7). If another alert with the
+   same alert_type and severity (and, for unassigned, the same device) is there, this
+   one is suppressed: not stored, archived, or emailed, logged as "suppressed", and the
+   SQS message is deleted. Times come from event_ts, so a retry decides the same way;
+   an alert that is already stored is never suppressed afterwards.
 1. Enrich (fall only): add details.latest_vitals (hr_bpm, spo2_pct, ts) from the
    device's newest vitals entry in silvercare-latest, if there is one.
 2. Store: conditional PutItem on silvercare-alerts (attribute_not_exists(pk)). If the
@@ -22,15 +30,15 @@ For each record:
    sends the email again on retry: a duplicate is accepted, a missing one isn't.
 
 Any AWS error fails only that record. Logs hold one line per record with alert_id,
-alert_type, device_id, resident_id, and the outcome (plus a reason or error code),
-never details, vitals, email addresses, or the email body.
+alert_type, severity, device_id, resident_id, and the outcome (plus a reason or error
+code), never details, vitals, limits, email addresses, or the email body.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import cache
 from typing import Any
@@ -42,7 +50,7 @@ from aws_lambda_powertools.metrics import EphemeralMetrics, MetricUnit
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from message import UNASSIGNED, Alert, Rejection, log_ids, parse_alert
+from message import UNASSIGNED, Alert, Rejection, log_ids, parse_alert, parse_ts
 
 # The service name comes from POWERTOOLS_SERVICE_NAME, set by Terraform.
 logger = Logger()
@@ -52,10 +60,15 @@ ARCHIVE_PREFIX = "alerts"
 CONTENT_TYPE = "application/json"
 LATENCY_METRIC = "AlertDispatchLatency"
 
+# Repeat suppression (vitals-alerts criteria 17-19).
+REPEAT_WINDOW = timedelta(minutes=30)
+NEVER_SUPPRESSED = frozenset({"fall"})
+
 STORED = "stored"
 DUPLICATE = "duplicate"
 NOTIFIED = "notified"
 SKIPPED_UNASSIGNED = "skipped_unassigned"
+SUPPRESSED = "suppressed"
 INVALID = "invalid"
 ERROR = "error"
 
@@ -122,6 +135,7 @@ def build_item(
         **alert_key(alert),
         "alert_id": alert.alert_id,
         "alert_type": alert.alert_type,
+        "severity": alert.severity,
         "device_id": alert.device_id,
         "event_ts": alert.event_ts,
         "received_at": alert.received_at,
@@ -134,6 +148,48 @@ def build_item(
     if alert.resident_id == UNASSIGNED:
         item["notification"] = SKIPPED_UNASSIGNED
     return item
+
+
+def repeat_window(alert: Alert) -> tuple[str, str]:
+    """The sort-key bounds of pattern 7: "ALERT#<event_ts - 30 min>" to
+    "ALERT#<event_ts>#~" (vitals-alerts criterion 17).
+
+    Keys are "ALERT#<event_ts>#<alert_id>", and "~" sorts after every alert_id
+    character, so items at the same event_ts are returned too, including this alert's
+    own item on a retry (which is_repeat needs to see). An item exactly 30 minutes
+    before is returned by the lower bound but not counted by is_repeat.
+    """
+    start = format_iso_ms(alert.event_dt - REPEAT_WINDOW)
+    return f"ALERT#{start}", f"ALERT#{alert.event_ts}#~"
+
+
+def is_repeat(alert: Alert, items: list[dict[str, Any]]) -> bool:
+    """True if another alert in the window (same event_ts included) holds this one
+    back.
+
+    Matches need the same alert_type and severity (a warning never holds back a
+    critical alert, or the other way round), a different alert_id, and, for an
+    unassigned device, the same device_id. An earlier alert at exactly 30 minutes
+    before is outside the window. If this alert itself is already stored (a retry
+    after it passed the check), it is never held back.
+    """
+    if alert.alert_type in NEVER_SUPPRESSED:
+        return False
+    window_start = alert.event_dt - REPEAT_WINDOW
+    if any(item.get("alert_id") == alert.alert_id for item in items):
+        return False
+    for item in items:
+        if item.get("alert_type") != alert.alert_type:
+            continue
+        if item.get("severity") != alert.severity:
+            continue
+        if alert.resident_id == UNASSIGNED and item.get("device_id") != alert.device_id:
+            continue
+        item_dt = parse_ts(item.get("event_ts"))
+        if item_dt is None or not window_start < item_dt <= alert.event_dt:
+            continue
+        return True
+    return False
 
 
 def archive_key(alert: Alert) -> str:
@@ -200,6 +256,33 @@ def read_latest_vitals(device_id: str) -> dict[str, Any] | None:
     return latest_vitals(entries[0]) if entries else None
 
 
+def recent_alerts(alert: Alert) -> list[dict[str, Any]]:
+    """Step 0b (pattern 7): the resident's alerts with event_ts in the 30 minutes up to
+    this one. Strongly consistent, so an alert stored a moment ago is seen. Reads only
+    the attributes the repeat check compares."""
+    low, high = repeat_window(alert)
+    client = dynamodb_client()
+    items: list[dict[str, Any]] = []
+    request: dict[str, Any] = {
+        "TableName": os.environ["ALERTS_TABLE"],
+        "KeyConditionExpression": "pk = :pk AND sk BETWEEN :low AND :high",
+        "ExpressionAttributeValues": {
+            ":pk": {"S": f"RESIDENT#{alert.resident_id}"},
+            ":low": {"S": low},
+            ":high": {"S": high},
+        },
+        "ProjectionExpression": "alert_id, alert_type, severity, device_id, event_ts",
+        "ConsistentRead": True,
+    }
+    while True:
+        response = client.query(**request)
+        items.extend(_deserialize(item) for item in response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
+        request["ExclusiveStartKey"] = last_key
+
+
 def store_alert(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Step 2: (stored, item) or (duplicate, the existing item)."""
     client = dynamodb_client()
@@ -258,7 +341,7 @@ def notify(alert: Alert, item: dict[str, Any]) -> int:
     """Step 4: publish the email, then set notified_at. Returns the dispatch latency."""
     sns_client().publish(
         TopicArn=os.environ["ALERTS_TOPIC_ARN"],
-        Subject=email_text.subject(alert.alert_type, alert.resident_id),
+        Subject=email_text.subject(alert.alert_type, alert.resident_id, alert.severity),
         Message=email_text.body(item, alert.resident_id, os.environ["PORTAL_URL"]),
         MessageAttributes={
             "resident_id": {"DataType": "String", "StringValue": alert.resident_id},
@@ -284,7 +367,12 @@ def notify(alert: Alert, item: dict[str, Any]) -> int:
 
 
 def process(alert: Alert) -> tuple[str, int | None]:
-    """Steps 1-4 for one valid alert. Returns (outcome, dispatch latency or None)."""
+    """Steps 0b-4 for one valid alert. Returns (outcome, dispatch latency or None)."""
+    if alert.alert_type not in NEVER_SUPPRESSED and is_repeat(
+        alert, recent_alerts(alert)
+    ):
+        return SUPPRESSED, None
+
     details = dict(alert.details)
     if alert.alert_type == "fall":
         vitals = read_latest_vitals(alert.device_id)
@@ -315,6 +403,7 @@ def handle_record(record: Any) -> bool:
     ids = {
         "alert_id": result.alert_id,
         "alert_type": result.alert_type,
+        "severity": result.severity,
         "device_id": result.device_id,
         "resident_id": result.resident_id,
     }

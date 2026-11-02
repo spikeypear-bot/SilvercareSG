@@ -92,7 +92,7 @@ output "history_bucket_name" {
 }
 
 output "alerts_queue_url" {
-  description = "URL of the silvercare-alerts SQS queue (fall-alert sends alert messages here; alert-processor reads it)."
+  description = "URL of the silvercare-alerts SQS queue (critical-alert and telemetry send alert messages here; alert-processor reads it)."
   value       = aws_sqs_queue.alerts.url
 }
 
@@ -101,9 +101,9 @@ output "alerts_dlq_url" {
   value       = aws_sqs_queue.alerts_dlq.url
 }
 
-output "fall_alert_dlq_url" {
-  description = "URL of the silvercare-fall-alert-dlq SQS queue (failed fall-alert invocations and silvercare_alert rule errors)."
-  value       = aws_sqs_queue.fall_alert_dlq.url
+output "critical_alert_dlq_url" {
+  description = "URL of the silvercare-critical-alert-dlq SQS queue (failed critical-alert invocations and silvercare_alert rule errors)."
+  value       = aws_sqs_queue.critical_alert_dlq.url
 }
 
 output "alerts_topic_arn" {

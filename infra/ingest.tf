@@ -9,11 +9,20 @@
 # two automatic retries is dropped and shows only as an error in the function's logs.
 # The raw message is still in S3 history.
 #
-# fall-alert also raises fall alerts (docs/features/alerts-core.md): it reads the
-# device's assignment in silvercare-registry and sends an alert message to the
-# silvercare-alerts queue (alerts.tf) before storing the fall. A lost fall is a lost
-# alert, so its failed async invocations and the silvercare_alert rule's failed actions
-# go to silvercare-fall-alert-dlq.
+# critical-alert (was fall-alert; docs/features/vitals-alerts.md, criterion 16a) raises
+# a critical alert for every device-raised alert, `fall` and `vitals_alert`
+# (docs/features/alerts-core.md; docs/features/vitals-alerts.md): it reads the device's
+# assignment in silvercare-registry and sends an alert message to the silvercare-alerts
+# queue (alerts.tf) before storing the message. A lost message is a lost alert, so its
+# failed async invocations and the silvercare_alert rule's failed actions go to
+# silvercare-critical-alert-dlq.
+#
+# telemetry also runs the cloud vitals check (docs/features/vitals-alerts.md, criteria
+# 7-11): after storing a wearable `vitals`, it reads the device's assignment and the
+# resident's THRESHOLDS item in silvercare-registry and sends warnings to the alerts
+# queue. telemetry has no failed-message queue (user's decision, 2026-11-02; the
+# spec's "Known gap"): a warning raised by an invocation that still fails after
+# Lambda's two retries is lost; the raw vitals message is still in S3 history.
 #
 # Cost: pay per use only (IoT rules, Lambda requests, SQS requests), about US$2/month
 # with the simulator running 24/7, US$0 when it is stopped. No fixed fees.
@@ -35,12 +44,16 @@ locals {
       handler     = "handler.telemetry_handler"
       description = "Validates vitals, motion, and bed messages and stores the latest 5 per device and type."
     }
-    fall_alert = {
-      name        = "silvercare-fall-alert"
-      handler     = "handler.fall_alert_handler"
-      description = "Validates fall messages, sends a fall alert to the alerts queue, and stores the latest 5 per device."
+    critical_alert = {
+      name        = "silvercare-critical-alert"
+      handler     = "handler.critical_alert_handler"
+      description = "Validates fall and vitals_alert messages, sends a critical alert to the alerts queue, and stores the latest 5 per device."
     }
   }
+
+  # Functions that raise alerts: they read silvercare-registry and send to the alerts
+  # queue. device-health does neither.
+  alerting_functions = ["telemetry", "critical_alert"]
 
   # Drops a message whose payload already has a field the rule adds, so a device can't
   # claim another device's ID (criterion 2).
@@ -60,9 +73,9 @@ locals {
       sql         = "${local.rule_select} FROM 'silvercare/v1/+/+' WHERE (topic(4) = 'vitals' OR topic(4) = 'motion' OR topic(4) = 'bed') AND ${local.reserved_fields_undefined}"
     }
     silvercare_alert = {
-      function    = "fall_alert"
-      description = "Wearable fall events to silvercare-fall-alert."
-      sql         = "${local.rule_select} FROM 'silvercare/v1/+/fall' WHERE ${local.reserved_fields_undefined}"
+      function    = "critical_alert"
+      description = "Wearable fall and vitals_alert events to silvercare-critical-alert."
+      sql         = "${local.rule_select} FROM 'silvercare/v1/+/+' WHERE (topic(4) = 'fall' OR topic(4) = 'vitals_alert') AND ${local.reserved_fields_undefined}"
     }
   }
 }
@@ -99,11 +112,11 @@ data "aws_iam_policy_document" "ingest_latest_table" {
   }
 }
 
-# fall-alert only (alerts-core criterion 26): today's statement plus the registry
+# critical-alert only (alerts-core criterion 26): today's statement plus the registry
 # lookup (GetItem on the device's assignment item, DEVICE# partitions only) and sending
-# alert messages to the alerts queue. device-health and telemetry keep
-# ingest_latest_table alone. The module adds sending to the on-failure destination.
-data "aws_iam_policy_document" "fall_alert" {
+# alert messages to the alerts queue. device-health keeps ingest_latest_table alone.
+# The module adds sending to the on-failure destination.
+data "aws_iam_policy_document" "critical_alert" {
   source_policy_documents = [data.aws_iam_policy_document.ingest_latest_table.json]
 
   statement {
@@ -127,6 +140,51 @@ data "aws_iam_policy_document" "fall_alert" {
   }
 }
 
+# telemetry only (vitals-alerts criterion 23): today's statement plus GetItem on the
+# device's assignment item and the resident's THRESHOLDS item (DEVICE# and THRESHOLDS#
+# partitions only, so it can never read RESIDENT# profiles or USER# links) and sending
+# warnings to the alerts queue. No on-failure destination (Known gap in the spec).
+data "aws_iam_policy_document" "telemetry" {
+  source_policy_documents = [data.aws_iam_policy_document.ingest_latest_table.json]
+
+  statement {
+    sid       = "RegistryAssignmentAndThresholds"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [module.registry_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["DEVICE#*", "THRESHOLDS#*"]
+    }
+  }
+
+  statement {
+    sid       = "AlertsQueue"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.alerts.arn]
+  }
+}
+
+locals {
+  # function key => its policy (the module adds its log group and destination).
+  ingest_policies = {
+    device_health  = data.aws_iam_policy_document.ingest_latest_table.json
+    telemetry      = data.aws_iam_policy_document.telemetry.json
+    critical_alert = data.aws_iam_policy_document.critical_alert.json
+  }
+}
+
+# Renamed from fall_alert (vitals-alerts criterion 16a). The names change too, so the
+# plan shows the function, its role, role policy, log group, and invoke config as
+# replaced, not as unrelated destroys and creates.
+moved {
+  from = module.ingest_lambda["fall_alert"]
+  to   = module.ingest_lambda["critical_alert"]
+}
+
 module "ingest_lambda" {
   source   = "./modules/python-lambda"
   for_each = local.ingest_functions
@@ -145,23 +203,20 @@ module "ingest_lambda" {
       LATEST_TABLE            = module.latest_table.name
       POWERTOOLS_SERVICE_NAME = each.value.name
     },
-    each.key == "fall_alert" ? {
+    contains(local.alerting_functions, each.key) ? {
       ALERTS_QUEUE_URL = aws_sqs_queue.alerts.url
       REGISTRY_TABLE   = module.registry_table.name
     } : {},
   )
 
-  policy_json = (each.key == "fall_alert"
-    ? data.aws_iam_policy_document.fall_alert.json
-    : data.aws_iam_policy_document.ingest_latest_table.json
-  )
+  policy_json        = local.ingest_policies[each.key]
   log_retention_days = 30
 
-  # fall-alert only: 2 retries within an hour, then the event goes to
-  # silvercare-fall-alert-dlq (alerts-core criterion 9). device-health and telemetry get
-  # none (no failed-message queue, user's decision), so the module creates no async
+  # critical-alert only: 2 retries within an hour, then the event goes to
+  # silvercare-critical-alert-dlq (alerts-core criterion 9). device-health and telemetry
+  # get none (no failed-message queue, user's decision), so the module creates no async
   # invoke config for them: Lambda's defaults apply (2 retries, then dropped).
-  on_failure_destination       = each.key == "fall_alert" ? { arn = aws_sqs_queue.fall_alert_dlq.arn } : null
+  on_failure_destination       = each.key == "critical_alert" ? { arn = aws_sqs_queue.critical_alert_dlq.arn } : null
   maximum_retry_attempts       = 2
   maximum_event_age_in_seconds = 3600
 }
@@ -204,7 +259,7 @@ data "aws_region" "current" {}
 
 resource "aws_iam_role" "iot_rules" {
   name               = "silvercare-iot-rules"
-  description        = "Lets the silvercare ingest IoT rules send messages to silvercare-history and silvercare-fall-alert-dlq."
+  description        = "Lets the silvercare ingest IoT rules send messages to silvercare-history and silvercare-critical-alert-dlq."
   assume_role_policy = data.aws_iam_policy_document.iot_rules_assume.json
 }
 
@@ -219,10 +274,10 @@ data "aws_iam_policy_document" "iot_rules" {
 
   # Error action of the silvercare_alert rule (alerts-core criteria 10, 28).
   statement {
-    sid       = "FallAlertDlq"
+    sid       = "CriticalAlertDlq"
     effect    = "Allow"
     actions   = ["sqs:SendMessage"]
-    resources = [aws_sqs_queue.fall_alert_dlq.arn]
+    resources = [aws_sqs_queue.critical_alert_dlq.arn]
   }
 }
 
@@ -252,13 +307,13 @@ resource "aws_iot_topic_rule" "ingest" {
     use_base64 = false
   }
 
-  # silvercare_alert only (alerts-core criterion 10): a fall the rule can't hand to
-  # fall-alert (or to the history queue) goes to silvercare-fall-alert-dlq, whose alarm
-  # emails the team. The other rules have no error_action (no failed-message queue,
+  # silvercare_alert only (alerts-core criterion 10): a fall or vitals_alert the rule
+  # can't hand to critical-alert (or to the history queue) goes to
+  # silvercare-critical-alert-dlq, whose alarm emails the team. The other rules have no error_action (no failed-message queue,
   # user's decision): if their Lambda action fails, the history action still runs, so
   # the message is still kept in S3.
   dynamic "error_action" {
-    for_each = each.key == "silvercare_alert" ? [aws_sqs_queue.fall_alert_dlq.id] : []
+    for_each = each.key == "silvercare_alert" ? [aws_sqs_queue.critical_alert_dlq.id] : []
 
     content {
       sqs {

@@ -18,7 +18,7 @@ locals {
       description  = "Wrist-worn wearable: heart rate, SpO2, skin temperature, fall detection."
       group        = "wearables"
       canary_group = "canary-wearables"
-      messages     = ["vitals", "fall", "status"]
+      messages     = ["vitals", "vitals_alert", "fall", "status"]
     }
     bedroom = {
       description  = "Bedroom sensor: PIR motion sensor and bed pressure mat."

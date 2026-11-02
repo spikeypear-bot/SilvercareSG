@@ -517,7 +517,13 @@ def test_logs_contain_no_bodies_ids_or_values(history_bucket, logs, monkeypatch)
 
     handler.lambda_handler(sqs_event(*recs), None)
 
-    text = logs.raw.getvalue()
+    # The timestamp and line number can contain "187": leave them out.
+    text = " ".join(
+        f"{k}={v}"
+        for rec in logs()
+        for k, v in rec.items()
+        if k not in {"timestamp", "location"}
+    )
     assert "history object write failed" in text
     forbidden = [
         "synthetic-secret-note",

@@ -1,18 +1,23 @@
-# Alerts core (docs/features/alerts-core.md; alerts path of
-# docs/decisions/0001-iot-rule-routing.md): fall-alert (ingest.tf) looks up the
-# device's resident and sends an alert message to the silvercare-alerts queue. The
-# alert-processor Lambda reads the queue, writes each alert to silvercare-alerts and to
-# S3 alerts/ (history bucket), and emails the resident's subscribers through the
-# silvercare-alerts SNS topic, filtered by resident_id.
+# Alerts core and vitals alerts (docs/features/alerts-core.md,
+# docs/features/vitals-alerts.md; alerts path of docs/decisions/0001-iot-rule-routing.md):
+# critical-alert (ingest.tf; falls and device vitals_alerts) and telemetry (ingest.tf;
+# the cloud vitals check) look up the device's resident and send an alert message to
+# the silvercare-alerts queue. The alert-processor Lambda reads the queue, holds back
+# repeats (same resident, type, and severity within 30 minutes; never falls), writes
+# each alert to silvercare-alerts and to S3 alerts/ (history bucket), and emails the
+# resident's subscribers through the silvercare-alerts SNS topic, filtered by
+# resident_id.
 #
-# No fall alert may be lost on the way: fall-alert's failed async invocations and the
-# silvercare_alert rule's failed actions go to silvercare-fall-alert-dlq, and alert
-# messages that fail 5 receives go to silvercare-alerts-dlq. A CloudWatch alarm on each
-# DLQ emails the team through the silvercare-ops topic.
+# No critical alert may be lost on the way: critical-alert's failed async invocations
+# and the silvercare_alert rule's failed actions go to silvercare-critical-alert-dlq,
+# and alert messages that fail 5 receives go to silvercare-alerts-dlq. A CloudWatch
+# alarm on each DLQ emails the team through the silvercare-ops topic. (telemetry has no
+# DLQ: see the Known gap in docs/features/vitals-alerts.md.)
 #
-# The queues and DLQs hold alert messages (falls with the fall details, linked to a
-# resident ID); fall-alert-dlq can hold raw fall payloads. Retention: alerts queue 4
-# days, DLQs 14 days, S3 alerts/ no expiry until Open decision #4 (retention).
+# The queues and DLQs hold alert messages (falls with the fall details, vitals alerts
+# with the reading and limit, linked to a resident ID); critical-alert-dlq can hold raw
+# fall and vitals_alert payloads. Retention: alerts queue 4 days, DLQs 14 days, S3
+# alerts/ no expiry until Open decision #4 (retention).
 #
 # Cost: pay per use only, no fixed fees. SNS (1,000 emails/month free) and Lambda stay
 # within the always-free tiers at a few alerts a day; 2 of the 10 free alarms; 1 of the
@@ -30,15 +35,15 @@ locals {
 
   # DLQs watched by an alarm: key => queue name. Alarm name: "<queue name>-not-empty".
   watched_dlqs = {
-    alerts_dlq     = aws_sqs_queue.alerts_dlq.name
-    fall_alert_dlq = aws_sqs_queue.fall_alert_dlq.name
+    alerts_dlq         = aws_sqs_queue.alerts_dlq.name
+    critical_alert_dlq = aws_sqs_queue.critical_alert_dlq.name
   }
 
-  # Per-DLQ alarm text. silvercare-fall-alert-dlq holds Lambda on-failure records and
-  # IoT rule error payloads, which have no source queue to redrive to.
+  # Per-DLQ alarm text. silvercare-critical-alert-dlq holds Lambda on-failure records
+  # and IoT rule error payloads, which have no source queue to redrive to.
   dlq_alarm_descriptions = {
-    alerts_dlq     = "silvercare-alerts-dlq has at least one message: a fall alert may not have been stored or emailed. Inspect it, fix the cause, and redrive it to silvercare-alerts."
-    fall_alert_dlq = "silvercare-fall-alert-dlq has at least one message: a fall may not have become an alert. Inspect it, then replay the original fall payload manually (it cannot be redriven)."
+    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed. Inspect it, fix the cause, and redrive it to silvercare-alerts."
+    critical_alert_dlq = "silvercare-critical-alert-dlq has at least one message: a fall or device vitals_alert may not have become an alert. Inspect it, then replay the original payload manually (it cannot be redriven)."
   }
 }
 
@@ -76,10 +81,17 @@ resource "aws_sqs_queue_redrive_allow_policy" "alerts_dlq" {
   })
 }
 
-# fall-alert's on-failure destination (async invocations that still fail after 2
+# critical-alert's on-failure destination (async invocations that still fail after 2
 # retries) and the silvercare_alert rule's error action. Not a redrive target.
-resource "aws_sqs_queue" "fall_alert_dlq" {
-  name                      = "silvercare-fall-alert-dlq"
+# Renamed from fall_alert_dlq (vitals-alerts criterion 16a): the new name replaces the
+# queue, so it must be empty before merging.
+moved {
+  from = aws_sqs_queue.fall_alert_dlq
+  to   = aws_sqs_queue.critical_alert_dlq
+}
+
+resource "aws_sqs_queue" "critical_alert_dlq" {
+  name                      = "silvercare-critical-alert-dlq"
   sqs_managed_sse_enabled   = true
   message_retention_seconds = 1209600 # 14 days, the SQS maximum
 }
@@ -105,10 +117,11 @@ data "aws_iam_policy_document" "alerts_queue" {
     }
   }
 
-  # No "only fall-alert may send" Deny (user's decision, 2026-11-02): a DLQ redrive
+  # No "only the detectors may send" Deny (user's decision, 2026-11-02): a DLQ redrive
   # sends with the operator's own credentials, and such a Deny would block it even for
-  # admins and root. Sending is limited by IAM instead: fall-alert's role policy
-  # (ingest.tf) grants it, and the shared developer user has no SQS permissions.
+  # admins and root. Sending is limited by IAM instead: the critical-alert and
+  # telemetry role policies (ingest.tf) grant it, and the shared developer user has no
+  # SQS permissions.
 }
 
 resource "aws_sqs_queue_policy" "alerts" {
@@ -141,18 +154,18 @@ resource "aws_sqs_queue_policy" "alerts_dlq" {
   policy    = data.aws_iam_policy_document.alerts_dlq.json
 }
 
-# Only the fall-alert role (on-failure destination; Lambda sends with the function's
-# role) and the silvercare-iot-rules role (rule error action) may send. The Deny makes
+# Only the critical-alert role (on-failure destination; Lambda sends with the
+# function's role) and the silvercare-iot-rules role (rule error action) may send. The Deny makes
 # that hold even for principals whose IAM policy would allow it. No Allow naming the
 # roles: their own IAM policies (ingest.tf, python-lambda module) grant the send, and a
 # role principal in a queue policy can fail the first apply (PrincipalNotFound while
 # the new role propagates) and drifts if a role is recreated.
-data "aws_iam_policy_document" "fall_alert_dlq" {
+data "aws_iam_policy_document" "critical_alert_dlq" {
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"
     actions   = ["sqs:*"]
-    resources = [aws_sqs_queue.fall_alert_dlq.arn]
+    resources = [aws_sqs_queue.critical_alert_dlq.arn]
 
     principals {
       type        = "*"
@@ -170,7 +183,7 @@ data "aws_iam_policy_document" "fall_alert_dlq" {
     sid       = "DenySendFromOthers"
     effect    = "Deny"
     actions   = ["sqs:SendMessage"]
-    resources = [aws_sqs_queue.fall_alert_dlq.arn]
+    resources = [aws_sqs_queue.critical_alert_dlq.arn]
 
     principals {
       type        = "*"
@@ -181,16 +194,21 @@ data "aws_iam_policy_document" "fall_alert_dlq" {
       test     = "StringNotEquals"
       variable = "aws:PrincipalArn"
       values = [
-        module.ingest_lambda["fall_alert"].role_arn,
+        module.ingest_lambda["critical_alert"].role_arn,
         aws_iam_role.iot_rules.arn,
       ]
     }
   }
 }
 
-resource "aws_sqs_queue_policy" "fall_alert_dlq" {
-  queue_url = aws_sqs_queue.fall_alert_dlq.id
-  policy    = data.aws_iam_policy_document.fall_alert_dlq.json
+moved {
+  from = aws_sqs_queue_policy.fall_alert_dlq
+  to   = aws_sqs_queue_policy.critical_alert_dlq
+}
+
+resource "aws_sqs_queue_policy" "critical_alert_dlq" {
+  queue_url = aws_sqs_queue.critical_alert_dlq.id
+  policy    = data.aws_iam_policy_document.critical_alert_dlq.json
 }
 
 # ---------------------------------------------------------------------------------------
@@ -373,7 +391,12 @@ resource "aws_sns_topic_subscription" "ops_email" {
 # Alarms
 # ---------------------------------------------------------------------------------------
 
-# Any message in a DLQ is a fall alert that didn't make it: alarm at the first one.
+# Any message in a DLQ is an alert that didn't make it: alarm at the first one.
+moved {
+  from = aws_cloudwatch_metric_alarm.dlq_not_empty["fall_alert_dlq"]
+  to   = aws_cloudwatch_metric_alarm.dlq_not_empty["critical_alert_dlq"]
+}
+
 resource "aws_cloudwatch_metric_alarm" "dlq_not_empty" {
   for_each = local.watched_dlqs
 
@@ -407,11 +430,13 @@ data "archive_file" "alert_processor" {
 }
 
 # What the function does with AWS: the event source mapping polls silvercare-alerts with
-# the function's role (receive, delete, read attributes); the code does a conditional
-# PutItem, a GetItem on a retry, and one UpdateItem (notified_at) on its alert in
-# silvercare-alerts; a GetItem on the device's vitals item in silvercare-latest; a
-# PutObject under alerts/; and an SNS Publish to the alerts topic. Nothing else: no
-# indexes, no Query/Scan/DeleteItem, no other prefixes or reads in S3. No KMS
+# the function's role (receive, delete, read attributes); the code does a Query of the
+# resident's recent alerts (repeat suppression, pattern 7; vitals-alerts criterion 24),
+# a conditional PutItem, a GetItem on a retry, and one UpdateItem (notified_at) on its
+# alert in silvercare-alerts (base table, RESIDENT# partitions only); a GetItem on the
+# device's vitals item in silvercare-latest; a PutObject under alerts/; and an SNS
+# Publish to the alerts topic. Nothing else: no indexes, no Scan/DeleteItem, no other
+# prefixes or reads in S3. No KMS
 # permissions: the topic uses the AWS managed key aws/sns, whose key policy already
 # lets SNS use it for principals in this account (the iam-policy skill asks for KMS
 # grants only for customer-managed keys). The module adds the log group permissions.
@@ -426,7 +451,7 @@ data "aws_iam_policy_document" "alert_processor" {
   statement {
     sid       = "AlertsTableResidentItems"
     effect    = "Allow"
-    actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
+    actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Query"]
     resources = [module.alerts_table.arn]
 
     condition {

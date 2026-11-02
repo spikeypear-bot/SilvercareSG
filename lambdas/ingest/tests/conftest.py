@@ -3,7 +3,7 @@
 Fake AWS credentials and env vars are set before anything imports boto3, so no test
 can reach real AWS. `latest_table` starts moto and creates silvercare-latest and
 silvercare-registry with the same keys and indexes as infra/dynamodb.tf, plus the
-silvercare-alerts queue that fall-alert sends to (docs/features/alerts-core.md).
+silvercare-alerts queue that critical-alert sends to (docs/features/alerts-core.md).
 """
 
 from __future__ import annotations
@@ -139,6 +139,7 @@ def assign_device(client, device_id: str, resident_id: str) -> None:
 def _clear_handler_state() -> None:
     import handler
     import registry
+    import thresholds
 
     # At teardown a test's monkeypatch may still replace a client function (the
     # monkeypatch fixture is undone after this one), so skip what isn't cached.
@@ -146,6 +147,7 @@ def _clear_handler_state() -> None:
         if hasattr(client_fn, "cache_clear"):
             client_fn.cache_clear()
     registry.clear_cache()
+    thresholds.clear_cache()
 
 
 @pytest.fixture
@@ -169,7 +171,7 @@ def latest_table(monkeypatch):
 
 
 class AlertsQueue:
-    """The moto alerts queue: read back what fall-alert sent."""
+    """The moto alerts queue: read back what critical-alert sent."""
 
     def __init__(self, client, url: str) -> None:
         self.client = client

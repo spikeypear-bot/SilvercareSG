@@ -20,7 +20,8 @@ doc first, then the Terraform.
 ## Decisions so far
 
 - **Latest 5 of every message type.** For each device, DynamoDB keeps at most the 5
-  newest messages of each type (`vitals`, `fall`, `status`, `motion`, `bed`). Storage
+  newest messages of each type (`vitals`, `vitals_alert`, `fall`, `status`, `motion`,
+  `bed`). Storage
   stays bounded no matter how long the system runs.
 - **Provisioned capacity inside the AWS always-free tier.** The always-free tier covers
   25 GB of storage and 25 read + 25 write capacity units of *provisioned* capacity per
@@ -58,17 +59,17 @@ go stale. Lambdas without a caller are marked *backend*.
 
 | # | Who / what | Query | Table / index | Key condition | Frequency |
 |---|---|---|---|---|---|
-| 1 | `telemetry`, `device-health`, `fall-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | every message (cached ~5 min per Lambda container) |
-| 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | every `vitals` message (cached ~5 min) |
-| 3 | `telemetry`, `device-health`, `fall-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
+| 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container). `device-health` reads no registry |
+| 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | as pattern 1 for `vitals`, assigned devices only (cached 5 min, including "no item") |
+| 3 | `telemetry`, `device-health`, `critical-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
 | 4 | backend: `watchdog` | Every device, assigned or not | registry `by-type` | Query `entity_type = DEVICE` | every 5 min |
 | 5 | backend: `watchdog`; staff only: dashboard | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>` (watchdog: `status`, `bed`, `motion`; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
-| 7 | `telemetry`, `watchdog` | This resident's alerts (to avoid re-raising one that is still open) | alerts | Query `pk = RESIDENT#<resident_id>` | per abnormal reading |
+| 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
 | 8 | Staff only: dashboard | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
 | 9 | Staff only: dashboard | All open alerts, newest first | alerts `open` | Query `open_pk = OPEN`, descending | every 30 s per open dashboard |
 | 10 | Resident page: staff, or caregiver/family after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
-| 11 | Resident page: staff, or caregiver/family after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (3 items per device: wearable `vitals`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
+| 11 | Resident page: staff, or caregiver/family after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (per device: wearable `vitals`, `vitals_alert`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
 | 12 | Resident page: staff, or caregiver/family after 13 | This resident's alerts | alerts | Query `pk = RESIDENT#<resident_id>`, descending | per page view |
 | 13 | API, caregiver/family | Is this user linked to this resident? | registry | GetItem `pk = USER#<sub>`, `sk = RESIDENT#<resident_id>` | every caregiver/family request for a resident |
 | 14 | API, caregiver/family | Which residents can this user see? | registry | Query `pk = USER#<sub>`, `begins_with(sk, "RESIDENT#")` | caregiver/family home page |
@@ -118,17 +119,34 @@ Only staff can edit it.
 Kept in its own partition so the `telemetry` Lambda can read the limits but never the
 medical notes or contacts. IAM can only restrict access by **partition** key
 (`dynamodb:LeadingKeys`), not by sort key, so the `telemetry` role is limited to
-partitions starting with `DEVICE#` and `THRESHOLDS#`. The `device-health` and
-`fall-alert` roles get `DEVICE#` only.
+partitions starting with `DEVICE#` and `THRESHOLDS#`. The `critical-alert` role gets
+`DEVICE#` only; `device-health` gets no registry access.
 
 | Attribute | Example | Notes |
 |---|---|---|
-| `pk` | `THRESHOLDS#res-0003` | |
+| `pk` | `THRESHOLDS#res-0002` | |
 | `sk` | `THRESHOLDS` | |
-| `hr_bpm` | `{"min": 0, "max": 0}` | values come from the alerting spec |
-| `spo2_pct` | `{"min": 0}` | |
-| `skin_temp_c` | `{"min": 0, "max": 0}` | |
-| `updated_at`, `updated_by` | `2026-10-18T03:00:00Z`, staff `sub` | `updated_by` is returned to staff only |
+| `hr_bpm` | `{"min": 50, "max": 120}` | integers, each 20–250 |
+| `spo2_pct` | `{"min": 88}` | integer, 50–100. No max |
+| `skin_temp_c` | `{"min": 30.0, "max": 38.0}` | numbers, each 20.0–45.0 |
+| `updated_at`, `updated_by` | `2026-10-18T03:00:00Z`, staff `sub` | `updated_by` is returned to staff only; absent on seed items |
+
+Every attribute and limit is optional (docs/features/vitals-alerts.md, criteria 5-6):
+
+- **Defaults** (user's decision, 2026-11-02; synthetic, to be checked with a clinician
+  before any real use): heart rate below 50 or above 120 bpm, SpO2 below 92 %, skin
+  temperature below 30.0 or above 38.0 °C.
+- **Resolution:** each limit present and valid (a number in the metric's valid range
+  from `docs/metrics.md`, an integer for `hr_bpm` and `spo2_pct`) replaces that
+  default; a missing or invalid limit keeps it. If a metric's resolved `min` is not
+  below its `max`, both of its limits keep the defaults. `telemetry` logs an invalid
+  limit with `resident_id` and the field name, never the value. Results, including
+  "no item", are cached per Lambda container for 5 minutes, so an edit takes effect
+  within 5 minutes. Unassigned devices always use the defaults.
+- **Comparison:** a value is abnormal when it is strictly below `min` or strictly
+  above `max` (`hr_bpm` 50 and 120 are normal). `null` is never abnormal.
+- The seed script creates `THRESHOLDS#res-0002` with `spo2_pct {"min": 88}` (a
+  synthetic resident with a lower normal SpO2).
 
 ### Device assignment
 
@@ -216,8 +234,8 @@ Resident photos are images, so they go in S3 rather than DynamoDB.
 
 ## `silvercare-latest`
 
-One item per device and message type: 40 devices × 3 types = 120 items, each with at
-most 5 entries. This is the busiest table.
+One item per device and message type: 20 wearables × 4 types + 20 bedroom sensors × 3
+types = 140 items, each with at most 5 entries. This is the busiest table.
 
 | Attribute | Example | Notes |
 |---|---|---|
@@ -228,7 +246,7 @@ most 5 entries. This is the busiest table.
 | `latest` | copy of `entries[0]` | top-level so the `by-message` index can project it |
 | `latest_ts` | `2026-10-18T03:12:00.000Z` | `ts` of `entries[0]` |
 | `version` | `412` | optimistic lock, +1 on every write |
-| `watch_type` | `vitals` | on `vitals`, `status`, `bed`, and `motion` items; not on `fall`, which makes `by-message` sparse |
+| `watch_type` | `vitals` | on `vitals`, `status`, `bed`, and `motion` items; not on `fall` or `vitals_alert`, which makes `by-message` sparse |
 
 Example `vitals` item (2 of 5 entries shown):
 
@@ -258,6 +276,7 @@ added here with a purpose):
 |---|---|---|
 | `vitals` | `hr_bpm`, `spo2_pct`, `skin_temp_c`, `activity_pct` | recent vitals and activity on the resident page; threshold checks |
 | `fall` | `confidence`, `peak_g`, `still_s` | fall details on the resident page |
+| `vitals_alert` | `metric`, `value`, `limit`, `direction`, `held_s` | the device's critical readings on the resident page |
 | `status` | `battery_pct`, `worn`, `charging`, `fw_version` | device state, offline / low battery / not worn |
 | `motion` | `motion` | bedroom state, possible-fall detection |
 | `bed` | `occupied` | bedroom state, possible-fall detection |
@@ -290,7 +309,8 @@ separate state item is needed.
 | `by-message` | `watch_type` | `pk` | INCLUDE `device_type`, `latest`, `latest_ts` | 5 |
 
 The staff dashboard polls this index every 30 s for every device's newest vitals and
-state. `fall` items have no `watch_type`: falls reach the dashboard as alerts.
+state. `fall` and `vitals_alert` items have no `watch_type`: they reach the dashboard
+as alerts.
 
 A write that changes an index entry also needs write capacity on the index. If the
 index runs out, DynamoDB throttles writes to the **base table** too, so `by-message`
@@ -302,15 +322,16 @@ gets enough write capacity for every vitals write.
 |---|---|---|
 | `pk` | `RESIDENT#res-0003` | |
 | `sk` | `ALERT#2026-10-18T03:14:07.360Z#6f1c2e0a-5b3d-5e8f-9a47-000000000001` | `ALERT#<event_ts>#<alert_id>` |
-| `alert_id` | `6f1c2e0a-5b3d-5e8f-9a47-000000000001` | UUID v5 of `event_ts`, `alert_type`, `device_id`: deterministic, so retries can't duplicate, and opaque, so the key doesn't reveal the type of health event |
-| `alert_type` | `fall` | full list in the alerting spec |
+| `alert_id` | `6f1c2e0a-5b3d-5e8f-9a47-000000000001` | UUID v5 of `"<event_ts>\|<alert_type>\|<severity>\|<device_id>"` (docs/features/vitals-alerts.md, criterion 2; items stored before vitals alerts have the older ID without `severity`): deterministic, so retries can't duplicate, and opaque, so the key doesn't reveal the type of health event |
+| `alert_type` | `fall` | `fall`, `hr_high`, `hr_low`, `spo2_low`, `skin_temp_high`, `skin_temp_low` (docs/features/vitals-alerts.md) |
+| `severity` | `critical` | `critical` (falls, device `vitals_alert`) or `warning` (the cloud vitals check). Items stored before vitals alerts have none; they are all falls (critical) |
 | `device_id` | `wearable-0007` | |
 | `event_ts` | `2026-10-18T03:14:07.360Z` | see below |
 | `received_at` | `2026-10-18T03:14:07.410Z` | when the IoT rule received the triggering message (from the alert message) |
 | `created_at` | `2026-10-18T03:14:07.900Z` | when `alert-processor` stored the item |
 | `status` | `open` | `open`, `acknowledged`, `resolved` |
 | `source_message_id` | `c2a1d4f0-8b6e-4f0a-a3c9-7e15d2b9f804` | for message-triggered alerts |
-| `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals) |
+| `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals). Vitals warning: `metric`, `value`, `limit`, `direction`, `previous_value`, e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above", "previous_value": 125}`. Vitals critical: `metric`, `value`, `limit`, `direction`, `held_s` (`hr_low` `value` 0 = no pulse) |
 | `notified_at` | `2026-10-18T03:14:08.300Z` | set once, after the SNS email was published; guards against a second email on redelivery. Absent for unassigned alerts |
 | `notification` | `skipped_unassigned` | only on unassigned alerts (`pk = RESIDENT#unassigned`): nobody is emailed |
 | `acknowledged_by`, `acknowledged_at` | staff `sub`, timestamp | |
@@ -328,21 +349,31 @@ however many times the same event is processed:
 
 | Alert | `event_ts` |
 |---|---|
-| fall, abnormal vitals | `ts` of the message |
+| fall, device `vitals_alert` | `ts` of the message |
+| abnormal vitals (cloud check) | `ts` of the newest of the two abnormal `vitals` entries |
 | device offline | the device's last `status` `ts` (same outage → same key on every watchdog run) |
 | possible fall | `ts` of the `bed` → `occupied: false` event |
 
-Stopping repeat alerts while a condition continues (vitals still high a minute later)
-belongs in the alerting spec. It uses pattern 7.
+**Repeats** (docs/features/vitals-alerts.md, criteria 17-20): before storing any alert
+except a fall, `alert-processor` runs pattern 7 for the 30 minutes up to its
+`event_ts`, alerts at the same `event_ts` included. If an alert with the same `alert_type`, the same `severity`, and a
+different `alert_id` is there (for `unassigned`, also the same `device_id`), the new
+one is **suppressed**: not stored, archived, or emailed, only logged (IDs and outcome
+`suppressed`). An earlier alert exactly 30 minutes before doesn't count. A warning
+never holds back a critical alert or the other way round, and falls are never held
+back. Times come from `event_ts`, not the clock, and an alert already stored is never
+suppressed on a retry, so a redelivered message decides the same way. Two different
+alerts processed at the same moment may both be emailed (accepted).
 
-Alerts reach this table through the alerts queue: `telemetry`, `fall-alert`, and
+Alerts reach this table through the alerts queue: `telemetry`, `critical-alert`, and
 `watchdog` send a message to SQS, and `alert-processor` notifies caregivers through SNS,
 writes the item here for the staff dashboard, and writes the alert to S3 for tracking
 (see `docs/decisions/0001-iot-rule-routing.md`). The queue message carries the same
 fields as the item, so `alert_id` is computed once, by the detector.
 
-`alert-processor` handles each alert message in this order (docs/features/alerts-core.md):
-add `details.latest_vitals` for a fall (pattern 21); PutItem with
+`alert-processor` handles each alert message in this order (docs/features/alerts-core.md,
+docs/features/vitals-alerts.md): hold back a repeat (pattern 7, not for falls); add
+`details.latest_vitals` for a fall (pattern 21); PutItem with
 `attribute_not_exists(pk)` (pattern 6), or, if the item already exists, re-read it
 (pattern 22) and use it from there; write it to S3 `alerts/` (see
 [S3 history](#s3-history)); then, if the resident is assigned and the item has no
@@ -408,7 +439,7 @@ read of up to 4 KB per second, or two eventually consistent ones.
 | latest reads (write rule step 1) | ~0.5/s × 1 RCU ≈ **0.5 RCU** |
 | `by-message` index writes | vitals 0.33/s + status/bed/motion 0.15/s, 1 WCU each ≈ **0.5 WCU** |
 | registry reads | cached in Lambdas; dashboards ≈ **< 1 RCU** |
-| alerts | rare writes; dashboard polling ≈ **< 1 RCU** |
+| alerts | rare writes; one strongly consistent Query per non-fall alert (repeat check); dashboard polling ≈ **< 1 RCU** |
 
 Provisioned (fixed, no auto scaling):
 
@@ -433,15 +464,19 @@ which absorbs this, but only on a best-effort basis. So:
 - Lambdas use boto3's `adaptive` retry mode, so throttled writes back off and retry.
 - IoT rules invoke Lambdas asynchronously, with Lambda's two automatic retries. There
   is no failed-message queue for `telemetry` and `device-health` (see
-  `docs/decisions/0001-iot-rule-routing.md`); `fall-alert` sends events that still fail
-  to `silvercare-fall-alert-dlq` (docs/features/alerts-core.md).
+  `docs/decisions/0001-iot-rule-routing.md`), so a vitals warning from a `telemetry`
+  invocation that keeps failing is lost (Known gap in docs/features/vitals-alerts.md);
+  `critical-alert` (was `fall-alert`) sends events that still fail to
+  `silvercare-critical-alert-dlq` (docs/features/alerts-core.md,
+  docs/features/vitals-alerts.md).
 
-**`silvercare-fall-alert-dlq` contents:** raw fall payloads (including `accel_window`)
-linked to the `device_id` from the topic, plus Lambda error details (from fall-alert's
-on-failure destination and the `silvercare_alert` rule's error action). Kept up to 14
-days (SQS maximum retention), encrypted with SSE-SQS, and the queue policy denies
-requests without TLS and sends from any role other than fall-alert and
-`silvercare-iot-rules`.
+**`silvercare-critical-alert-dlq` contents:** raw `fall` payloads (including
+`accel_window`) and raw `vitals_alert` payloads (heart rate or SpO2 reading and limit),
+linked to the `device_id` from the topic, plus Lambda error details (from
+critical-alert's on-failure destination and the `silvercare_alert` rule's error
+action). Kept up to 14 days (SQS maximum retention), encrypted with SSE-SQS, and the
+queue policy denies requests without TLS and sends from any role other than
+critical-alert and `silvercare-iot-rules`.
 
 ## Settings (all tables)
 
@@ -464,7 +499,9 @@ requests without TLS and sends from any role other than fall-alert and
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
 | History (S3 `telemetry/`) | not decided (Open decision #4); kept until then | none yet (no expiry rule) |
 | Alert copies (S3 `alerts/`) | not decided (Open decision #4); kept until then | none yet (no expiry rule) |
-| Failed fall events (SQS `silvercare-fall-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
+| Failed fall and `vitals_alert` events (SQS `silvercare-critical-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
+| Latest device `vitals_alert`s | 5 per device | write rule |
+| Suppressed repeat alerts | not kept (log line with IDs and outcome only, 30 days) | — |
 
 Point-in-time recovery keeps deleted and TTL-expired items restorable for up to 35
 days, so "deleted" data still exists in backups for that long.
@@ -488,5 +525,6 @@ someone resolves them.
 
 ## Open questions
 
-None for the tables. Threshold values and alert rules come from the alerting spec
-(Open decision #2); how links are created comes from user onboarding (Open decision #3).
+None for the tables. Threshold defaults and vitals alert rules are set by
+docs/features/vitals-alerts.md (Open decision #2); how links are created comes from
+user onboarding (Open decision #3).

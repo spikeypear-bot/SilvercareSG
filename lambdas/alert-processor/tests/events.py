@@ -28,6 +28,7 @@ def alert_message(**overrides: Any) -> dict[str, Any]:
         "schema_version": 1,
         "alert_id": ALERT_ID,
         "alert_type": "fall",
+        "severity": "critical",
         "resident_id": RESIDENT,
         "device_id": DEVICE,
         "event_ts": EVENT_TS,
@@ -43,8 +44,102 @@ def alert_message(**overrides: Any) -> dict[str, Any]:
     return body
 
 
+# Vitals alert details per (alert_type, severity) (docs/features/vitals-alerts.md,
+# criterion 3). Synthetic readings past the default or device limits.
+VITALS_DETAILS: dict[tuple[str, str], dict[str, Any]] = {
+    ("hr_high", "warning"): {
+        "metric": "hr_bpm",
+        "value": 128,
+        "limit": 120,
+        "direction": "above",
+        "previous_value": 125,
+    },
+    ("hr_low", "warning"): {
+        "metric": "hr_bpm",
+        "value": 44,
+        "limit": 50,
+        "direction": "below",
+        "previous_value": 46,
+    },
+    ("spo2_low", "warning"): {
+        "metric": "spo2_pct",
+        "value": 89,
+        "limit": 92,
+        "direction": "below",
+        "previous_value": 90,
+    },
+    ("skin_temp_high", "warning"): {
+        "metric": "skin_temp_c",
+        "value": 38.4,
+        "limit": 38.0,
+        "direction": "above",
+        "previous_value": 38.2,
+    },
+    ("skin_temp_low", "warning"): {
+        "metric": "skin_temp_c",
+        "value": 29.5,
+        "limit": 30.0,
+        "direction": "below",
+        "previous_value": 29.8,
+    },
+    ("hr_high", "critical"): {
+        "metric": "hr_bpm",
+        "value": 140,
+        "limit": 130,
+        "direction": "above",
+        "held_s": 10,
+    },
+    ("hr_low", "critical"): {
+        "metric": "hr_bpm",
+        "value": 40,
+        "limit": 45,
+        "direction": "below",
+        "held_s": 10,
+    },
+    ("spo2_low", "critical"): {
+        "metric": "spo2_pct",
+        "value": 85,
+        "limit": 88,
+        "direction": "below",
+        "held_s": 12,
+    },
+}
+
+NO_PULSE_DETAILS = {
+    "metric": "hr_bpm",
+    "value": 0,
+    "limit": 45,
+    "direction": "below",
+    "held_s": 10,
+}
+
+
+def vitals_message(
+    alert_type: str = "hr_high", severity: str = "warning", **overrides: Any
+) -> dict[str, Any]:
+    """A valid vitals alert message (warning from telemetry, critical from the device).
+
+    `details` may be overridden; other overrides replace top-level fields.
+    """
+    fields: dict[str, Any] = {
+        "alert_type": alert_type,
+        "severity": severity,
+        "details": dict(VITALS_DETAILS[(alert_type, severity)]),
+    }
+    fields.update(overrides)
+    return alert_message(**fields)
+
+
+def vitals_body(
+    alert_type: str = "hr_high", severity: str = "warning", **overrides: Any
+) -> str:
+    return json.dumps(
+        vitals_message(alert_type, severity, **overrides), separators=(",", ":")
+    )
+
+
 def alert_body(**overrides: Any) -> str:
-    """The SQS body text, as fall-alert sends it (compact JSON)."""
+    """The SQS body text, as critical-alert sends it (compact JSON)."""
     return json.dumps(alert_message(**overrides), separators=(",", ":"))
 
 

@@ -1,5 +1,5 @@
 ---
-status: draft          # draft | ready | built
+status: ready          # draft | ready | built
 ---
 
 # Vitals alerts (Track A2)
@@ -12,7 +12,9 @@ Raise alerts for abnormal vitals, from two sources that share one path:
   the resident's thresholds and raises an alert after **2 abnormal readings in a row**.
 - **Device safety net (critical):** the wearable's instant `vitals_alert` message (fixed
   limits, held 10 s; planned in `docs/metrics.md`) joins the v1 contract and goes
-  through the fast `alert` rule to `fall-alert`, which raises a critical alert at once.
+  through the fast `alert` rule to `critical-alert` (today's `fall-alert`, renamed),
+  which raises a critical alert at once. "No pulse" (heart rate 0 while worn, e.g.
+  cardiac arrest) is one of these.
 
 Both send to the alerts queue from A1. `alert-processor` stores, archives, and emails
 them as it does falls, and now holds back repeats: the same alert for the same resident
@@ -39,7 +41,7 @@ an alert only to subscribers whose `alert_subscribers` entry lists its `resident
 |---|---|
 | Wearables (simulated) | Send `vitals` every 60 s, and `vitals_alert` when a critical reading lasts 10 s |
 | `telemetry` | Store `vitals` as today, then run the cloud check and send warnings to the queue |
-| `fall-alert` | Also handles `vitals_alert`: send a critical alert, then store it |
+| `critical-alert` (was `fall-alert`) | Handles `fall` as today and now `vitals_alert`: send a critical alert, then store it |
 | `alert-processor` | Hold back repeats, then store, archive, email (as in A1) |
 | Developer | Runs the seed script and the live check |
 
@@ -52,6 +54,10 @@ an alert only to subscribers whose `alert_subscribers` entry lists its `resident
 | Cloud check | alert after 2 consecutive abnormal readings |
 | Repeats | same resident + alert type + severity at most once per 30 minutes |
 | Severities | cloud check = `warning`, device `vitals_alert` = `critical`, fall = `critical`. A warning never holds back a critical alert |
+| No pulse | a device `vitals_alert` with heart rate `0` (no pulse detected while worn, held 10 s) is a critical `hr_low` alert. Routine `vitals` keep `null` for "no reading", which is never abnormal (a loose strap looks the same) |
+| Naming | `fall-alert` becomes `critical-alert` (`silvercare-critical-alert`, `silvercare-critical-alert-dlq`), replaced while the data is synthetic |
+| Alert ID (2026-11-03) | `severity` is part of `alert_id`, so a warning and a critical alert with the same timestamp never collide |
+| Device validation (2026-11-03) | `vitals_alert` checks types and ranges only. A `value` that isn't past its `limit`, or a `limit` that doesn't match the `direction`, is still a critical alert: safety over tidiness |
 
 The limits are synthetic and must be checked with a clinician before any real use.
 
@@ -70,18 +76,21 @@ The limits are synthetic and must be checked with a clinician before any real us
    | `skin_temp_low` | skin temperature below min | Low skin temperature |
 
    The device's `vitals_alert` maps `hr_bpm` + `above` → `hr_high`, `hr_bpm` + `below`
-   → `hr_low`, `spo2_pct` + `below` → `spo2_low`.
+   → `hr_low` (including `value` 0, no pulse), `spo2_pct` + `below` → `spo2_low`.
 2. The alert message (A1 criterion 1) gains a required `severity` field: `warning` or
-   `critical`. Falls are `critical`. `alert_id` stays
-   `uuid5(ALERT_NAMESPACE, f"{event_ts}|{alert_type}|{device_id}")`.
+   `critical`. Falls are `critical`. `alert_id` becomes
+   `uuid5(ALERT_NAMESPACE, f"{event_ts}|{alert_type}|{severity}|{device_id}")` for
+   every type, falls included (items stored before A2 keep their IDs).
 3. `details` for vitals alerts:
    - cloud (`warning`): `{"metric", "value", "limit", "direction", "previous_value"}`,
      e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above",
      "previous_value": 125}`
    - device (`critical`): `{"metric", "value", "limit", "direction", "held_s"}`
 4. `alert-processor`'s validation (`message.py`) accepts the new types, `severity`, and
-   their `details` (numbers in each metric's valid range from `docs/metrics.md`;
-   `direction` `above` or `below`; `held_s` 10–600). A message without a valid
+   their `details` (numbers in each metric's valid range from `docs/metrics.md`, plus
+   `hr_bpm` `value` 0 in critical `hr_low` details; `direction` `above` or `below`;
+   `held_s` 10–600). No check that `value` is past `limit` or that `limit` matches
+   `direction` (decisions table). A message without a valid
    `severity` is reported as a failure (DLQ), like any invalid body.
 
 ### Thresholds
@@ -116,7 +125,7 @@ The limits are synthetic and must be checked with a clinician before any real us
     `alert_ids` (a list, empty when nothing was raised). No values in logs.
 12. `device-health` is unchanged and still reads no registry and sends nothing.
 
-### Device `vitals_alert` in `fall-alert`
+### Device `vitals_alert` in `critical-alert`
 
 13. `docs/metrics.md`: `vitals_alert` moves from "Planned" into the v1 contract
     (`schema_version` stays `1`; adding a message type is an addition). Fields:
@@ -124,26 +133,55 @@ The limits are synthetic and must be checked with a clinician before any real us
     | Field | Type | Valid range | Description |
     |---|---|---|---|
     | `metric` | string | `hr_bpm` or `spo2_pct` | |
-    | `value` | integer | `hr_bpm` 20–250, `spo2_pct` 50–100 | the reading that triggered it |
-    | `limit` | integer | same as `value` | the fixed device limit crossed (45/130 bpm, 88 %) |
-    | `direction` | string | `above` or `below`; `spo2_pct` only `below` | |
+    | `value` | integer | `hr_bpm` 0 or 20–250, `spo2_pct` 50–100 | the reading that triggered it; `hr_bpm` 0 = no pulse detected while worn |
+    | `limit` | integer | `hr_bpm` 45 or 130, `spo2_pct` 88 | the fixed device limit crossed |
+    | `direction` | string | `above` or `below`; `spo2_pct` only `below`; `value` 0 only `below` | |
     | `held_s` | integer | 10–600 | seconds the reading stayed past the limit |
+
+    The contract states that the wearable sends `hr_bpm` 0 only while `worn` is true
+    (skin contact) and no pulse is found for 10 s; off the wrist it sends nothing.
 
 14. The wearable device policy allows publishing to `silvercare/v1/<own id>/vitals_alert`
     (`infra/modules/iot-devices/main.tf` wearable `messages`). In-place policy update.
 15. The `silvercare_alert` rule's SQL covers both `fall` and `vitals_alert`
     (`topic(4) = 'fall' OR topic(4) = 'vitals_alert'`, reserved fields undefined). It
     keeps its history action and error action. In-place update, no replacement.
-16. `fall-alert` validates `vitals_alert` (validation.py, wearable only), then in A1's
-    order: registry lookup, send a `critical` alert, store the message in the device's
-    latest 5 (`MSG#vitals_alert`, no `watch_type`, like `fall`). The function keeps
-    its name `silvercare-fall-alert` (renaming would replace it).
+16. `critical-alert` validates `vitals_alert` (validation.py, wearable only), then in
+    A1's order: registry lookup, send a `critical` alert, store the message in the
+    device's latest 5 (`MSG#vitals_alert`, no `watch_type`, like `fall`).
+
+### Rename `fall-alert` to `critical-alert`
+
+16a. The function handles every device-raised critical alert, so it is renamed:
+
+    | Was | Becomes |
+    |---|---|
+    | Lambda `silvercare-fall-alert` (and its role and log group, named after it) | `silvercare-critical-alert` |
+    | handler `handler.fall_alert_handler` | `handler.critical_alert_handler` |
+    | SQS `silvercare-fall-alert-dlq` and alarm `silvercare-fall-alert-dlq-not-empty` | `silvercare-critical-alert-dlq`, `silvercare-critical-alert-dlq-not-empty` |
+    | Terraform keys and names `fall_alert`, `fall_alert_dlq`, output `fall_alert_dlq_url` | `critical_alert`, `critical_alert_dlq`, `critical_alert_dlq_url` |
+
+    Use `moved` blocks for the renamed Terraform addresses, so the plan shows each
+    resource as **replaced** (the names force it) rather than as unrelated destroys
+    and creates. Everything that points at them (IoT rule action and error action,
+    the IoT rules role's DLQ statement, the alerts-queue send permission, the
+    event invoke config, alarm descriptions, comments) follows. The DLQ must be empty
+    before merging; the old function's logs are lost. During the apply, a fall
+    or `vitals_alert` published between delete and create (up to about a minute,
+    while the new role propagates in IAM) is lost, though the raw message still
+    reaches S3 history. If the apply fails partway, the rule points at deleted
+    resources until the deploy is re-run. Acceptable with synthetic data; noted in
+    the PR.
+16b. Python names that mean "this function" follow (`_queue_fall_alert` raising any
+    critical alert becomes e.g. `_queue_critical_alert`); `alerts.build_fall_alert`
+    keeps its name (it still builds fall alerts). Tests are renamed to match.
 
 ### Repeat suppression in `alert-processor`
 
 17. Before storing, for every alert type except `fall`: Query `silvercare-alerts`
     `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND
-    "ALERT#<event_ts>"` (pattern 7, now run by `alert-processor` instead of the
+    "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so items at the same
+    `event_ts`, including the alert's own item on a retry, are returned) (pattern 7, now run by `alert-processor` instead of the
     detectors). If an item with the same `alert_type`, the same `severity`, and a
     different `alert_id` exists, the alert is **suppressed**: not stored, not
     archived, not emailed, logged with outcome `suppressed`, and the SQS message is
@@ -179,6 +217,7 @@ The limits are synthetic and must be checked with a clinician before any real us
     ```
 
     Critical: `Reading: heart rate 140 bpm for 10 s, above the device limit of 130`.
+    No pulse: `Reading: no pulse detected for 10 s (heart rate 0 bpm)`.
     Units: `bpm`, `%` (SpO2), `°C` (skin temperature, one decimal). Fall emails keep
     their fall and latest-vitals lines.
 
@@ -205,17 +244,20 @@ The limits are synthetic and must be checked with a clinician before any real us
 27. `scripts/iot-smoke-test.py` gets `--alerts` (wearables only). After the existing
     checks it publishes, as the device: `vitals` with `hr_bpm` 125 (warning threshold
     crossed, not yet 2), `vitals` with `hr_bpm` 128 (→ `hr_high` warning),
-    `vitals_alert` `hr_bpm` 140 above 130 held 10 s (→ critical), then `vitals` with
-    `hr_bpm` 126 (→ suppressed). All other fields normal and synthetic. It prints the
+    `vitals_alert` `hr_bpm` 140 above 130 held 10 s (→ critical `hr_high`),
+    `vitals_alert` `hr_bpm` 0 below 45 held 10 s (→ critical `hr_low`, no pulse), then
+    `vitals` with `hr_bpm` 126 (→ suppressed). All other fields normal and synthetic. It prints the
     message IDs and what to expect. Needs no AWS credentials.
 
 ### Docs
 
 28. `docs/data-model.md`: alert types and `severity`; `THRESHOLDS` defaults and
     resolution; pattern 7 now run by `alert-processor` with the 30-minute window;
-    `MSG#vitals_alert` items in `silvercare-latest`. `docs/metrics.md`: criterion 13
-    and the cloud check summary. (Main session: decision record 0001 "Device safety
-    net" marked built; README "Checking alerts" gains the `--alerts` run.)
+    `MSG#vitals_alert` items in `silvercare-latest`; `fall-alert` → `critical-alert`.
+    `docs/metrics.md`: criterion 13 and the cloud check summary. (Main session:
+    decision record 0001 "Device safety net" marked built and the rename noted;
+    README "Checking alerts" gains the `--alerts` run and the new names. Built specs
+    such as `alerts-core.md` stay as written.)
 
 ### Tests
 
@@ -224,7 +266,9 @@ The limits are synthetic and must be checked with a clinician before any real us
     same direction only; nulls breaking a streak; the 3-minute pairing limit;
     duplicate and too-old messages; several alerts from one message; unassigned
     devices; `vitals_alert` validation (each field, `spo2_pct` + `above` rejected,
-    bedroom rejected) and mapping to alert types; suppression (same type and severity
+    `hr_bpm` 0 accepted only with `below`, 1–19 rejected, bedroom rejected) and
+    mapping to alert types; the no-pulse email line; falls still handled by
+    `critical_alert_handler`; suppression (same type and severity
     within 30 min suppressed; at exactly 30 min and beyond not; different severity
     not; falls never; unassigned per device); the email subject and body per
     severity and type; `device-health` still reads no registry and sends nothing; no
@@ -244,6 +288,16 @@ The limits are synthetic and must be checked with a clinician before any real us
 - New v1 message `wearable` → `vitals_alert` (criterion 13), device policy update,
   `silvercare_alert` rule SQL update. `vitals` unchanged.
 
+## Expected plan
+
+- **Replace** (criterion 16a): the `critical-alert` Lambda, role, role policy, log
+  group, event invoke config, and IoT invoke permission; the critical-alert DLQ, its
+  queue policy, and its alarm.
+- **Update in place:** the other ingest Lambdas (shared code), `telemetry` and
+  `alert-processor` role policies, the IoT rules role policy, the `silvercare_alert`
+  rule, the wearable device policy.
+- **Destroy without a replacement: none.** Stop and ask if the plan shows one.
+
 ## API contract
 
 None.
@@ -257,7 +311,7 @@ None.
 | Trigger | Severity | Who |
 |---|---|---|
 | 2 abnormal `vitals` in a row (per-resident thresholds) | warning | the resident's subscribers |
-| device `vitals_alert` | critical | the resident's subscribers |
+| device `vitals_alert` (incl. no pulse) | critical | the resident's subscribers |
 | repeat within 30 min (same type and severity) | — | nobody (suppressed) |
 
 Nurses are still not notified (A3). Unassigned devices: stored, nobody emailed.
@@ -293,8 +347,8 @@ reads, one DynamoDB Query per vitals alert. No new resources with fees.
 architecture diagram's telemetry path, so not added in A2). A `telemetry` invocation
 that still fails after Lambda's two retries is dropped, so a vitals **warning** raised
 there can be lost; the raw `vitals` message is still in S3 history. Critical
-`vitals_alert`s and falls are not affected: they go through `fall-alert`, which has a
-DLQ. To close the gap later: an on-failure destination `silvercare-telemetry-dlq`
+`vitals_alert`s and falls are not affected: they go through `critical-alert`, which
+has a DLQ. To close the gap later: an on-failure destination `silvercare-telemetry-dlq`
 (14 days, alarm to the ops topic), which would also hold failed raw `vitals`,
 `motion`, and `bed` messages for 14 days. Worth stating in the report as a known
 trade-off against the "zero lost alerts" goal.

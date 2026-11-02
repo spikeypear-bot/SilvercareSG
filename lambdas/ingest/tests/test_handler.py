@@ -25,7 +25,7 @@ HANDLERS = {
     "vitals": handler.telemetry_handler,
     "motion": handler.telemetry_handler,
     "bed": handler.telemetry_handler,
-    "fall": handler.fall_alert_handler,
+    "fall": handler.critical_alert_handler,
 }
 
 CASES = [
@@ -45,9 +45,11 @@ OUR_KEYS = {
     "outcome",
     "reason",
     "error",
-    # fall-alert only, once the alert is queued (alerts-core criterion 7)
+    # critical-alert only, once the alert is queued (alerts-core criterion 7)
     "alert_id",
     "alert_outcome",
+    # telemetry only: the warnings queued (vitals-alerts criterion 11)
+    "alert_ids",
 }
 
 _d = TypeDeserializer()
@@ -301,7 +303,7 @@ def test_message_types_are_stored_in_separate_items(latest_table):
         (handler.telemetry_handler, rule_event("vitals", schema_version=2)),
         (handler.telemetry_handler, rule_event("vitals", activity_pct=DELETE)),
         (handler.telemetry_handler, rule_event("vitals", accel_g=DELETE)),
-        (handler.fall_alert_handler, rule_event("fall", accel_window=[])),
+        (handler.critical_alert_handler, rule_event("fall", accel_window=[])),
         (handler.device_health_handler, rule_event("status", BEDROOM, fw_version="")),
         (handler.telemetry_handler, rule_event("bed", occupied="yes")),
     ],
@@ -323,10 +325,10 @@ def test_invalid_message_is_rejected_without_writing(latest_table, entry_point, 
         (handler.telemetry_handler, "status", WEARABLE),
         (handler.telemetry_handler, "status", BEDROOM),
         (handler.telemetry_handler, "fall", WEARABLE),
-        (handler.fall_alert_handler, "vitals", WEARABLE),
-        (handler.fall_alert_handler, "status", WEARABLE),
-        (handler.fall_alert_handler, "motion", BEDROOM),
-        (handler.fall_alert_handler, "bed", BEDROOM),
+        (handler.critical_alert_handler, "vitals", WEARABLE),
+        (handler.critical_alert_handler, "status", WEARABLE),
+        (handler.critical_alert_handler, "motion", BEDROOM),
+        (handler.critical_alert_handler, "bed", BEDROOM),
     ],
 )
 def test_message_type_for_another_function_is_wrong_function(
@@ -346,7 +348,7 @@ def test_message_type_for_another_function_is_wrong_function(
         (handler.telemetry_handler, "vitals", WEARABLE),
         (handler.telemetry_handler, "motion", BEDROOM),
         (handler.telemetry_handler, "bed", BEDROOM),
-        (handler.fall_alert_handler, "fall", WEARABLE),
+        (handler.critical_alert_handler, "fall", WEARABLE),
     ],
 )
 def test_each_function_stores_its_own_types(
