@@ -517,8 +517,22 @@ def test_logs_contain_no_bodies_ids_or_values(history_bucket, logs, monkeypatch)
 
     handler.lambda_handler(sqs_event(*recs), None)
 
-    text = logs.raw.getvalue()
+    # The timestamp and line number can contain "187": leave them out.
+    text = " ".join(
+        f"{k}={v}"
+        for rec in logs()
+        for k, v in rec.items()
+        if k not in {"timestamp", "location"}
+    )
     assert "history object write failed" in text
+    # Message IDs are UUIDs: look for them before the random object-key UUIDs are
+    # replaced below.
+    for value in [b["message_id"] for b in bodies] + [r["messageId"] for r in recs]:
+        assert value not in text, value
+    # The S3 keys hold a random UUID, which can contain "187".
+    text = re.sub(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<uuid>", text
+    )
     forbidden = [
         "synthetic-secret-note",
         "raw-synthetic-garbage",
@@ -529,8 +543,6 @@ def test_logs_contain_no_bodies_ids_or_values(history_bucket, logs, monkeypatch)
         BEDROOM,
         str(BASE_MS),
     ]
-    forbidden += [b["message_id"] for b in bodies]
-    forbidden += [r["messageId"] for r in recs]
     for value in forbidden:
         assert value not in text, value
 

@@ -69,7 +69,7 @@ describe('useAlertAnnouncer', () => {
       alerts: [
         alert('n1'),
         alert('n2', { severity: 'warning', alert_type: 'inactivity' }),
-        alert('n3', { severity: 'info', alert_type: 'low_battery' }),
+        alert('n3', { severity: 'warning', alert_type: 'low_battery' }),
       ],
     })
     expect(msg(result)).toBe('3 new alerts, 1 critical.')
@@ -77,7 +77,7 @@ describe('useAlertAnnouncer', () => {
 
   it('says "0 critical" when none of the new alerts are critical', () => {
     const { result, rerender } = setup([])
-    rerender({ alerts: [alert('n1', { severity: 'info' }), alert('n2', { severity: 'warning' })] })
+    rerender({ alerts: [alert('n1', { severity: 'warning', alert_type: 'spo2_low' }), alert('n2', { severity: 'warning' })] })
     expect(msg(result)).toBe('2 new alerts, 0 critical.')
   })
 

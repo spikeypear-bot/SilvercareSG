@@ -164,9 +164,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "history" {
   }
 }
 
-# Deny statement: s3:* and principal * are intentional here. Denying every action from
+# Deny statements: s3:* and principal * are intentional here. Denying every action from
 # every caller without TLS is narrower access, not broader. Access itself is granted by
-# IAM policies only (the history Lambda's role, the developer policy).
+# IAM policies only (the history and alert-processor Lambdas' roles, the developer
+# policy).
 data "aws_iam_policy_document" "history_bucket" {
   statement {
     sid     = "DenyInsecureTransport"
@@ -186,6 +187,27 @@ data "aws_iam_policy_document" "history_bucket" {
       test     = "Bool"
       variable = "aws:SecureTransport"
       values   = ["false"]
+    }
+  }
+
+  # alerts/ is written by alert-processor only (docs/features/alerts-core.md, criterion
+  # 29), whatever another principal's IAM policy allows. Its own write access comes from
+  # its IAM role (alerts.tf), not from this policy.
+  statement {
+    sid       = "DenyAlertWritesFromOthers"
+    effect    = "Deny"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.history.arn}/${local.alerts_prefix}/*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [module.alert_processor.role_arn]
     }
   }
 }

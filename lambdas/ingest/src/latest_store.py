@@ -1,8 +1,11 @@
 """Write rule for silvercare-latest (docs/data-model.md, "Write rule (idempotent)").
 
-`merge_entries` and `build_item` are pure. `add_message` does the AWS calls: a strongly
-consistent GetItem, then a PutItem conditioned on the version that was read, retried on
-a lost race at most MAX_ATTEMPTS times in total.
+`merge_entries` and `build_item` are pure. `add_message_with_entries` does the AWS
+calls: a strongly consistent GetItem, then a PutItem conditioned on the version that
+was read, retried on a lost race at most MAX_ATTEMPTS times in total. It also returns
+the device's entries after the write (or as read, for a duplicate), which the vitals
+check in `telemetry` uses (docs/features/vitals-alerts.md, criterion 7). `add_message`
+returns the outcome only.
 """
 
 from __future__ import annotations
@@ -15,8 +18,9 @@ from botocore.exceptions import ClientError
 MAX_ENTRIES = 5
 MAX_ATTEMPTS = 3
 
-# Item types without watch_type stay out of the sparse by-message index.
-UNWATCHED_MESSAGES = frozenset({"fall"})
+# Item types without watch_type stay out of the sparse by-message index: the
+# device-raised alerts, which reach the dashboard as alerts.
+UNWATCHED_MESSAGES = frozenset({"fall", "vitals_alert"})
 
 STORED = "stored"
 DUPLICATE = "duplicate"
@@ -78,16 +82,18 @@ def _deserialize(item: dict[str, Any]) -> dict[str, Any]:
     return {k: _deserializer.deserialize(v) for k, v in item.items()}
 
 
-def add_message(
+def add_message_with_entries(
     client: Any,
     table_name: str,
     device_id: str,
     device_type: str,
     message: str,
     entry: dict[str, Any],
-) -> str:
-    """Add one entry to the device's latest 5. Returns stored, duplicate, or too_old.
+) -> tuple[str, list[dict[str, Any]] | None]:
+    """Add one entry to the device's latest 5. Returns (outcome, entries).
 
+    entries (newest first) are the stored list for `stored`, the list as read for
+    `duplicate`, and None for `too_old`. Values read back from DynamoDB are Decimal.
     Raises WriteConflictError after MAX_ATTEMPTS lost races. Any other AWS error
     (throttling, timeouts, access denied) is raised as it is.
     """
@@ -99,8 +105,10 @@ def add_message(
         existing = list(current.get("entries", [])) if current else []
 
         outcome, entries = merge_entries(existing, entry)
+        if outcome == DUPLICATE:
+            return outcome, existing
         if entries is None:
-            return outcome
+            return outcome, None
 
         item = build_item(device_id, device_type, message, entries, read_version + 1)
         try:
@@ -117,5 +125,23 @@ def add_message(
             ):
                 raise
             continue
-        return STORED
+        return STORED, entries
     raise WriteConflictError(f"version conflict after {MAX_ATTEMPTS} attempts")
+
+
+def add_message(
+    client: Any,
+    table_name: str,
+    device_id: str,
+    device_type: str,
+    message: str,
+    entry: dict[str, Any],
+) -> str:
+    """Add one entry to the device's latest 5. Returns stored, duplicate, or too_old.
+
+    Raises like add_message_with_entries.
+    """
+    outcome, _ = add_message_with_entries(
+        client, table_name, device_id, device_type, message, entry
+    )
+    return outcome

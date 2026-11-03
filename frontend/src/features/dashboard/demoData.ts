@@ -109,10 +109,10 @@ const SEEDS: readonly ResidentSeed[] = [
 ]
 
 /**
- * How long a caregiver/family member has to confirm an alert before it escalates to
- * nurses. Demo value only: the real window comes from the alerting spec (Open decision #2).
+ * Every alert still `open` this long after its first notification escalates to nurses
+ * (docs/features/escalation.md). The demo treats the notification as sent at `event_ts`.
  */
-export const DEMO_CONFIRMATION_WINDOW_MS = 2 * 60_000
+export const DEMO_ESCALATION_DELAY_MS = 60_000
 
 interface AlertSeed {
   resident: number // 1-based resident number
@@ -122,47 +122,24 @@ interface AlertSeed {
   minutesAgo: number
   /** Acknowledged by this synthetic staff member, this many minutes ago. */
   acknowledged?: { by: string; minutesAgo: number }
-  /** Goes through the confirmation window first, so it carries `escalates_at`. */
-  confirmationWindow?: boolean
 }
 
 const ALERT_SEEDS: readonly AlertSeed[] = [
-  // Mid-countdown on every page load: 30 s into the 2 min window.
-  {
-    resident: 8,
-    type: 'possible_fall',
-    severity: 'warning',
-    device: 'bedroom',
-    minutesAgo: 0.5,
-    confirmationWindow: true,
-  },
+  // Mid-countdown on every page load: 30 s into the 60 s escalation delay.
+  { resident: 8, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 0.5 },
   { resident: 3, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 4 },
   {
     resident: 7,
-    type: 'vitals',
+    type: 'hr_high',
     severity: 'critical',
     device: 'wearable',
     minutesAgo: 9,
     acknowledged: { by: 'Test Nurse B', minutesAgo: 6 },
   },
-  {
-    resident: 12,
-    type: 'possible_fall',
-    severity: 'warning',
-    device: 'bedroom',
-    minutesAgo: 15,
-    confirmationWindow: true,
-  },
+  { resident: 12, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 15 },
   { resident: 17, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 22 },
-  { resident: 19, type: 'vitals', severity: 'warning', device: 'wearable', minutesAgo: 27 },
-  {
-    resident: 2,
-    type: 'inactivity',
-    severity: 'warning',
-    device: 'bedroom',
-    minutesAgo: 38,
-    confirmationWindow: true,
-  },
+  { resident: 19, type: 'spo2_low', severity: 'warning', device: 'wearable', minutesAgo: 27 },
+  { resident: 2, type: 'inactivity', severity: 'warning', device: 'bedroom', minutesAgo: 38 },
   {
     resident: 15,
     type: 'device_offline',
@@ -176,12 +153,12 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
   {
     resident: 13,
     type: 'low_battery',
-    severity: 'info',
+    severity: 'warning',
     device: 'wearable',
     minutesAgo: 125,
     acknowledged: { by: 'Test Nurse B', minutesAgo: 110 },
   },
-  { resident: 2, type: 'possible_fall', severity: 'info', device: 'bedroom', minutesAgo: 410 },
+  { resident: 2, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 410 },
 ]
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRST'
@@ -201,6 +178,21 @@ const bedroomNumber = (i: number) => ((i * 13 + 5) % 20) + 1
 const homeNumber = (i: number) => ((i * 11 + 3) % 20) + 1
 
 export const residentId = (n: number) => `res-${pad4(n)}`
+
+/**
+ * Escalation fields as the API returns them: `escalated_at` once the 60 s check found the
+ * alert still open, or the computed `escalates_at` while the check is still to come.
+ * Nothing if it was acknowledged within 60 s.
+ */
+function escalation(
+  eventTs: string,
+  acknowledgedAt: string | undefined,
+  now: Date,
+): Pick<ResidentAlert, 'escalates_at' | 'escalated_at'> {
+  const at = new Date(Date.parse(eventTs) + DEMO_ESCALATION_DELAY_MS).toISOString()
+  if (acknowledgedAt && acknowledgedAt <= at) return {}
+  return Date.parse(at) <= now.getTime() ? { escalated_at: at } : { escalates_at: at }
+}
 
 /** Builds the full demo data set with timestamps relative to `now`. */
 export function createDemoData(now: Date = new Date()): DashboardData {
@@ -252,11 +244,7 @@ export function createDemoData(now: Date = new Date()): DashboardData {
         acknowledged_by: seed.acknowledged.by,
         acknowledged_at: minutesBefore(now, seed.acknowledged.minutesAgo),
       }),
-      ...(seed.confirmationWindow && {
-        escalates_at: new Date(
-          new Date(eventTs).getTime() + DEMO_CONFIRMATION_WINDOW_MS,
-        ).toISOString(),
-      }),
+      ...escalation(eventTs, seed.acknowledged && minutesBefore(now, seed.acknowledged.minutesAgo), now),
     }
   }).sort((a, b) => b.event_ts.localeCompare(a.event_ts))
 
@@ -267,13 +255,13 @@ export function createDemoData(now: Date = new Date()): DashboardData {
 // Resident detail page (patterns 10, 11, 12, 18)
 
 /**
- * Demo thresholds, not clinically reviewed. Real values come from the alerting spec
- * (Open decision #2).
+ * The backend's default thresholds (docs/data-model.md, Resident thresholds; user's
+ * decision 2026-11-02; synthetic, to be checked with a clinician before any real use).
  */
 export const DEMO_DEFAULT_THRESHOLDS: VitalsThresholds = {
-  hr_bpm: { min: 50, max: 110 },
+  hr_bpm: { min: 50, max: 120 },
   spo2_pct: { min: 92 },
-  skin_temp_c: { min: 31.0, max: 36.0 },
+  skin_temp_c: { min: 30.0, max: 38.0 },
 }
 
 const DEMO_STAFF = ['Test Nurse A', 'Test Nurse B', 'Test Nurse C'] as const
@@ -288,15 +276,11 @@ interface ThresholdChangeSeed {
 /**
  * Earlier threshold changes, newest first (1-based resident number). Every resident
  * starts from DEMO_DEFAULT_THRESHOLDS, so applying these oldest first gives today's
- * limits: K and S have their own limits because of the change listed here.
+ * limits: only B (res-0002) has its own limit, as the backend's seed script creates.
  */
 function thresholdChangeSeeds(n: number): ThresholdChangeSeed[] {
-  if (n === 11) {
-    // K: higher resting heart rate, like the simulator's baselines.
-    return [{ daysAgo: 12, by: DEMO_DOCTORS[0], changes: [{ field: 'hr_bpm.max', old_value: 110, new_value: 120 }] }]
-  }
-  if (n === 19) {
-    // S: lower normal SpO2.
+  if (n === 2) {
+    // B: lower normal SpO2 (scripts/seed-registry.py: res-0002 `spo2_pct {"min": 88}`).
     return [{ daysAgo: 9, by: DEMO_DOCTORS[1], changes: [{ field: 'spo2_pct.min', old_value: 92, new_value: 88 }] }]
   }
   const by = DEMO_DOCTORS[n % 2]
@@ -305,8 +289,8 @@ function thresholdChangeSeeds(n: number): ThresholdChangeSeed[] {
     // and every old_value is the value before it.
     case 1:
       return [
-        { daysAgo: 4 + n, by, changes: [{ field: 'skin_temp_c.min', old_value: 30.5, new_value: 31.0 }] },
-        { daysAgo: 10 + n, by, changes: [{ field: 'skin_temp_c.min', old_value: 31.0, new_value: 30.5 }] },
+        { daysAgo: 4 + n, by, changes: [{ field: 'skin_temp_c.min', old_value: 29.5, new_value: 30.0 }] },
+        { daysAgo: 10 + n, by, changes: [{ field: 'skin_temp_c.min', old_value: 30.0, new_value: 29.5 }] },
       ]
     case 2:
       return [
@@ -315,7 +299,7 @@ function thresholdChangeSeeds(n: number): ThresholdChangeSeed[] {
           by,
           changes: [
             { field: 'hr_bpm.min', old_value: 45, new_value: 50 },
-            { field: 'hr_bpm.max', old_value: 115, new_value: 110 },
+            { field: 'hr_bpm.max', old_value: 125, new_value: 120 },
           ],
         },
         {
@@ -323,7 +307,7 @@ function thresholdChangeSeeds(n: number): ThresholdChangeSeed[] {
           by,
           changes: [
             { field: 'hr_bpm.min', old_value: 50, new_value: 45 },
-            { field: 'hr_bpm.max', old_value: 110, new_value: 115 },
+            { field: 'hr_bpm.max', old_value: 120, new_value: 125 },
           ],
         },
       ]
@@ -348,8 +332,8 @@ function withValue(t: VitalsThresholds, field: ThresholdKey, value: number): Vit
 }
 
 const HISTORY_TYPES: ReadonlyArray<{ type: AlertType; severity: AlertSeverity; device: 'wearable' | 'bedroom' }> = [
-  { type: 'low_battery', severity: 'info', device: 'wearable' },
-  { type: 'vitals', severity: 'warning', device: 'wearable' },
+  { type: 'low_battery', severity: 'warning', device: 'wearable' },
+  { type: 'hr_high', severity: 'warning', device: 'wearable' },
   { type: 'possible_fall', severity: 'warning', device: 'bedroom' },
   { type: 'device_offline', severity: 'warning', device: 'bedroom' },
   { type: 'fall', severity: 'critical', device: 'wearable' },
@@ -492,13 +476,12 @@ function thresholdsFor(
     .reverse()
     .flatMap((entry) => entry.changes)
     .reduce((t, c) => withValue(t, c.field, c.new_value), DEMO_DEFAULT_THRESHOLDS)
-  // Without changes, the thresholds are as first set when the resident joined.
+  // Without changes the item is as seeded: no `updated_at` / `updated_by` (data-model).
   const newest = history[0]
   return {
     thresholds: {
       ...values,
-      updated_at: newest?.changed_at ?? minutesBefore(now, (20 + n) * 24 * 60),
-      updated_by: newest?.changed_by ?? DEMO_DOCTORS[0],
+      ...(newest && { updated_at: newest.changed_at, updated_by: newest.changed_by }),
     },
     history,
   }

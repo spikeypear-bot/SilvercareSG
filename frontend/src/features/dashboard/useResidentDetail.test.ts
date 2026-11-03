@@ -168,7 +168,7 @@ describe('useResidentDetail actions (local state only)', () => {
   })
 
   it('updateThresholds replaces the values and sets updated_by/updated_at, leaving the rest', async () => {
-    const { result, data, loader } = await loaded('res-0011')
+    const { result, data, loader } = await loaded('res-0002')
     const values: VitalsThresholds = {
       hr_bpm: { min: 55, max: 115 },
       spo2_pct: { min: 90 },
@@ -189,6 +189,18 @@ describe('useResidentDetail actions (local state only)', () => {
     expect(after.wearable).toBe(data.wearable)
     expect(after.bedroom).toBe(data.bedroom)
     expect(loader).toHaveBeenCalledTimes(1)
+  })
+
+  it('updateThresholds sets updated_by/updated_at on a resident that had none (no history)', async () => {
+    const { result, data } = await loaded('res-0003')
+    expect(data.thresholds).not.toHaveProperty('updated_by')
+    expect(data.thresholds).not.toHaveProperty('updated_at')
+    expect(data.threshold_history).toEqual([])
+    act(() => result.current.updateThresholds(data.thresholds, 'Test Doctor A'))
+    expect((result.current.data as ResidentDetail).thresholds).toMatchObject({
+      updated_by: 'Test Doctor A',
+      updated_at: ACTION_TIME.toISOString(),
+    })
   })
 
   it('actions are no-ops before data loads', async () => {

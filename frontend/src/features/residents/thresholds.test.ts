@@ -11,7 +11,7 @@ import {
   type ThresholdForm,
 } from './thresholds'
 
-const VALID: ThresholdForm = { hrMin: '50', hrMax: '110', spo2Min: '92', tempMin: '31.0', tempMax: '36.0' }
+const VALID: ThresholdForm = { hrMin: '50', hrMax: '120', spo2Min: '92', tempMin: '30.0', tempMax: '38.0' }
 
 const withField = (field: ThresholdField, value: string): ThresholdForm => ({ ...VALID, [field]: value })
 

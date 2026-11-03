@@ -119,3 +119,118 @@ in the S3 history bucket, which is written in batches of up to 5 minutes. Leave 
 - **Replace a lost or leaked key:** delete `secrets/device-keys/<id>.key` and
   `infra/devices/csr/<id>.csr`, run `make device-keys DEVICE=<id>`, commit the new CSR,
   and merge. The plan shows that device's certificate as replaced, which is expected.
+
+## Alerts
+
+A wearable `fall` or `vitals_alert` (a critical reading on the device, including no
+pulse) becomes a **critical** alert: `critical-alert` sends it to the
+`silvercare-alerts` queue. Two abnormal `vitals` in a row (per-resident thresholds)
+become a **warning**, sent by `telemetry`. `alert-processor` holds back repeats (same
+resident, type, and severity within 30 minutes), stores the alert in
+`silvercare-alerts`, archives it in S3 `alerts/`, and emails the resident's
+subscribers. The specs are `docs/features/alerts-core.md` and
+`docs/features/vitals-alerts.md`. If an alert is still open 60 s after the first
+email (nobody acknowledged or cancelled it), `alert-processor` emails the nurse
+subscribers too ("ESCALATED"; `docs/features/escalation.md`).
+
+### Subscribers
+
+Keep your working copy in the git-ignored `secrets/subscribers.json` and share it
+privately with the rest of `secrets/`:
+
+```json
+{
+  "subscriber_emails": { "family-c1": "you@example.com", "ops-1": "you@example.com", "nurse-1": "you@example.com" },
+  "alert_subscribers": { "family-c1": { "resident_ids": ["res-0001"] } },
+  "ops_subscribers": ["ops-1"],
+  "nurse_subscribers": ["nurse-1"]
+}
+```
+
+CI can't read `secrets/`. A repo admin copies the values into GitHub (Settings →
+Secrets and variables → Actions), each as compact JSON:
+
+| Name | Kind | Value |
+|---|---|---|
+| `SUBSCRIBER_EMAILS` | secret | `subscriber_emails` (label → email) |
+| `ALERT_SUBSCRIBERS` | variable | `alert_subscribers` (label → resident IDs) |
+| `OPS_SUBSCRIBERS` | variable | `ops_subscribers` (labels that get DLQ alarm emails) |
+| `NURSE_SUBSCRIBERS` | variable | `nurse_subscribers` (labels that get escalated alerts for every resident) |
+
+- Labels appear in the public plan comment: use `family-c1`, `ops-1`, never names.
+- Use team addresses, not real family members': emails are stored in the Terraform
+  state, which developers can read.
+- The next deploy creates one subscription per label. Each address gets an AWS
+  "Subscription Confirmation" email: click **Confirm subscription**, or nothing is
+  delivered. Unconfirmed subscriptions expire after 3 days and can't be deleted by
+  Terraform until then.
+- The "unsubscribe" link at the bottom of alert emails removes the subscription
+  without Terraform noticing. To get it back, remove the label, deploy, add it again,
+  deploy.
+
+### Seeding the registry
+
+Alerts need device → resident assignments. Once, with your own AWS credentials (the
+venv from "Checking ingest"):
+
+```sh
+.venv/bin/python scripts/seed-registry.py --dry-run   # prints the keys it would write
+.venv/bin/python scripts/seed-registry.py
+```
+
+It creates synthetic residents `res-0001`–`res-0003`, assigns `wearable-000N` and
+`bedroom-000N` (N = 1–3) to `res-000N`, and adds every other device as an unassigned
+spare. It also gives `res-0002` a personal SpO2 limit of 88 % (`THRESHOLDS#res-0002`).
+Existing items are left alone (`exists`), so running it again is safe.
+
+### Checking alerts
+
+After the deploy, the subscription confirmations, and the seed:
+
+```sh
+make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) INGEST=1
+```
+
+The smoke test sends a valid `fall`. Expect, within a minute:
+
+- one email to `res-0001`'s subscribers, and none to anyone else;
+- one item under `RESIDENT#res-0001` in `silvercare-alerts`, and one object under
+  `alerts/date=<today, UTC>/` in the history bucket;
+- both `silvercare-alerts-dlq` and `silvercare-critical-alert-dlq` empty (the shared
+  developer user can't read SQS: check that CloudWatch alarms
+  `silvercare-alerts-dlq-not-empty` and `silvercare-critical-alert-dlq-not-empty` are
+  OK);
+- a datapoint for the `AlertDispatchLatency` metric (CloudWatch → Metrics →
+  `SilverCare`).
+
+Then run it with `DEVICE=wearable-0010` (unassigned): one item under
+`RESIDENT#unassigned`, and no email. If a DLQ alarm email arrives, look at the queue's
+messages and the `/aws/lambda/silvercare-critical-alert` and
+`/aws/lambda/silvercare-alert-processor` logs.
+
+Vitals alerts, from an assigned wearable:
+
+```sh
+make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) ALERTS=1
+```
+
+It sends two high heart-rate `vitals` (one **warning**, "High heart rate"), a device
+`vitals_alert` at 140 bpm and one with no pulse (two **CRITICAL** emails), then a third
+high `vitals` that is suppressed (no email). Expect three emails, three new items under
+`RESIDENT#res-0001`, and the suppressed one only as `suppressed` in the
+`/aws/lambda/silvercare-alert-processor` log. Running it again within 30 minutes
+suppresses the warning and both critical alerts.
+
+Escalation: after any alert email, wait about a minute. Each nurse subscriber gets
+"SilverCare ESCALATED alert: …" for every alert that is still `open` (the
+`/aws/lambda/silvercare-alert-processor` log shows `escalated`). To check that an
+acknowledged alert doesn't escalate, send a fall (`INGEST=1`), then within 60 s open
+its item in DynamoDB → `silvercare-alerts` and set `status` to `acknowledged`: no
+nurse email, and the log shows `not_escalated` with reason `status:acknowledged`. If an
+escalation fails (an AWS error), it is retried after 3 minutes, so the nurse email
+can arrive about 4 minutes late; after 5 failures it lands in `silvercare-alerts-dlq`
+(alarm email). A check older than 15 minutes, e.g. one redriven from the DLQ later,
+emails nobody (`not_escalated`, reason `stale`).
+
+Subscriptions to `silvercare-alerts` and `silvercare-nurses` can only be added by the
+deploy (Terraform); adding one in the console is denied on purpose.

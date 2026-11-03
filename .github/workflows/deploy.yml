@@ -68,8 +68,37 @@ jobs:
 
       # The full plan isn't printed: the repo is public, so its logs are too.
       # The job summary lists the changed resources instead.
+      # Without these the plan would destroy every alert, ops, and nurse email subscription.
+      # Checks only that they are non-empty; never prints them.
+      - name: Check subscriber settings
+        if: steps.tf.outputs.present == 'true'
+        env:
+          SUBSCRIBER_EMAILS: ${{ secrets.SUBSCRIBER_EMAILS }}
+          ALERT_SUBSCRIBERS: ${{ vars.ALERT_SUBSCRIBERS }}
+          OPS_SUBSCRIBERS: ${{ vars.OPS_SUBSCRIBERS }}
+          NURSE_SUBSCRIBERS: ${{ vars.NURSE_SUBSCRIBERS }}
+        run: |
+          missing=""
+          [ -n "$SUBSCRIBER_EMAILS" ] || missing="$missing SUBSCRIBER_EMAILS (secret)"
+          [ -n "$ALERT_SUBSCRIBERS" ] || missing="$missing ALERT_SUBSCRIBERS (variable)"
+          [ -n "$OPS_SUBSCRIBERS" ] || missing="$missing OPS_SUBSCRIBERS (variable)"
+          [ -n "$NURSE_SUBSCRIBERS" ] || missing="$missing NURSE_SUBSCRIBERS (variable)"
+          if [ -n "$missing" ]; then
+            echo "::error::Not set:$missing. Deploying would delete the email subscriptions. See README, Alerts."
+            exit 1
+          fi
+
       - name: Terraform plan
         if: steps.tf.outputs.present == 'true'
+        # Alert email subscribers (docs/features/alerts-core.md, criterion 25; nurses:
+        # docs/features/escalation.md, criterion 15). Keep in
+        # sync with plan.yml: removing them here destroys the subscriptions. The saved
+        # plan carries the values into apply.
+        env:
+          TF_VAR_subscriber_emails: ${{ secrets.SUBSCRIBER_EMAILS || '{}' }}
+          TF_VAR_alert_subscribers: ${{ vars.ALERT_SUBSCRIBERS || '{}' }}
+          TF_VAR_ops_subscribers: ${{ vars.OPS_SUBSCRIBERS || '[]' }}
+          TF_VAR_nurse_subscribers: ${{ vars.NURSE_SUBSCRIBERS || '[]' }}
         run: terraform plan -no-color -out=tfplan > /dev/null
 
       - name: Summarise plan

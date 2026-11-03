@@ -76,5 +76,11 @@ For alert logic: thresholds at, just below, and just above each boundary.
 - Tests never call real AWS. If a test needs credentials it isn't mocked properly; fix
   the test.
 - Test pure logic directly, without moto, wherever possible.
+- When asserting that values don't leak into logs or output (e.g. `"999" not in out`),
+  remove random IDs (UUIDs) from the text first or use fixed IDs: a random UUID contains
+  short digit strings like `999` often enough to make the test flaky. Likewise check
+  parsed log records without `timestamp` and `location`, never the raw log text: a
+  time like `13:33:05,187` contains `33` and `187`. Do **both**: other fields hold
+  UUIDs too (`message_id`, S3 keys). Check real IDs are absent before replacing UUIDs.
 - One behaviour per test. Name tests after the behaviour:
   `test_duplicate_reading_is_not_written_twice`.

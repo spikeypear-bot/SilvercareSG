@@ -37,6 +37,9 @@ design lives in `docs/data-model.md`; Terraform implements it. Update the doc fi
   an existing table without the user agreeing to a migration plan.
 - Every GSI must serve a listed access pattern. Project only the attributes it needs.
 - No `Scan` in application code.
+- Range queries on composite sort keys (`ALERT#<ts>#<id>`): an upper bound of
+  `ALERT#<ts>` excludes items at that exact `ts`. End it with `#~` (`ALERT#<ts>#~`) when
+  they should be included, and test an item at the boundary.
 - DynamoDB holds live state, not history. Device messages go in `silvercare-latest`,
   at most 5 per device and message type; history goes to S3. Don't add tables or items
   that grow without bound; anything that accumulates (like resolved alerts) needs a TTL

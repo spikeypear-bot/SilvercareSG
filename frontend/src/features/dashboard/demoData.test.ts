@@ -1,5 +1,6 @@
+import type { ResidentAlert } from '../../types/dashboard'
 import {
-  DEMO_CONFIRMATION_WINDOW_MS,
+  DEMO_ESCALATION_DELAY_MS,
   FAMILY_LINKED_RESIDENT_IDS,
   STATUS_TEXT,
   createDemoData,
@@ -75,7 +76,7 @@ describe('shapes and units follow docs/metrics.md (criterion 18)', () => {
   it('timestamps are ISO 8601 UTC', () => {
     const all = data.residents.flatMap((r) => [r.wearable.ts, r.bedroom.ts, ...r.vitals.map((v) => v.ts)])
     const alertTimes = data.alerts.flatMap((a) =>
-      [a.event_ts, a.acknowledged_at, a.resolved_at, a.escalates_at].filter(
+      [a.event_ts, a.acknowledged_at, a.resolved_at, a.escalates_at, a.escalated_at].filter(
         (ts): ts is string => ts !== undefined,
       ),
     )
@@ -103,8 +104,8 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     expect(data.alerts.length).toBeGreaterThan(0)
     const byId = new Map(data.residents.map((r) => [r.resident_id, r]))
     data.alerts.forEach((a) => {
-      expect(['open', 'acknowledged', 'resolved']).toContain(a.status)
-      expect(['info', 'warning', 'critical']).toContain(a.severity)
+      expect(['open', 'acknowledged', 'cancelled', 'resolved']).toContain(a.status)
+      expect(['warning', 'critical']).toContain(a.severity)
       const resident = byId.get(a.resident_id)
       expect(resident).toBeDefined()
       expect([resident?.wearable.device_id, resident?.bedroom.device_id]).toContain(a.device_id)
@@ -139,7 +140,7 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     const acked = data.alerts.filter((a) => a.status === 'acknowledged')
     expect(acked.map((a) => [a.resident_id, a.alert_type, a.acknowledged_by])).toEqual(
       expect.arrayContaining([
-        ['res-0007', 'vitals', 'Test Nurse B'],
+        ['res-0007', 'hr_high', 'Test Nurse B'],
         ['res-0015', 'device_offline', 'Test Nurse C'],
         ['res-0013', 'low_battery', 'Test Nurse B'],
       ]),
@@ -158,9 +159,12 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     })
   })
 
-  it('exactly one alert is mid-countdown, about 90 s before it escalates', () => {
-    expect(DEMO_CONFIRMATION_WINDOW_MS).toBe(120_000)
-    const future = data.alerts.filter((a) => a.escalates_at && Date.parse(a.escalates_at) > NOW.getTime())
+  it('every alert escalates 60 s after its first notification', () => {
+    expect(DEMO_ESCALATION_DELAY_MS).toBe(60_000)
+  })
+
+  it('exactly one alert is mid-countdown, 30 s before it escalates', () => {
+    const future = data.alerts.filter((a) => a.escalates_at)
     expect(future).toHaveLength(1)
     const [pending] = future
     expect(pending).toMatchObject({
@@ -169,25 +173,62 @@ describe('status and severity are provided by the data (criterion 19)', () => {
       severity: 'warning',
       status: 'open',
     })
-    expect(Date.parse(pending.escalates_at as string) - NOW.getTime()).toBe(90_000)
+    expect(pending.escalated_at).toBeUndefined()
+    expect(Date.parse(pending.escalates_at as string) - NOW.getTime()).toBe(30_000)
     expect(data.alerts[0]).toBe(pending) // newest
   })
 
-  it('escalates_at is the event time plus the confirmation window; the others have already escalated', () => {
-    const windowed = data.alerts.filter((a) => a.escalates_at)
-    expect(windowed.map((a) => [a.resident_id, a.alert_type]).sort()).toEqual(
-      [
-        ['res-0002', 'inactivity'],
-        ['res-0008', 'possible_fall'],
-        ['res-0012', 'possible_fall'],
-      ].sort(),
-    )
-    windowed.forEach((a) => {
-      expect(Date.parse(a.escalates_at as string) - Date.parse(a.event_ts)).toBe(DEMO_CONFIRMATION_WINDOW_MS)
-      expect(a.status).toBe('open')
+  it('every other alert, open or acknowledged after its 60 s, has escalated_at = event_ts + 60 s', () => {
+    const others = data.alerts.filter((a) => !(a.resident_id === 'res-0008' && a.alert_type === 'possible_fall'))
+    expect(others).toHaveLength(11)
+    others.forEach((a) => {
+      expect(a.escalates_at).toBeUndefined()
+      expect(a.escalated_at).toBeDefined()
+      expect(Date.parse(a.escalated_at as string) - Date.parse(a.event_ts)).toBe(DEMO_ESCALATION_DELAY_MS)
+      expect(Date.parse(a.escalated_at as string)).toBeLessThanOrEqual(NOW.getTime())
     })
-    const passed = windowed.filter((a) => Date.parse(a.escalates_at as string) <= NOW.getTime())
-    expect(passed).toHaveLength(2)
+    const ackedEscalated = others.filter((a) => a.status === 'acknowledged').map((a) => a.resident_id)
+    expect(ackedEscalated.sort()).toEqual(['res-0007', 'res-0013', 'res-0015'])
+  })
+
+  it('follows the demo escalation rule for every alert, at several clock times', () => {
+    /** The rule, written independently of demoData.ts. */
+    function expected(a: ResidentAlert, now: Date): Pick<ResidentAlert, 'escalates_at' | 'escalated_at'> {
+      const at = Date.parse(a.event_ts) + 60_000
+      if (a.acknowledged_at && Date.parse(a.acknowledged_at) <= at) return {}
+      const iso = new Date(at).toISOString()
+      return at <= now.getTime() ? { escalated_at: iso } : { escalates_at: iso }
+    }
+    for (const now of [NOW, new Date('2026-11-03T08:00:00Z'), new Date('2026-12-31T23:59:59.999Z')]) {
+      createDemoData(now).alerts.forEach((a) => {
+        expect({ escalates_at: a.escalates_at, escalated_at: a.escalated_at }).toEqual({
+          escalates_at: undefined,
+          escalated_at: undefined,
+          ...expected(a, now),
+        })
+        // Never both fields at once.
+        expect(a.escalates_at !== undefined && a.escalated_at !== undefined).toBe(false)
+      })
+    }
+  })
+
+  it('uses the new alert types: res-0007 hr_high (critical), res-0019 spo2_low (warning)', () => {
+    const find = (id: string) => data.alerts.filter((a) => a.resident_id === id)
+    expect(find('res-0007')).toEqual([
+      expect.objectContaining({ alert_type: 'hr_high', severity: 'critical', status: 'acknowledged' }),
+    ])
+    expect(find('res-0019')).toEqual([
+      expect.objectContaining({ alert_type: 'spo2_low', severity: 'warning', status: 'open' }),
+    ])
+    expect(data.alerts.map((a) => a.alert_type)).not.toContain('vitals')
+  })
+
+  it('res-0013 low_battery and res-0002 possible_fall (410 min old) are warnings', () => {
+    const lowBattery = data.alerts.find((a) => a.resident_id === 'res-0013' && a.alert_type === 'low_battery')
+    expect(lowBattery?.severity).toBe('warning')
+    const oldFall = data.alerts.find((a) => a.resident_id === 'res-0002' && a.alert_type === 'possible_fall')
+    expect(oldFall?.severity).toBe('warning')
+    expect(NOW.getTime() - Date.parse(oldFall?.event_ts as string)).toBe(410 * 60_000)
   })
 
   it('alerts are newest first', () => {
@@ -197,6 +238,6 @@ describe('status and severity are provided by the data (criterion 19)', () => {
 
   it('includes every status and severity so each badge can be seen', () => {
     expect(new Set(data.residents.map((r) => r.status))).toEqual(new Set(['ok', 'attention', 'urgent']))
-    expect(new Set(data.alerts.map((a) => a.severity))).toEqual(new Set(['info', 'warning', 'critical']))
+    expect(new Set(data.alerts.map((a) => a.severity))).toEqual(new Set(['warning', 'critical']))
   })
 })

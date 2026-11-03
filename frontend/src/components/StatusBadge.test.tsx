@@ -6,7 +6,6 @@ describe('StatusBadge (criterion 22: icon and text, never colour alone)', () => 
     ['ok', 'OK'],
     ['attention', 'Attention'],
     ['urgent', 'Urgent'],
-    ['info', 'Info'],
     ['warning', 'Warning'],
     ['critical', 'Critical'],
   ] as Array<[BadgeTone, string]>)('%s shows an icon and the text "%s"', (tone, label) => {
@@ -23,6 +22,18 @@ describe('StatusBadge (criterion 22: icon and text, never colour alone)', () => 
       return markup
     }
     expect(new Set([icon('ok'), icon('attention'), icon('urgent')]).size).toBe(3)
+  })
+
+  it('has no info tone: alert severity is warning or critical only', () => {
+    render(<StatusBadge tone="warning" />)
+    expect(screen.queryByText('Info')).not.toBeInTheDocument()
+    const icon = (tone: BadgeTone) => {
+      const { container, unmount } = render(<StatusBadge tone={tone} />)
+      const markup = container.querySelector('svg')?.innerHTML
+      unmount()
+      return markup
+    }
+    expect(icon('warning')).not.toBe(icon('critical'))
   })
 
   it('accepts a custom label', () => {

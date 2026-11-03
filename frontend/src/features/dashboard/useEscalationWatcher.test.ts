@@ -68,6 +68,7 @@ describe('useEscalationWatcher', () => {
     ['exactly now', alert('alert-test-001', { escalates_at: inMs(0) })],
     ['acknowledged', alert('alert-test-001', { status: 'acknowledged', escalates_at: inMs(5_000) })],
     ['resolved', alert('alert-test-001', { status: 'resolved', escalates_at: inMs(5_000) })],
+    ['cancelled', alert('alert-test-001', { status: 'cancelled', escalates_at: inMs(5_000) })],
     ['without escalates_at', alert('alert-test-001')],
   ])('never fires for an alert %s', (_, a) => {
     const { onEscalated } = watch([a])

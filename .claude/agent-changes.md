@@ -3,6 +3,83 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-03
+
+- **Problem:** while resolving the merge, Claude edited 11 files with Python scripts on
+  the Windows host, and text-mode writes turned their LF line endings into CRLF, against
+  `.gitattributes`. **Changed:** `.claude/skills/local-dev/SKILL.md`: keep LF; on
+  Windows open files with `newline=''` or in binary, or use Edit/Write.
+
+- **Problem:** the `escalation` spec (written by Claude) let caregivers acknowledge
+  without saying what others see about who acknowledged (privacy-reviewer, medium), and
+  didn't say what a check redriven from the DLQ hours later does (iac-reviewer, low).
+  **Changed:** `.claude/skills/feature-spec/SKILL.md` (readiness check: what others see
+  about a new action) and `.claude/skills/lambda-python/SKILL.md` (decide late-message
+  behaviour for time-bound notifications).
+
+- **Problem:** Claude edited a test with a Python one-off script, which skips the format
+  hook, so the user's lint check failed. **Changed:** `.claude/skills/local-dev/SKILL.md`:
+  run `ruff format` after shell-script edits.
+
+- **Problem:** the fix for the flaky log tests only left out `timestamp`; history's
+  test still failed in the A2 PR checks because an S3 key's random UUID contained
+  `187` (and an ingest test could hit `999` in `message_id`). **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: drop timestamp/location **and** replace UUIDs.
+
+- **Problem:** two log-privacy tests (`test_fall_log_has_no_resident_or_fall_values`,
+  history's `test_logs_contain_no_bodies_ids_or_values`) checked the raw log text, so a
+  timestamp containing `33` or `187` failed them at random. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: check parsed records without `timestamp` and
+  `location`.
+
+- **Problem:** the `vitals-alerts` spec (written by Claude) bounded the suppression
+  Query at `ALERT#<event_ts>`, which excludes `ALERT#<event_ts>#<alert_id>`, so a
+  retried alert was suppressed by an earlier one and never emailed (lambda-tester
+  found it). **Changed:** `.claude/skills/data-model/SKILL.md`: end composite sort-key
+  ranges with `#~` when same-`ts` items belong in the result.
+
+- **Problem:** Claude told the user the `fall-alert` → `critical-alert` rename loses
+  alerts for "a few seconds"; iac-reviewer (low) showed it's up to about a minute
+  (destroy first, then IAM role propagation). **Changed:**
+  `.claude/skills/tf-change/SKILL.md`: state that window when summarising a replaced
+  Lambda on an alert path.
+
+## 2026-11-02
+
+- **Problem:** the `vitals-alerts` spec (written by Claude) copied the routine heart-rate
+  range 20–250 into the device `vitals_alert`, so a no-pulse emergency (0) would be
+  rejected and never alert; the user caught it. **Changed:**
+  `.claude/skills/feature-spec/SKILL.md`: readiness check that alert validation ranges
+  accept the worst real reading.
+
+- **Problem:** the `alerts-core` deploy failed: both SNS topic policies used `sns:*` in
+  a TLS-only Deny, which SNS rejects at apply ("action out of service scope"); tf-check
+  and both reviewers missed it. **Changed:** `.claude/skills/iam-policy/SKILL.md`: list
+  explicit SNS topic actions, never `sns:*`.
+
+- **Problem:** a "only fall-alert may send" Deny on `silvercare-alerts` (added on the
+  2026-11-02 rule below) blocked DLQ redrive for every human, admins included
+  (iac-reviewer, medium). **Changed:** `.claude/skills/iam-policy/SKILL.md`: no such
+  Deny on actions operators need for recovery, e.g. sends into a redrive target.
+
+- **Problem:** in `alerts-core`, queue and topic policies had Allow statements naming
+  roles created in the same apply, which can fail the first apply with PrincipalNotFound
+  (iac-reviewer, low). **Changed:** `.claude/skills/iam-policy/SKILL.md`: limit resource
+  policies to our roles with a Deny on `aws:PrincipalArn`, no role-principal Allow.
+
+- **Problem:** `test_main_ingest_output_has_no_payload_values_or_keys` flaked (~3%):
+  it asserted `"999"` was absent from output that prints random UUIDs. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: strip random IDs or use fixed ones before
+  "not in output" checks.
+- **Problem:** on a Windows host without `make`, tests failed: CRLF checkouts broke
+  `sh docker/run-lambda-tests.sh`, ruff EXE002 flagged every file, and port 8000 was
+  taken. **Changed:** `.claude/skills/local-dev/SKILL.md`: Windows commands, LF
+  scripts, port note. (Repo fixes outside `.claude/`: `.gitattributes`, `ruff.toml`.)
+- **Problem:** Claude told the user to run `git checkout-index --force --all` to refresh
+  line endings; it overwrote three uncommitted edits, which had to be redone.
+  **Changed:** `.claude/skills/local-dev/SKILL.md`: fix CRLF per file, never suggest
+  bulk checkout or reset while anything is uncommitted.
+
 ## 2026-11-01
 
 - **Problem:** twice the screen-reader text lost a space between JSX elements in a flex

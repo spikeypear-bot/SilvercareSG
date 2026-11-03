@@ -74,6 +74,13 @@ jobs:
         id: plan
         if: steps.tf.outputs.present == 'true'
         continue-on-error: true
+        # Alert email subscribers (docs/features/alerts-core.md, criterion 25). Keep in
+        # sync with deploy.yml. Empty defaults when the secret or variables are unset.
+        env:
+          TF_VAR_subscriber_emails: ${{ secrets.SUBSCRIBER_EMAILS || '{}' }}
+          TF_VAR_alert_subscribers: ${{ vars.ALERT_SUBSCRIBERS || '{}' }}
+          TF_VAR_ops_subscribers: ${{ vars.OPS_SUBSCRIBERS || '[]' }}
+          TF_VAR_nurse_subscribers: ${{ vars.NURSE_SUBSCRIBERS || '[]' }}
         run: terraform plan -lock=false -no-color -out=tfplan > /dev/null 2> plan-stderr.txt
 
       - name: Summarise plan

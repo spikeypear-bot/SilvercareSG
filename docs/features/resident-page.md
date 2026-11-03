@@ -9,7 +9,7 @@ status: built          # draft | ready | built
 A staff-only page per resident at `/residents/:id`, opened from the resident cards on the
 nurse and doctor dashboards. It shows the resident's devices, the latest 5 messages of
 each type, every stored alert, and their vitals thresholds, from `docs/data-model.md`
-patterns 10, 11, 12, 18, and 22 *(proposed)*. There is no API yet: everything comes
+patterns 10, 11, 12, 18, and 25 *(proposed)*. There is no API yet: everything comes
 from synthetic demo data, and actions change local state only.
 
 ## Users and access
@@ -31,7 +31,7 @@ from synthetic demo data, and actions change local state only.
   - acknowledge/resolve (pattern 16) is open to any staff member, because the
     authorisation boundary is staff vs caregiver/family and "nurses handle alerts" is
     workflow, shown in the UI only (decided 2026-11-01);
-  - changing thresholds (pattern 21) is doctor only.
+  - changing thresholds (pattern 24) is doctor only.
 
 ## Acceptance criteria
 
@@ -70,9 +70,11 @@ from synthetic demo data, and actions change local state only.
 8. **Alert history** (pattern 12): every stored alert for the resident, newest first,
    including resolved ones (kept 30 days), each with:
    - severity badge, type, and time
-   - Open/Acknowledged/Resolved label
+   - Open/Acknowledged/Cancelled/Resolved label
    - "Acknowledged by …" and "Resolved by …" lines
-   - the escalation countdown for an open alert with `escalates_at`
+   - for an open alert, "Escalated to nurses" once `escalated_at` is set, or before
+     that the countdown to the API's computed `escalates_at` (60 s,
+     `docs/features/escalation.md`)
    Empty: "No alerts for this resident in the last 30 days."
 9. Nurses get Acknowledge (open alerts) and Resolve (unresolved alerts) buttons in the
    alert history. They record the signed-in user's display name and the time; resolving
@@ -89,12 +91,12 @@ from synthetic demo data, and actions change local state only.
       field
     Save updates the values and "Last changed by", announces "Thresholds saved.", and
     returns focus to the Edit button; Cancel changes nothing.
-12. **Change history** (pattern 22, proposed), under thresholds: earlier changes, newest
+12. **Change history** (pattern 25, proposed), under thresholds: earlier changes, newest
     first, each with "Changed by <name>, <relative time>" and one line per changed value
     ("Heart rate, upper limit: from 110 bpm to 120 bpm"). Read-only for every role.
     Empty: "No changes to these thresholds have been recorded."
 13. Saving thresholds in the UI does **not** add a change-history entry: the server
-    writes it with the pattern 21 route.
+    writes it with the pattern 24 route.
 
 ### Accessibility and checks
 
@@ -112,24 +114,26 @@ from synthetic demo data, and actions change local state only.
   `useResidentDetail` in `useDashboardData.ts` (the one place real API calls will go).
   The future API maps them to:
   - patterns 10, 11, 12, and 18
-  - pattern 22 for the change history
+  - pattern 25 for the change history
 - **Writes:** none outside the browser. `acknowledgeAlert`, `resolveAlert`, and
   `updateThresholds` change local state. Names shown for who acted are display only: the
   API will take the actor from the token's `sub`, and the browser never sends it.
 - **New access patterns,** both *(proposed)*, in `docs/data-model.md`:
-  - 21: doctor changes thresholds; `attribute_exists(pk)`; exact body keys; the
+  - 24: doctor changes thresholds; `attribute_exists(pk)`; exact body keys; the
     token's group claim, with up to 60 minutes' delay after removal accepted
-  - 22: threshold change history
+  - 25: threshold change history
   Pattern 16 now has `attribute_exists(pk)`.
 - **Demo data:**
   - Latest 5 per device and message type, built from the dashboard data so the two
     agree.
   - 1–4 resolved alerts per resident over the last 30 days. Test Resident N has none,
     for the empty state.
-  - Thresholds start at the demo defaults (heart rate 50–110 bpm, SpO2 at least 92 %,
-    skin temperature 31.0–36.0 °C; not clinically reviewed). Each resident's change
-    history is applied on top: 0–2 entries each. Test Resident K's (heart-rate maximum
-    110 → 120) and Test Resident S's (SpO2 minimum 92 → 88) explain their own limits.
+  - Thresholds start at the backend's defaults (heart rate 50–120 bpm, SpO2 at least
+    92 %, skin temperature 30.0–38.0 °C; `docs/data-model.md`, decided 2026-11-02).
+    Each resident's change history is applied on top: 0–2 entries each. Only Test
+    Resident B (`res-0002`) has its own limit, SpO2 minimum 92 → 88, matching the
+    backend seed script. Residents with no changes have no "Last changed by" (the page
+    says "Not changed since setup.").
 
 ## IoT
 
@@ -138,7 +142,7 @@ messages in `docs/metrics.md`.
 
 ## API contract
 
-None yet. The routes for patterns 10–12, 16, 18, 21, and 22 come with the API feature
+None yet. The routes for patterns 10–12, 16, 18, 24, and 25 come with the API feature
 (see the `api-route` skill).
 
 ## Screens
@@ -158,8 +162,9 @@ None yet. The routes for patterns 10–12, 16, 18, 21, and 22 come with the API 
 
 ## Alerts and notifications
 
-None delivered. Alert actions and the escalation countdown are local and display only,
-as on the dashboards. Alerting rules are still Open decision #2.
+None delivered by the portal. Alert actions and the escalation countdown are local and
+display only, as on the dashboards. Alert emails and escalation are backend features
+(`docs/features/escalation.md`).
 
 ## Privacy
 
@@ -180,7 +185,7 @@ as on the dashboards. Alerting rules are still Open decision #2.
 ## Out of scope
 
 - The API and real data; caregiver/family access to a linked resident (pattern 13).
-- Writing change-history entries (server side, with the pattern 21 route).
+- Writing change-history entries (server side, with the pattern 24 route).
 - History longer than the latest 5 readings (would come from the S3 history, not
   DynamoDB).
 - Resident profile fields beyond name and home ID, photos (patterns 19, 20), and

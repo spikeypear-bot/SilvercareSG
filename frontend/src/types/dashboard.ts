@@ -6,14 +6,25 @@
 /** Resident status as provided by the backend (never computed by the UI). */
 export type ResidentStatus = 'ok' | 'attention' | 'urgent'
 
-/** Alert severity as provided by the backend (never computed by the UI). */
-export type AlertSeverity = 'info' | 'warning' | 'critical'
+/**
+ * Alert severity as provided by the backend (never computed by the UI): `critical` for
+ * falls and the device's `vitals_alert`, `warning` for the cloud vitals check
+ * (docs/data-model.md, `silvercare-alerts`).
+ */
+export type AlertSeverity = 'warning' | 'critical'
 
 export type AlertType =
+  // Raised by the backend today (docs/features/vitals-alerts.md).
   | 'fall'
+  | 'hr_high'
+  | 'hr_low'
+  | 'spo2_low'
+  | 'skin_temp_high'
+  | 'skin_temp_low'
+  // Planned watchdog alerts (docs/metrics.md, "How the backend uses these"): shown in the
+  // demo, not raised by the backend yet.
   | 'possible_fall'
   | 'inactivity'
-  | 'vitals'
   | 'device_offline'
   | 'low_battery'
 
@@ -59,8 +70,11 @@ export interface Resident {
   vitals: VitalsReading[]
 }
 
-/** Alert lifecycle (docs/data-model.md pattern 16). */
-export type AlertStatus = 'open' | 'acknowledged' | 'resolved'
+/**
+ * Alert lifecycle (docs/data-model.md): `cancelled` is the wearable "I'm OK" cancel.
+ * Anything but `open` stops escalation; every status but `resolved` stays listed.
+ */
+export type AlertStatus = 'open' | 'acknowledged' | 'cancelled' | 'resolved'
 
 export interface ResidentAlert {
   alert_id: string
@@ -71,7 +85,10 @@ export interface ResidentAlert {
   status: AlertStatus
   /** ISO 8601 UTC of the triggering event */
   event_ts: string
-  /** Staff display name, never a Cognito sub (the API maps the sub to a name). */
+  /**
+   * Display name of the staff member or linked caregiver, never a Cognito sub (the API
+   * returns the name stored at write time).
+   */
   acknowledged_by?: string
   /** ISO 8601 UTC */
   acknowledged_at?: string
@@ -79,8 +96,14 @@ export interface ResidentAlert {
   resolved_by?: string
   /** ISO 8601 UTC */
   resolved_at?: string
-  /** ISO 8601 UTC: when an alert still in its confirmation window escalates to nurses. */
+  /**
+   * ISO 8601 UTC: when the escalation check runs, about 60 s after the first
+   * notification. Computed by the API (not stored), only on an `open` alert with no
+   * `escalated_at` yet.
+   */
   escalates_at?: string
+  /** ISO 8601 UTC: when nurses were emailed because nobody responded within 60 s. */
+  escalated_at?: string
 }
 
 export interface DashboardData {

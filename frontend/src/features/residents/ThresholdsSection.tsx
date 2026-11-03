@@ -76,7 +76,14 @@ export function ThresholdsSection({ thresholds, canEdit, onSave, announce, now }
             />
           </dl>
           <p className="text-sm text-slate-600">
-            Last changed by {thresholds.updated_by}, <RelativeTime iso={thresholds.updated_at} now={now} />
+            {thresholds.updated_by && thresholds.updated_at ? (
+              <>
+                Last changed by {thresholds.updated_by},{' '}
+                <RelativeTime iso={thresholds.updated_at} now={now} />
+              </>
+            ) : (
+              'Not changed since setup.'
+            )}
           </p>
           {!canEdit && <p className="text-base text-slate-700">Only doctors can change thresholds.</p>}
         </>

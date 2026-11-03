@@ -16,7 +16,7 @@ function alert(id: string, severity: ResidentAlert['severity'], minutesAgo: numb
     alert_id: id,
     resident_id: 'res-0001',
     device_id: 'wearable-test-001',
-    alert_type: 'vitals',
+    alert_type: 'hr_high',
     severity,
     status,
     event_ts: new Date(NOW.getTime() - minutesAgo * 60_000).toISOString(),
@@ -24,9 +24,14 @@ function alert(id: string, severity: ResidentAlert['severity'], minutesAgo: numb
 }
 
 describe('unresolvedAlerts', () => {
-  it('keeps open and acknowledged alerts, drops resolved ones', () => {
-    const alerts = [alert('a', 'info', 1), alert('b', 'info', 2, 'acknowledged'), alert('c', 'info', 3, 'resolved')]
-    expect(unresolvedAlerts(alerts).map((a) => a.alert_id)).toEqual(['a', 'b'])
+  it('keeps open, acknowledged and cancelled alerts, drops resolved ones', () => {
+    const alerts = [
+      alert('a', 'warning', 1),
+      alert('b', 'warning', 2, 'acknowledged'),
+      alert('c', 'warning', 3, 'resolved'),
+      alert('d', 'critical', 4, 'cancelled'),
+    ]
+    expect(unresolvedAlerts(alerts).map((a) => a.alert_id)).toEqual(['a', 'b', 'd'])
   })
 })
 
@@ -35,7 +40,7 @@ describe('sortAlertsForInbox', () => {
     const alerts = [
       alert('warn-new', 'warning', 1),
       alert('crit-old', 'critical', 30),
-      alert('info-mid', 'info', 10),
+      alert('warn-mid', 'warning', 10),
       alert('crit-new', 'critical', 5),
       alert('warn-old', 'warning', 60),
     ]
@@ -43,13 +48,13 @@ describe('sortAlertsForInbox', () => {
       'crit-new',
       'crit-old',
       'warn-new',
-      'info-mid',
+      'warn-mid',
       'warn-old',
     ])
   })
 
   it('does not change the input array', () => {
-    const alerts = [alert('a', 'info', 1), alert('b', 'critical', 2)]
+    const alerts = [alert('a', 'warning', 1), alert('b', 'critical', 2)]
     sortAlertsForInbox(alerts)
     expect(alerts.map((a) => a.alert_id)).toEqual(['a', 'b'])
   })

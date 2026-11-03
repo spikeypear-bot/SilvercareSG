@@ -474,7 +474,7 @@ describe('latest readings (pattern 11)', () => {
 
 // --- alert history (pattern 12) ----------------------------------------------
 
-const LIFECYCLE = { open: 'Open', acknowledged: 'Acknowledged', resolved: 'Resolved' } as const
+const LIFECYCLE = { open: 'Open', acknowledged: 'Acknowledged', cancelled: 'Cancelled', resolved: 'Resolved' } as const
 
 function expectRowMatches(row: HTMLElement, alert: ResidentAlert) {
   expect(row.querySelector('time')).toHaveAttribute('datetime', alert.event_ts)
@@ -544,9 +544,26 @@ describe('alert history (pattern 12)', () => {
     })
   })
 
-  it('the escalation countdown shows on an open alert in its confirmation window (res-0008)', async () => {
+  it('the escalation countdown shows on an open alert before its 60 s escalation (res-0008)', async () => {
     await renderLoaded('res-0008', TEST_USERS.doctor)
     expect(within(historyRows()[0]).getByRole('timer')).toHaveTextContent(/Escalates to nurses in \d+ s/)
+  })
+
+  it('an open alert past its 60 s shows "Escalated to nurses"; acknowledged and resolved rows show none', async () => {
+    await renderLoaded('res-0003', TEST_USERS.doctor)
+    const [open, ...resolved] = historyRows()
+    expect(open).toHaveTextContent('Escalated to nurses')
+    expect(within(open).queryByRole('timer')).not.toBeInTheDocument()
+    resolved.forEach((row) => expect(row).not.toHaveTextContent(/Escalat/))
+  })
+
+  it('res-0007: the acknowledged hr_high alert escalated before it was acknowledged, but shows no escalation line', async () => {
+    const detail = demoDetail('res-0007')
+    expect(detail.alerts[0]).toMatchObject({ alert_type: 'hr_high', status: 'acknowledged' })
+    expect(detail.alerts[0].escalated_at).toBeDefined()
+    await renderLoaded('res-0007', TEST_USERS.doctor, detail)
+    expect(historyRows()[0]).toHaveTextContent('High heart rate')
+    expect(historyRows()[0]).not.toHaveTextContent(/Escalat/)
   })
 
   it('announces an escalation that happens while the page is open', async () => {
@@ -577,7 +594,30 @@ describe('nurse alert actions', () => {
     await renderLoaded('res-0007')
     const first = historyRows()[0]
     expect(within(first).queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
-    expect(within(first).getByRole('button', { name: 'Resolve: Vitals need attention, Test Resident G' })).toBeInTheDocument()
+    expect(within(first).getByRole('button', { name: 'Resolve: High heart rate, Test Resident G' })).toBeInTheDocument()
+  })
+
+  it('a cancelled alert shows "Cancelled", has Resolve only for the nurse, and resolving it works', async () => {
+    const detail = demoDetail('res-0003')
+    const [first, ...rest] = detail.alerts
+    const cancelled = { ...first, status: 'cancelled' as const }
+    const { user } = await renderLoaded('res-0003', NURSE_D, { ...detail, alerts: [cancelled, ...rest] })
+    const row = () => historyRows()[0]
+    expect(within(row()).getByText('Cancelled')).toBeInTheDocument()
+    expect(row()).not.toHaveTextContent(/Escalat/)
+    expect(within(row()).queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
+    await user.click(within(row()).getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
+    expect(within(row()).getByText('Resolved')).toBeInTheDocument()
+    expect(row()).toHaveTextContent('Resolved by Test Nurse D, just now')
+    expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
+  })
+
+  it('the doctor sees a cancelled alert without buttons', async () => {
+    const detail = demoDetail('res-0003')
+    const [first, ...rest] = detail.alerts
+    await renderLoaded('res-0003', TEST_USERS.doctor, { ...detail, alerts: [{ ...first, status: 'cancelled' }, ...rest] })
+    expect(within(historyRows()[0]).getByText('Cancelled')).toBeInTheDocument()
+    expect(screen.queryAllByRole('button', { name: /Acknowledge|Resolve/ })).toEqual([])
   })
 
   it('acknowledge, then resolve: by-lines, label, focus, and announcements', async () => {
@@ -623,19 +663,46 @@ describe('nurse alert actions', () => {
 // --- thresholds (pattern 18) -------------------------------------------------
 
 describe('thresholds (pattern 18)', () => {
-  it('shows the default values read-only, with "Last changed by Test Doctor A" (res-0003, no history)', async () => {
+  it('shows the default values read-only, with "Not changed since setup." (res-0003, no history)', async () => {
     await renderLoaded('res-0003')
-    expect(limit('Heart rate')).toHaveTextContent('50 to 110 bpm')
+    expect(limit('Heart rate')).toHaveTextContent('50 to 120 bpm')
     expect(limit('SpO2')).toHaveTextContent('At least 92%')
-    expect(limit('Skin temperature')).toHaveTextContent('31.0 to 36.0 °C')
-    expect(within(thresholds()).getByText(/^Last changed by Test Doctor A,/)).toBeInTheDocument()
-    expect(within(thresholds()).getByText(/Last changed by/).querySelector('time')).not.toBeNull()
+    expect(limit('Skin temperature')).toHaveTextContent('30.0 to 38.0 °C')
+    expect(within(thresholds()).getByText('Not changed since setup.')).toBeInTheDocument()
+    expect(thresholds()).not.toHaveTextContent('Last changed by')
+    expect(screen.queryByRole('button', { name: 'Edit thresholds' })).not.toBeInTheDocument()
+    expect(within(thresholds()).queryAllByRole('textbox')).toEqual([])
   })
+
+  it('shows "Not changed since setup." when only one of updated_by/updated_at is present', async () => {
+    const detail = demoDetail('res-0003')
+    for (const partial of [{ updated_by: 'Test Doctor A' }, { updated_at: new Date().toISOString() }]) {
+      const view = await renderLoaded('res-0003', TEST_USERS.nurse, {
+        ...detail,
+        thresholds: { ...detail.thresholds, ...partial },
+      })
+      expect(within(thresholds()).getByText('Not changed since setup.')).toBeInTheDocument()
+      expect(thresholds()).not.toHaveTextContent('Last changed by')
+      view.unmount()
+    }
+  })
+
+  it.each(['res-0003', 'res-0006', 'res-0009', 'res-0012', 'res-0015', 'res-0018'])(
+    '%s (no history) shows "Not changed since setup." and the defaults',
+    async (id) => {
+      await renderLoaded(id)
+      expect(within(thresholds()).getByText('Not changed since setup.')).toBeInTheDocument()
+      expect(limit('Heart rate')).toHaveTextContent('50 to 120 bpm')
+      expect(limit('SpO2')).toHaveTextContent('At least 92%')
+      expect(limit('Skin temperature')).toHaveTextContent('30.0 to 38.0 °C')
+    },
+  )
 
   it.each([
     ['res-0001', 'Test Doctor B'],
-    ['res-0002', 'Test Doctor A'],
-    ['res-0011', 'Test Doctor A'],
+    ['res-0002', 'Test Doctor B'],
+    ['res-0004', 'Test Doctor A'],
+    ['res-0011', 'Test Doctor B'],
     ['res-0019', 'Test Doctor B'],
   ])('%s: "Last changed by %s", at the newest change history entry', async (id, name) => {
     const detail = demoDetail(id)
@@ -649,16 +716,18 @@ describe('thresholds (pattern 18)', () => {
     )
   })
 
-  it('res-0011 has HR max 120; res-0019 has SpO2 min 88', async () => {
-    await renderLoaded('res-0011')
+  it('res-0002 (Test Resident B) shows its own SpO2 limit "At least 88%", the rest default', async () => {
+    await renderLoaded('res-0002')
+    expect(limit('SpO2')).toHaveTextContent('At least 88%')
     expect(limit('Heart rate')).toHaveTextContent('50 to 120 bpm')
-    expect(limit('SpO2')).toHaveTextContent('At least 92%')
+    expect(limit('Skin temperature')).toHaveTextContent('30.0 to 38.0 °C')
   })
 
-  it('res-0019 has SpO2 min 88', async () => {
-    await renderLoaded('res-0019')
-    expect(limit('SpO2')).toHaveTextContent('At least 88%')
-    expect(limit('Heart rate')).toHaveTextContent('50 to 110 bpm')
+  it.each(['res-0001', 'res-0011', 'res-0019'])('%s has the defaults (its history was set back)', async (id) => {
+    await renderLoaded(id)
+    expect(limit('Heart rate')).toHaveTextContent('50 to 120 bpm')
+    expect(limit('SpO2')).toHaveTextContent('At least 92%')
+    expect(limit('Skin temperature')).toHaveTextContent('30.0 to 38.0 °C')
   })
 
   it('the nurse sees "Only doctors can change thresholds." and no Edit button', async () => {
@@ -682,8 +751,8 @@ describe('thresholds (pattern 18)', () => {
     expect(first).toHaveValue('50')
     expect(screen.getByRole('textbox', { name: 'Heart rate, upper limit (bpm)' })).toHaveValue('120')
     expect(screen.getByRole('textbox', { name: 'SpO2, lower limit (%)' })).toHaveValue('92')
-    expect(screen.getByRole('textbox', { name: 'Skin temperature, lower limit (°C)' })).toHaveValue('31.0')
-    expect(screen.getByRole('textbox', { name: 'Skin temperature, upper limit (°C)' })).toHaveValue('36.0')
+    expect(screen.getByRole('textbox', { name: 'Skin temperature, lower limit (°C)' })).toHaveValue('30.0')
+    expect(screen.getByRole('textbox', { name: 'Skin temperature, upper limit (°C)' })).toHaveValue('38.0')
     expect(first).toHaveAccessibleDescription('Whole number from 20 to 250.')
     expect(screen.getByRole('textbox', { name: 'Skin temperature, lower limit (°C)' })).toHaveAccessibleDescription(
       'From 20 to 45, up to 1 decimal place.',
@@ -702,13 +771,13 @@ describe('thresholds (pattern 18)', () => {
 
     const edit = screen.getByRole('button', { name: 'Edit thresholds' })
     await waitFor(() => expect(edit).toHaveFocus())
-    expect(limit('Heart rate')).toHaveTextContent('50 to 110 bpm')
+    expect(limit('Heart rate')).toHaveTextContent('50 to 120 bpm')
     expect(within(thresholds()).getByText(/^Last changed by Test Doctor B,/)).toBeInTheDocument()
     expect(historyEntries()).toHaveLength(2)
     expect(announcer()).not.toHaveTextContent('Thresholds saved.')
 
     await user.click(edit)
-    expect(screen.getByRole('textbox', { name: 'Heart rate, upper limit (bpm)' })).toHaveValue('110')
+    expect(screen.getByRole('textbox', { name: 'Heart rate, upper limit (bpm)' })).toHaveValue('120')
   })
 
   it('Save with valid values updates the display, the by-line, announces, and returns focus', async () => {
@@ -727,10 +796,24 @@ describe('thresholds (pattern 18)', () => {
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
     expect(limit('Heart rate')).toHaveTextContent('50 to 115 bpm')
     expect(limit('SpO2')).toHaveTextContent('At least 90%')
-    expect(limit('Skin temperature')).toHaveTextContent('31.0 to 37.5 °C')
+    expect(limit('Skin temperature')).toHaveTextContent('30.0 to 37.5 °C')
     expect(within(thresholds()).getByText(/^Last changed by Test Doctor C,/)).toHaveTextContent('just now')
     expect(announcer()).toHaveTextContent('Thresholds saved.')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Edit thresholds' })).toHaveFocus())
+  })
+
+  it('a doctor saving on a resident with no history replaces "Not changed since setup." with the by-line', async () => {
+    const { user } = await renderLoaded('res-0003', DOCTOR_C)
+    expect(within(thresholds()).getByText('Not changed since setup.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
+    const spo2 = screen.getByRole('textbox', { name: 'SpO2, lower limit (%)' })
+    await user.clear(spo2)
+    await user.type(spo2, '90{Enter}')
+    expect(limit('SpO2')).toHaveTextContent('At least 90%')
+    expect(within(thresholds()).queryByText('Not changed since setup.')).not.toBeInTheDocument()
+    const byLine = within(thresholds()).getByText(/^Last changed by Test Doctor C,/)
+    expect(byLine).toHaveTextContent('just now')
+    expect(byLine.querySelector('time')).not.toBeNull()
   })
 
   it('Enter in a field submits the form', async () => {
@@ -739,7 +822,7 @@ describe('thresholds (pattern 18)', () => {
     const hrMin = screen.getByRole('textbox', { name: 'Heart rate, lower limit (bpm)' })
     await user.clear(hrMin)
     await user.type(hrMin, '45{Enter}')
-    expect(limit('Heart rate')).toHaveTextContent('45 to 110 bpm')
+    expect(limit('Heart rate')).toHaveTextContent('45 to 120 bpm')
   })
 
   it('invalid values show inline errors linked by aria-describedby and focus the first invalid field', async () => {
@@ -783,17 +866,17 @@ describe('thresholds (pattern 18)', () => {
     await user.clear(tempMin)
     await user.type(tempMin, '31.5')
     await user.click(screen.getByRole('button', { name: 'Save thresholds' }))
-    expect(limit('Skin temperature')).toHaveTextContent('31.5 to 36.0 °C')
+    expect(limit('Skin temperature')).toHaveTextContent('31.5 to 38.0 °C')
   })
 })
 
-// --- threshold change history (pattern 22) ----------------------------------
+// --- threshold change history (pattern 25) ----------------------------------
 
 const entryLines = (entry: HTMLElement) =>
   Array.from(entry.querySelectorAll('ul > li')).map((li) => li.textContent)
 const entryByLine = (entry: HTMLElement) => entry.querySelector('p') as HTMLElement
 
-describe('threshold change history (pattern 22)', () => {
+describe('threshold change history (pattern 25)', () => {
   it('comes right after Vitals thresholds', async () => {
     await renderLoaded('res-0001')
     const h2s = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
@@ -803,57 +886,62 @@ describe('threshold change history (pattern 22)', () => {
     ).toBeInTheDocument()
   })
 
-  it('res-0011: one entry, "Changed by Test Doctor A, 12 days ago", HR upper limit 110 to 120 bpm', async () => {
-    await renderLoaded('res-0011')
-    const entries = historyEntries()
-    expect(entries).toHaveLength(1)
-    expect(entryByLine(entries[0])).toHaveTextContent(/^Changed by Test Doctor A, 12 days ago/)
-    expect(entryLines(entries[0])).toEqual(['Heart rate, upper limit: from 110 bpm to 120 bpm'])
-  })
-
-  it('res-0019: SpO2 lower limit from 92% to 88%, by Test Doctor B, 9 days ago', async () => {
-    await renderLoaded('res-0019')
+  it('res-0002: one entry, SpO2 lower limit from 92% to 88%, by Test Doctor B, 9 days ago', async () => {
+    await renderLoaded('res-0002')
     const entries = historyEntries()
     expect(entries).toHaveLength(1)
     expect(entryByLine(entries[0])).toHaveTextContent(/^Changed by Test Doctor B, 9 days ago/)
     expect(entryLines(entries[0])).toEqual(['SpO2, lower limit: from 92% to 88%'])
+    expect(limit('SpO2')).toHaveTextContent('At least 88%')
   })
 
-  it('res-0001: skin temperature lower limit set back to 31.0 °C (5 days ago) after 30.5 °C (11 days ago)', async () => {
+  it('res-0019 (now generic): skin temperature lower limit 23 and 29 days ago, by Test Doctor B', async () => {
+    await renderLoaded('res-0019')
+    const entries = historyEntries()
+    expect(entries).toHaveLength(2)
+    expect(entryByLine(entries[0])).toHaveTextContent(/^Changed by Test Doctor B, 23 days ago/)
+    expect(entryLines(entries[0])).toEqual(['Skin temperature, lower limit: from 29.5 °C to 30.0 °C'])
+    expect(entryByLine(entries[1])).toHaveTextContent(/^Changed by Test Doctor B, 29 days ago/)
+    expect(entryLines(entries[1])).toEqual(['Skin temperature, lower limit: from 30.0 °C to 29.5 °C'])
+    expect(changeHistory()).not.toHaveTextContent('SpO2')
+  })
+
+  it('res-0001: skin temperature lower limit set back to 30.0 °C (5 days ago) after 29.5 °C (11 days ago)', async () => {
     await renderLoaded('res-0001')
     const entries = historyEntries()
     expect(entries).toHaveLength(2)
     expect(entryByLine(entries[0])).toHaveTextContent(/^Changed by Test Doctor B, 5 days ago/)
-    expect(entryLines(entries[0])).toEqual(['Skin temperature, lower limit: from 30.5 °C to 31.0 °C'])
+    expect(entryLines(entries[0])).toEqual(['Skin temperature, lower limit: from 29.5 °C to 30.0 °C'])
     expect(entryByLine(entries[1])).toHaveTextContent(/^Changed by Test Doctor B, 11 days ago/)
-    expect(entryLines(entries[1])).toEqual(['Skin temperature, lower limit: from 31.0 °C to 30.5 °C'])
-    expect(limit('Skin temperature')).toHaveTextContent('31.0 to 36.0 °C')
+    expect(entryLines(entries[1])).toEqual(['Skin temperature, lower limit: from 30.0 °C to 29.5 °C'])
+    expect(limit('Skin temperature')).toHaveTextContent('30.0 to 38.0 °C')
   })
 
-  it('res-0002: two entries newest first in an ordered list, one line per changed value', async () => {
-    const detail = demoDetail('res-0002')
-    await renderLoaded('res-0002', TEST_USERS.nurse, detail)
+  it('res-0005: two entries newest first in an ordered list, one line per changed value', async () => {
+    const detail = demoDetail('res-0005')
+    await renderLoaded('res-0005', TEST_USERS.nurse, detail)
     const entries = historyEntries()
     expect(entries).toHaveLength(2)
     entries.forEach((e) => expect(e.tagName).toBe('LI'))
-    expect(entryByLine(entries[0])).toHaveTextContent(/^Changed by Test Doctor A, 5 days ago/)
+    expect(entryByLine(entries[0])).toHaveTextContent(/^Changed by Test Doctor B, 8 days ago/)
     expect(entryLines(entries[0])).toEqual([
       'Heart rate, lower limit: from 45 bpm to 50 bpm',
-      'Heart rate, upper limit: from 115 bpm to 110 bpm',
+      'Heart rate, upper limit: from 125 bpm to 120 bpm',
     ])
-    expect(entryByLine(entries[1])).toHaveTextContent(/^Changed by Test Doctor A, 8 days ago/)
+    expect(entryByLine(entries[1])).toHaveTextContent(/^Changed by Test Doctor B, 11 days ago/)
     expect(entryLines(entries[1])).toEqual([
       'Heart rate, lower limit: from 50 bpm to 45 bpm',
-      'Heart rate, upper limit: from 110 bpm to 115 bpm',
+      'Heart rate, upper limit: from 120 bpm to 125 bpm',
     ])
     const times = entries.map((e) => e.querySelector('time')?.getAttribute('datetime'))
     expect(times).toEqual(detail.threshold_history.map((h) => h.changed_at))
+    expect(limit('Heart rate')).toHaveTextContent('50 to 120 bpm')
   })
 
   it('sorts entries newest first even if the data is not', async () => {
-    const detail = demoDetail('res-0002')
+    const detail = demoDetail('res-0005')
     const reversed = [...detail.threshold_history].reverse()
-    await renderLoaded('res-0002', TEST_USERS.nurse, { ...detail, threshold_history: reversed })
+    await renderLoaded('res-0005', TEST_USERS.nurse, { ...detail, threshold_history: reversed })
     const times = historyEntries().map((e) => e.querySelector('time')?.getAttribute('datetime') as string)
     expect(times).toEqual(detail.threshold_history.map((h) => h.changed_at))
     expect([...times].sort().reverse()).toEqual(times)
@@ -887,7 +975,7 @@ describe('threshold change history (pattern 22)', () => {
   })
 
   it('a doctor saving thresholds does not add a history entry; values and "Last changed by" update', async () => {
-    const { user } = await renderLoaded('res-0011', DOCTOR_C)
+    const { user } = await renderLoaded('res-0002', DOCTOR_C)
     const before = historyEntries().map((e) => e.textContent)
     expect(before).toHaveLength(1)
 
@@ -1027,7 +1115,6 @@ describe('accessibility', () => {
       ok: 'OK',
       attention: 'Attention',
       urgent: 'Urgent',
-      info: 'Info',
       warning: 'Warning',
       critical: 'Critical',
     }
@@ -1037,7 +1124,7 @@ describe('accessibility', () => {
       expect(badge.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
       expect(badge).toHaveTextContent(labels[badge.getAttribute('data-tone') as string])
     })
-    historyRows().forEach((row) => expect(row).toHaveTextContent(/Open|Acknowledged|Resolved/))
+    historyRows().forEach((row) => expect(row).toHaveTextContent(/Open|Acknowledged|Cancelled|Resolved/))
     for (const name of [/^Wearable/, /^Bedroom sensor/]) {
       expect(fact(deviceBox(name), 'Connection')).toHaveTextContent(/^(Online|Offline)$/)
     }

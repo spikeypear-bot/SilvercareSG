@@ -83,14 +83,18 @@ export interface VitalsThresholds {
   skin_temp_c: ThresholdRange
 }
 
+/**
+ * Limits as the API resolves them (each the resident's own value or the default,
+ * docs/data-model.md). `updated_*` are absent until someone changes them.
+ */
 export interface ResidentThresholds extends VitalsThresholds {
   /** ISO 8601 UTC */
-  updated_at: string
-  /** Staff display name, never a Cognito sub (the API maps the sub to a name). */
-  updated_by: string
+  updated_at?: string
+  /** Staff display name, never a Cognito sub (stored at write time). */
+  updated_by?: string
 }
 
-/** One threshold value, as named in the change history (docs/data-model.md pattern 22). */
+/** One threshold value, as named in the change history (docs/data-model.md pattern 25). */
 export type ThresholdKey = 'hr_bpm.min' | 'hr_bpm.max' | 'spo2_pct.min' | 'skin_temp_c.min' | 'skin_temp_c.max'
 
 export interface ThresholdValueChange {
@@ -119,6 +123,6 @@ export interface ResidentDetail {
   /** Every alert still stored for this resident, newest first, including resolved ones. */
   alerts: ResidentAlert[]
   thresholds: ResidentThresholds
-  /** Earlier threshold changes, newest first (pattern 22). */
+  /** Earlier threshold changes, newest first (pattern 25). */
   threshold_history: ThresholdChangeEntry[]
 }

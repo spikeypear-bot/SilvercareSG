@@ -137,7 +137,8 @@ describe('createResidentDetail', () => {
   it('every name is synthetic ("Test ...")', () => {
     details.forEach((d) => {
       expect(d.resident.name).toMatch(/^Test Resident [A-T]$/)
-      expect(d.thresholds.updated_by).toMatch(/^Test /)
+      if (d.thresholds.updated_by !== undefined) expect(d.thresholds.updated_by).toMatch(/^Test /)
+      d.threshold_history.forEach((e) => expect(e.changed_by).toMatch(/^Test /))
       d.alerts.forEach((a) => {
         if (a.acknowledged_by) expect(a.acknowledged_by).toMatch(/^Test /)
         if (a.resolved_by) expect(a.resolved_by).toMatch(/^Test /)
@@ -171,16 +172,21 @@ describe('createResidentDetail', () => {
     expect(d.bedroom!.latest.bed[0]).toMatchObject({ ts: possibleFall!.event_ts, occupied: false })
   })
 
-  it('res-0011 has HR max 120 and res-0019 SpO2 min 88; every other resident has the defaults', () => {
+  it("the defaults are main's decided values (2026-11-02)", () => {
+    expect(DEMO_DEFAULT_THRESHOLDS).toEqual({
+      hr_bpm: { min: 50, max: 120 },
+      spo2_pct: { min: 92 },
+      skin_temp_c: { min: 30.0, max: 38.0 },
+    })
+  })
+
+  it('only res-0002 has its own limit (SpO2 min 88); every other resident has the defaults', () => {
     details.forEach((d) => {
       const { updated_at: _at, updated_by: _by, ...values } = d.thresholds
-      const id = d.resident.resident_id
-      if (id === 'res-0011') {
-        expect(values).toEqual({ ...DEMO_DEFAULT_THRESHOLDS, hr_bpm: { min: 50, max: 120 } })
-      } else if (id === 'res-0019') {
+      if (d.resident.resident_id === 'res-0002') {
         expect(values).toEqual({ ...DEMO_DEFAULT_THRESHOLDS, spo2_pct: { min: 88 } })
       } else {
-        expect(values).toEqual(DEMO_DEFAULT_THRESHOLDS)
+        expect(values, d.resident.resident_id).toEqual(DEMO_DEFAULT_THRESHOLDS)
       }
     })
   })
@@ -213,18 +219,19 @@ describe('createResidentDetail', () => {
     expect(mismatches).toEqual([])
   })
 
-  it("updated_at/updated_by are the newest entry's changed_at/changed_by, or Test Doctor A at 20+n days", () => {
-    details.forEach((d, i) => {
-      const n = i + 1
+  it("updated_at/updated_by are the newest entry's changed_at/changed_by, or absent without history", () => {
+    details.forEach((d) => {
       const newest = d.threshold_history[0]
       if (newest) {
         expect(d.thresholds.updated_at).toBe(newest.changed_at)
         expect(d.thresholds.updated_by).toBe(newest.changed_by)
       } else {
-        expect(d.thresholds.updated_by).toBe('Test Doctor A')
-        expect(d.thresholds.updated_at).toBe(new Date(NOW.getTime() - (20 + n) * DAY_MS).toISOString())
+        expect(d.thresholds, d.resident.resident_id).not.toHaveProperty('updated_at')
+        expect(d.thresholds, d.resident.resident_id).not.toHaveProperty('updated_by')
       }
     })
+    // n % 3 == 0 residents have no history, so no by-line fields.
+    expect(detailOf('res-0003').thresholds).not.toHaveProperty('updated_by')
   })
 
   it('history entries are newest first, in the past, with unique change_ids, by Test Doctor A or B', () => {
@@ -249,12 +256,7 @@ describe('createResidentDetail', () => {
       const n = i + 1
       const h = d.threshold_history
       const id = d.resident.resident_id
-      if (n === 11) {
-        expect(h).toHaveLength(1)
-        expect(h[0]).toMatchObject({ changed_by: 'Test Doctor A' })
-        expect(h[0].changes).toEqual([{ field: 'hr_bpm.max', old_value: 110, new_value: 120 }])
-        expect(daysAgo(h[0].changed_at)).toBe(12)
-      } else if (n === 19) {
+      if (n === 2) {
         expect(h).toHaveLength(1)
         expect(h[0]).toMatchObject({ changed_by: 'Test Doctor B' })
         expect(h[0].changes).toEqual([{ field: 'spo2_pct.min', old_value: 92, new_value: 88 }])
@@ -264,8 +266,8 @@ describe('createResidentDetail', () => {
         const by = n % 2 === 0 ? 'Test Doctor A' : 'Test Doctor B'
         expect(h.map((e) => e.changed_by)).toEqual([by, by])
         expect(h.map((e) => daysAgo(e.changed_at))).toEqual([4 + n, 10 + n])
-        expect(h[0].changes).toEqual([{ field: 'skin_temp_c.min', old_value: 30.5, new_value: 31.0 }])
-        expect(h[1].changes).toEqual([{ field: 'skin_temp_c.min', old_value: 31.0, new_value: 30.5 }])
+        expect(h[0].changes).toEqual([{ field: 'skin_temp_c.min', old_value: 29.5, new_value: 30.0 }])
+        expect(h[1].changes).toEqual([{ field: 'skin_temp_c.min', old_value: 30.0, new_value: 29.5 }])
       } else if (n % 3 === 2) {
         expect(h, id).toHaveLength(2)
         const by = n % 2 === 0 ? 'Test Doctor A' : 'Test Doctor B'
@@ -273,16 +275,20 @@ describe('createResidentDetail', () => {
         expect(h.map((e) => daysAgo(e.changed_at))).toEqual([3 + n, 6 + n])
         expect(h[0].changes).toEqual([
           { field: 'hr_bpm.min', old_value: 45, new_value: 50 },
-          { field: 'hr_bpm.max', old_value: 115, new_value: 110 },
+          { field: 'hr_bpm.max', old_value: 125, new_value: 120 },
         ])
         expect(h[1].changes).toEqual([
           { field: 'hr_bpm.min', old_value: 50, new_value: 45 },
-          { field: 'hr_bpm.max', old_value: 110, new_value: 115 },
+          { field: 'hr_bpm.max', old_value: 120, new_value: 125 },
         ])
       } else {
         expect(h, id).toEqual([])
       }
     })
+    // res-0011 and res-0019 no longer have their own variants: they follow the generic seeds.
+    expect(detailOf('res-0011').threshold_history).toHaveLength(2)
+    expect(detailOf('res-0019').threshold_history).toHaveLength(2)
+    expect(detailOf('res-0019').threshold_history[0].changes[0].field).toBe('skin_temp_c.min')
     expect(['res-0003', 'res-0006', 'res-0009', 'res-0012', 'res-0015', 'res-0018'].map((id) => detailOf(id).threshold_history)).toEqual(
       Array(6).fill([]),
     )

@@ -4,7 +4,7 @@
  * bodies of `loadDashboardData` and `loadResidentDetail` with calls through
  * src/lib/api.ts, the alert actions with the acknowledge/resolve call
  * (docs/data-model.md pattern 16), and `updateThresholds` with the thresholds call
- * (pattern 21, proposed), and `loadDeviceFleet` with the devices call (patterns 4, 5, 8);
+ * (pattern 24, proposed), and `loadDeviceFleet` with the devices call (patterns 4, 5, 8);
  * the hooks and the views stay the same.
  */
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
@@ -89,7 +89,7 @@ export interface ResidentDetailState extends AlertActionsState {
    * only: the API call sends just the values, and the server checks the caller is in the
    * `doctor` group, validates the values with the same rules as the form, and records
    * the `sub` from the JWT as `updated_by`. It doesn't add to `threshold_history`: the
-   * server writes that entry in the same transaction (pattern 22, proposed).
+   * server writes that entry in the same transaction (pattern 25, proposed).
    */
   updateThresholds: (values: VitalsThresholds, by: string) => void
 }

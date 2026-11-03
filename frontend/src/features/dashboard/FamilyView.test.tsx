@@ -144,9 +144,35 @@ describe('recent alerts timeline', () => {
     expect(items).toHaveLength(2)
     expect(items[0]).toHaveTextContent('Warning')
     expect(items[0]).toHaveTextContent('Inactivity')
-    expect(items[1]).toHaveTextContent('Info')
+    expect(items[1]).toHaveTextContent('Warning')
     expect(items[1]).toHaveTextContent('Possible fall')
+    items.forEach((item) => expect(item).not.toHaveTextContent('Info'))
     expect(residentCard('Test Resident E').getByText('No recent alerts.')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['hr_high', 'High heart rate'],
+    ['hr_low', 'Low heart rate'],
+    ['spo2_low', 'Low blood oxygen'],
+    ['skin_temp_high', 'High skin temperature'],
+    ['skin_temp_low', 'Low skin temperature'],
+  ] as const)('labels a %s alert "%s"', async (type, label) => {
+    const data = demoDataFor('family')
+    const vitalsAlert: ResidentAlert = {
+      alert_id: 'alert-test-vitals-001',
+      resident_id: 'res-0002',
+      device_id: 'wearable-test-001',
+      alert_type: type,
+      severity: 'warning',
+      status: 'open',
+      event_ts: new Date(Date.now() - 60_000).toISOString(),
+    }
+    await renderLoaded({ ...data, alerts: [vitalsAlert] })
+    const list = residentCard('Test Resident B').getByText('Recent alerts').nextElementSibling as HTMLElement
+    const [item] = within(list).getAllByRole('listitem')
+    expect(item).toHaveTextContent(label)
+    expect(item).toHaveTextContent('Warning')
+    expect(item).not.toHaveTextContent('Vitals need attention')
   })
 
   it('shows at most 5 alerts per resident', async () => {

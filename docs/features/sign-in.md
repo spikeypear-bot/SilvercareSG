@@ -117,8 +117,9 @@ shows clearly labelled synthetic demo data from one local module.
     and IDs (`res-0001`…, `wearable-0001`…, `bedroom-0001`…).
 19. The UI never computes "normal/abnormal" from vitals. Each demo resident and alert
     carries its own `status` (`ok` | `attention` | `urgent`) and alert `severity`
-    (`info` | `warning` | `critical`), as the API will later provide. Alert thresholds
-    are not defined in this feature.
+    (`warning` | `critical`, as `docs/data-model.md` defines them since the alerting
+    features), as the API will later provide. Alert thresholds are not defined in this
+    feature.
 20. A "Demo data" banner is visible on the main page in both views, with text (not
     only colour): "You are viewing synthetic demo data. No real resident information is
     shown."
@@ -206,12 +207,14 @@ Both the nurse and doctor dashboards have:
 - Four stat tiles: Residents monitored, Open alerts (critical count shown too), Devices
   offline, Wearables low on battery (< 20 %, computed from demo `battery_pct`: this is a
   display filter, not an alert threshold).
-- Alert rows: severity badge, alert type (Fall detected, Possible fall, Inactivity,
-  Vitals need attention, Device offline, Low battery), "Open" or "Acknowledged" label,
-  resident name, resident ID and home ID, relative time ("12 min ago") with the exact
-  time in a tooltip/`<time>`, "Acknowledged by <name>, <time>" once acknowledged, and,
-  for an alert with `escalates_at`, a live countdown "Escalates to nurses in N s" or
-  "Escalated to nurses".
+- Alert rows: severity badge, alert type (the backend's Fall detected, High / Low heart
+  rate, Low blood oxygen, High / Low skin temperature, plus the planned Possible fall,
+  Inactivity, Device offline, Low battery), "Open", "Acknowledged", or "Cancelled"
+  label, resident name, resident ID and home ID, relative time ("12 min ago") with the
+  exact time in a tooltip/`<time>`, "Acknowledged by <name>, <time>" once acknowledged,
+  and, for an open alert, "Escalated to nurses" once `escalated_at` is set, or before
+  that a live countdown "Escalates to nurses in N s" to the API's computed
+  `escalates_at` (the 60 s check in `docs/features/escalation.md`).
 - Residents panel: search by name or resident ID, filter chips by status
   (All / Urgent / Attention / OK, with counts), and a responsive grid of resident cards:
   initials avatar, name, resident ID, status badge, latest heart rate, SpO2, skin
@@ -271,9 +274,10 @@ Both the nurse and doctor dashboards have:
 
 ## Alerts and notifications
 
-None delivered. Demo alerts are display-only apart from the nurse dashboard's local
-acknowledge and resolve; the escalation countdown only displays the demo
-`escalates_at`. Alerting rules are still Open decision #2.
+None delivered by the portal. Demo alerts are display-only apart from the nurse
+dashboard's local acknowledge and resolve; the escalation countdown only displays the
+demo `escalates_at` / `escalated_at`. Alert emails and escalation are backend features
+(`docs/features/alerts-core.md`, `vitals-alerts.md`, `escalation.md`).
 
 ## Privacy
 

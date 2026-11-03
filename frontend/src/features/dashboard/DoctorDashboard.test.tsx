@@ -145,7 +145,7 @@ describe('open alerts summary', () => {
     expect(rows[0]).toHaveTextContent('Fall detected')
     expect(rows[0]).toHaveTextContent('Test Resident C')
     expect(rows[0]).toHaveTextContent('res-0003')
-    expect(rows[1]).toHaveTextContent('Vitals need attention')
+    expect(rows[1]).toHaveTextContent('High heart rate')
     expect(rows[1]).toHaveTextContent('Test Resident G')
     expect(rows[1]).toHaveTextContent('Acknowledged by Test Nurse B')
     expect(rows[2]).toHaveTextContent('Fall detected')
@@ -181,7 +181,7 @@ describe('open alerts summary', () => {
     const data = demoDataFor('staff')
     const alerts = [
       alertFor(1, { alert_type: 'inactivity', severity: 'warning' }),
-      alertFor(2, { alert_type: 'low_battery', severity: 'info' }),
+      alertFor(2, { alert_type: 'low_battery', severity: 'warning' }),
       alertFor(3, { alert_type: 'possible_fall', severity: 'warning' }),
       alertFor(19, { alert_type: 'fall', severity: 'critical' }),
     ]
@@ -287,7 +287,7 @@ describe('escalation announcements (fake clock)', () => {
     summaryRows().forEach((row) => expect(row).not.toHaveTextContent('Test Resident H'))
     expect(screen.getByRole('status')).toBeEmptyDOMElement()
 
-    tick(89_000)
+    tick(29_000)
     expect(screen.getByRole('status')).toBeEmptyDOMElement()
     tick(1000)
     expect(screen.getByRole('status')).toHaveTextContent(`Escalated to nurses: ${H}.`)
@@ -299,7 +299,7 @@ describe('escalation announcements (fake clock)', () => {
 
   it('does not announce alerts that had already escalated when the page opened', async () => {
     const data = demoDataFor('staff', NOW)
-    // Drop the mid-countdown alert; the other two windowed alerts are already past.
+    // Drop the mid-countdown alert; every other alert has already escalated.
     dashboardLoader.mockResolvedValue({ ...data, alerts: data.alerts.filter((a) => a.resident_id !== 'res-0008') })
     renderWithAuth(<DoctorDashboard />, { user: TEST_USERS.doctor })
     await act(async () => {
@@ -384,8 +384,9 @@ describe('status comes from the data, never from vitals', () => {
 
   it('shows the provided alert severity', async () => {
     const data = demoDataFor('staff')
-    await renderLoaded({ ...data, alerts: [alertFor(3, { alert_type: 'fall', severity: 'info' })] })
-    expect(summaryRows()[0]).toHaveTextContent('Info')
+    await renderLoaded({ ...data, alerts: [alertFor(3, { alert_type: 'fall', severity: 'warning' })] })
+    expect(summaryRows()[0]).toHaveTextContent('Warning')
+    expect(summaryRows()[0]).not.toHaveTextContent('Critical')
     expect(summaryRows()[0]).toHaveTextContent('Fall detected')
   })
 })
@@ -395,7 +396,7 @@ describe('icon and text, never colour alone', () => {
     const { container } = await renderLoaded()
     const badges = container.querySelectorAll('[data-tone]')
     expect(badges).toHaveLength(20 + 3)
-    const labels = { ok: 'OK', attention: 'Attention', urgent: 'Urgent', info: 'Info', warning: 'Warning', critical: 'Critical' }
+    const labels = { ok: 'OK', attention: 'Attention', urgent: 'Urgent', warning: 'Warning', critical: 'Critical' }
     badges.forEach((badge) => {
       const tone = badge.getAttribute('data-tone') as keyof typeof labels
       expect(badge.querySelector('svg[aria-hidden="true"]')).not.toBeNull()

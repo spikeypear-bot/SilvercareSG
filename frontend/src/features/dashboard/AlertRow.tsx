@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { Bell, CircleArrowUp, CircleCheckBig, Timer, UserCheck, type LucideIcon } from 'lucide-react'
+import { Bell, CircleArrowUp, CircleCheckBig, CircleX, Timer, UserCheck, type LucideIcon } from 'lucide-react'
 import { Button } from '../../components/Button'
 import { RelativeTime } from '../../components/RelativeTime'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -63,7 +63,8 @@ export function AlertRow({
       </div>
       <p className="text-base font-semibold text-slate-900">{typeLabel}</p>
       {showResident && <ResidentLine resident={resident} residentId={alert.resident_id} />}
-      {alert.status === 'open' && alert.escalates_at && (
+      {alert.status === 'open' && alert.escalated_at && <EscalatedText />}
+      {alert.status === 'open' && !alert.escalated_at && alert.escalates_at && (
         <EscalationStatus escalatesAt={alert.escalates_at} />
       )}
       {alert.acknowledged_by && alert.acknowledged_at && (
@@ -98,6 +99,7 @@ export function AlertRow({
 const LIFECYCLE: Record<ResidentAlert['status'], { label: string; Icon: LucideIcon }> = {
   open: { label: 'Open', Icon: Bell },
   acknowledged: { label: 'Acknowledged', Icon: UserCheck },
+  cancelled: { label: 'Cancelled', Icon: CircleX },
   resolved: { label: 'Resolved', Icon: CircleCheckBig },
 }
 
@@ -111,23 +113,26 @@ function LifecycleLabel({ alert }: { alert: ResidentAlert }) {
   )
 }
 
+function EscalatedText() {
+  return (
+    <p className="inline-flex items-center gap-1.5 text-base font-semibold text-rose-800">
+      <CircleArrowUp className="size-5 shrink-0" aria-hidden="true" />
+      Escalated to nurses
+    </p>
+  )
+}
+
 /**
- * Seconds left in the confirmation window, ticking every second, or "Escalated to nurses"
- * once it has passed. Not a live region: screen readers hear about escalation once,
- * through the dashboard's announcer (`useEscalationWatcher`), instead of every tick.
+ * Seconds until the 60 s escalation check (docs/features/escalation.md), ticking every
+ * second, or "Escalated to nurses" once it has passed (the next load brings
+ * `escalated_at`). Not a live region: screen readers hear about escalation once,
+ * through the page's announcer (`useEscalationWatcher`), instead of every tick.
  */
 function EscalationStatus({ escalatesAt }: { escalatesAt: string }) {
   const now = useNow(1000)
   const remainingS = Math.ceil((Date.parse(escalatesAt) - now.getTime()) / 1000)
 
-  if (remainingS <= 0) {
-    return (
-      <p className="inline-flex items-center gap-1.5 text-base font-semibold text-rose-800">
-        <CircleArrowUp className="size-5 shrink-0" aria-hidden="true" />
-        Escalated to nurses
-      </p>
-    )
-  }
+  if (remainingS <= 0) return <EscalatedText />
   return (
     <p className="inline-flex items-center gap-1.5 text-base font-semibold text-amber-900">
       <Timer className="size-5 shrink-0" aria-hidden="true" />

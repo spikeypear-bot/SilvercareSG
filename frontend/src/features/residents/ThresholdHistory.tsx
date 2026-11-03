@@ -10,8 +10,8 @@ interface ThresholdHistoryProps {
 }
 
 /**
- * Earlier threshold changes (pattern 22). Read-only for every role: entries are written by
- * the server when a doctor saves (with the pattern 21 route), never by the UI.
+ * Earlier threshold changes (pattern 25). Read-only for every role: entries are written by
+ * the server when a doctor saves (with the pattern 24 route), never by the UI.
  */
 export function ThresholdHistory({ history, now }: ThresholdHistoryProps) {
   const sorted = [...history].sort((a, b) => b.changed_at.localeCompare(a.changed_at))
