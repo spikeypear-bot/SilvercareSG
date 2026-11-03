@@ -16,6 +16,7 @@ def test_valid_message_parses():
     assert isinstance(result, Alert)
     assert result.alert_id == ALERT_ID
     assert result.alert_type == "fall"
+    assert result.severity == "critical"
     assert result.resident_id == RESIDENT
     assert result.device_id == DEVICE
     assert result.event_dt.isoformat() == "2026-10-18T03:14:07.360000+00:00"
@@ -129,6 +130,7 @@ def test_log_ids_keep_valid_ids_and_mask_the_rest():
     assert log_ids(body) == {
         "alert_id": ALERT_ID,
         "alert_type": "invalid",
+        "severity": "critical",
         "device_id": "invalid",
         "resident_id": "invalid",
     }
@@ -138,6 +140,7 @@ def test_log_ids_of_non_json_are_all_absent():
     assert log_ids("not json") == {
         "alert_id": None,
         "alert_type": None,
+        "severity": None,
         "device_id": None,
         "resident_id": None,
     }

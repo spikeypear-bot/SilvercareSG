@@ -25,7 +25,7 @@ HANDLERS = {
     "vitals": handler.telemetry_handler,
     "motion": handler.telemetry_handler,
     "bed": handler.telemetry_handler,
-    "fall": handler.fall_alert_handler,
+    "fall": handler.critical_alert_handler,
 }
 
 CASES = [
@@ -45,9 +45,11 @@ OUR_KEYS = {
     "outcome",
     "reason",
     "error",
-    # fall-alert only, once the alert is queued (alerts-core criterion 7)
+    # critical-alert only, once the alert is queued (alerts-core criterion 7)
     "alert_id",
     "alert_outcome",
+    # telemetry only: the warnings queued (vitals-alerts criterion 11)
+    "alert_ids",
 }
 
 _d = TypeDeserializer()
@@ -301,7 +303,7 @@ def test_message_types_are_stored_in_separate_items(latest_table):
         (handler.telemetry_handler, rule_event("vitals", schema_version=2)),
         (handler.telemetry_handler, rule_event("vitals", activity_pct=DELETE)),
         (handler.telemetry_handler, rule_event("vitals", accel_g=DELETE)),
-        (handler.fall_alert_handler, rule_event("fall", accel_window=[])),
+        (handler.critical_alert_handler, rule_event("fall", accel_window=[])),
         (handler.device_health_handler, rule_event("status", BEDROOM, fw_version="")),
         (handler.telemetry_handler, rule_event("bed", occupied="yes")),
     ],
@@ -323,10 +325,10 @@ def test_invalid_message_is_rejected_without_writing(latest_table, entry_point, 
         (handler.telemetry_handler, "status", WEARABLE),
         (handler.telemetry_handler, "status", BEDROOM),
         (handler.telemetry_handler, "fall", WEARABLE),
-        (handler.fall_alert_handler, "vitals", WEARABLE),
-        (handler.fall_alert_handler, "status", WEARABLE),
-        (handler.fall_alert_handler, "motion", BEDROOM),
-        (handler.fall_alert_handler, "bed", BEDROOM),
+        (handler.critical_alert_handler, "vitals", WEARABLE),
+        (handler.critical_alert_handler, "status", WEARABLE),
+        (handler.critical_alert_handler, "motion", BEDROOM),
+        (handler.critical_alert_handler, "bed", BEDROOM),
     ],
 )
 def test_message_type_for_another_function_is_wrong_function(
@@ -346,7 +348,7 @@ def test_message_type_for_another_function_is_wrong_function(
         (handler.telemetry_handler, "vitals", WEARABLE),
         (handler.telemetry_handler, "motion", BEDROOM),
         (handler.telemetry_handler, "bed", BEDROOM),
-        (handler.fall_alert_handler, "fall", WEARABLE),
+        (handler.critical_alert_handler, "fall", WEARABLE),
     ],
 )
 def test_each_function_stores_its_own_types(
@@ -387,7 +389,11 @@ def test_rejected_message_logs_reason_without_value(latest_table, logs):
     assert record["device_id"] == WEARABLE
     assert record["message_id"] == event["message_id"]
     assert record["message"] == "vitals"
-    assert "999" not in "".join(str(v) for k, v in record.items() if k != "timestamp")
+    # message_id is a random UUID and location a line number: either can hold "999".
+    rest = (
+        v for k, v in record.items() if k not in {"timestamp", "location", "message_id"}
+    )
+    assert "999" not in "".join(str(v) for v in rest)
 
 
 def test_rejected_message_with_non_string_message_id_omits_it(latest_table, logs):
@@ -405,7 +411,11 @@ def test_rejected_message_with_non_uuid_message_id_logs_placeholder(latest_table
     (record,) = logs()
     assert record["message_id"] == "invalid"
     assert record["reason"] == "invalid:message_id"
-    assert "150" not in "".join(str(v) for k, v in record.items() if k != "timestamp")
+    # message_id is a random UUID and location a line number: either can hold "150".
+    rest = (
+        v for k, v in record.items() if k not in {"timestamp", "location", "message_id"}
+    )
+    assert "150" not in "".join(str(v) for v in rest)
 
 
 def test_rejected_non_dict_event_logs_without_ids(latest_table, logs):

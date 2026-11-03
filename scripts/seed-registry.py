@@ -1,5 +1,6 @@
-"""Seed silvercare-registry with synthetic residents and device assignments
-(docs/features/alerts-core.md, criterion 30; docs/data-model.md, pattern 17).
+"""Seed silvercare-registry with synthetic residents, thresholds, and device assignments
+(docs/features/alerts-core.md, criterion 30; docs/features/vitals-alerts.md,
+criterion 26; docs/data-model.md, pattern 17).
 
 Run on the host with your own AWS credentials (region ap-southeast-1):
 
@@ -11,6 +12,9 @@ Creates:
 
 - RESIDENT#res-0001 ... res-0003 / PROFILE: entity_type RESIDENT, display_name
   "Test Resident A" ... "C", home_id home-0001 ... home-0003, created_at, updated_at.
+- THRESHOLDS#res-0002 / THRESHOLDS: spo2_pct {"min": 88} (a synthetic resident with
+  a lower normal SpO2, to show personal thresholds; the other limits keep the
+  defaults), updated_at. No updated_by (no staff user made it).
 - DEVICE#<id> / ASSIGNMENT for every device in infra/devices/devices.json:
   entity_type DEVICE, device_type. wearable-000N and bedroom-000N (N = 1-3) are
   assigned to res-000N (resident_id, home_id, assigned_at, gsi1_pk, gsi1_sk); the
@@ -49,6 +53,12 @@ RESIDENTS = (
     ("res-0002", "Test Resident B", "home-0002"),
     ("res-0003", "Test Resident C", "home-0003"),
 )
+
+# Synthetic personal thresholds: resident_id -> limits (docs/data-model.md, "Resident
+# thresholds"). Only the limits that differ from the defaults.
+THRESHOLDS = {
+    "res-0002": {"spo2_pct": {"min": 88}},
+}
 
 CREATED = "created"
 EXISTS = "exists"
@@ -110,6 +120,19 @@ def resident_items(now: datetime) -> list[dict[str, str]]:
     ]
 
 
+def threshold_items(now: datetime) -> list[dict[str, Any]]:
+    stamp = iso_now(now)
+    return [
+        {
+            "pk": f"THRESHOLDS#{resident_id}",
+            "sk": "THRESHOLDS",
+            **limits,
+            "updated_at": stamp,
+        }
+        for resident_id, limits in THRESHOLDS.items()
+    ]
+
+
 def device_items(devices: list[dict[str, str]], now: datetime) -> list[dict[str, str]]:
     stamp = iso_now(now)
     assigned = assignments()
@@ -136,17 +159,29 @@ def device_items(devices: list[dict[str, str]], now: datetime) -> list[dict[str,
     return items
 
 
-def build_items(devices: list[dict[str, str]], now: datetime) -> list[dict[str, str]]:
-    """Every item to write: residents first, then devices in devices.json order."""
-    return resident_items(now) + device_items(devices, now)
+def build_items(devices: list[dict[str, str]], now: datetime) -> list[dict[str, Any]]:
+    """Every item to write: residents, then thresholds, then devices in devices.json
+    order."""
+    return resident_items(now) + threshold_items(now) + device_items(devices, now)
 
 
-def serialize(item: dict[str, str]) -> dict[str, dict[str, str]]:
-    """Low-level DynamoDB format (every attribute is a string)."""
-    return {name: {"S": value} for name, value in item.items()}
+def _attribute(value: Any) -> dict[str, Any]:
+    """One low-level DynamoDB attribute: strings, integers, and maps of them."""
+    if isinstance(value, str):
+        return {"S": value}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return {"N": str(value)}
+    if isinstance(value, dict):
+        return {"M": {name: _attribute(v) for name, v in value.items()}}
+    raise TypeError(f"unsupported attribute type {type(value).__name__}")
 
 
-def key_text(item: dict[str, str]) -> str:
+def serialize(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Low-level DynamoDB format (strings as S, integers as N, maps as M)."""
+    return {name: _attribute(value) for name, value in item.items()}
+
+
+def key_text(item: dict[str, Any]) -> str:
     return f"{item['pk']} / {item['sk']}"
 
 
@@ -162,7 +197,7 @@ def _error_code(exc: Exception) -> str:
     return type(exc).__name__
 
 
-def put_if_absent(client: Any, table: str, item: dict[str, str]) -> str:
+def put_if_absent(client: Any, table: str, item: dict[str, Any]) -> str:
     """created, or exists if an item with this key is already there."""
     try:
         client.put_item(
@@ -178,7 +213,7 @@ def put_if_absent(client: Any, table: str, item: dict[str, str]) -> str:
 
 
 def seed(
-    items: list[dict[str, str]],
+    items: list[dict[str, Any]],
     table: str,
     client: Any | None,
     out: TextIO,
@@ -200,7 +235,7 @@ def main(
 ) -> int:
     out = out or sys.stdout
     parser = argparse.ArgumentParser(
-        description="Seed silvercare-registry with synthetic residents and devices."
+        description="Seed silvercare-registry with synthetic residents, thresholds, and devices."
     )
     parser.add_argument(
         "--dry-run",

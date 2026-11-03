@@ -38,6 +38,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.
 - [ ] Data reads and writes map to access patterns in `docs/data-model.md` (or new ones
       are described).
+- [ ] Alerting inputs: validation ranges don't reject the emergency itself. Ranges
+      copied from routine readings can (heart rate 0 = no pulse, cardiac arrest); for
+      each alert, check the worst real reading is still accepted.
 - [ ] Personal data touched is listed, with its retention.
 - [ ] Out of scope is filled in.
 - [ ] Open questions is empty.

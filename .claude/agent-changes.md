@@ -3,7 +3,42 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-03
+
+- **Problem:** Claude edited a test with a Python one-off script, which skips the format
+  hook, so the user's lint check failed. **Changed:** `.claude/skills/local-dev/SKILL.md`:
+  run `ruff format` after shell-script edits.
+
+- **Problem:** the fix for the flaky log tests only left out `timestamp`; history's
+  test still failed in the A2 PR checks because an S3 key's random UUID contained
+  `187` (and an ingest test could hit `999` in `message_id`). **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: drop timestamp/location **and** replace UUIDs.
+
+- **Problem:** two log-privacy tests (`test_fall_log_has_no_resident_or_fall_values`,
+  history's `test_logs_contain_no_bodies_ids_or_values`) checked the raw log text, so a
+  timestamp containing `33` or `187` failed them at random. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: check parsed records without `timestamp` and
+  `location`.
+
+- **Problem:** the `vitals-alerts` spec (written by Claude) bounded the suppression
+  Query at `ALERT#<event_ts>`, which excludes `ALERT#<event_ts>#<alert_id>`, so a
+  retried alert was suppressed by an earlier one and never emailed (lambda-tester
+  found it). **Changed:** `.claude/skills/data-model/SKILL.md`: end composite sort-key
+  ranges with `#~` when same-`ts` items belong in the result.
+
+- **Problem:** Claude told the user the `fall-alert` → `critical-alert` rename loses
+  alerts for "a few seconds"; iac-reviewer (low) showed it's up to about a minute
+  (destroy first, then IAM role propagation). **Changed:**
+  `.claude/skills/tf-change/SKILL.md`: state that window when summarising a replaced
+  Lambda on an alert path.
+
 ## 2026-11-02
+
+- **Problem:** the `vitals-alerts` spec (written by Claude) copied the routine heart-rate
+  range 20–250 into the device `vitals_alert`, so a no-pulse emergency (0) would be
+  rejected and never alert; the user caught it. **Changed:**
+  `.claude/skills/feature-spec/SKILL.md`: readiness check that alert validation ranges
+  accept the worst real reading.
 
 - **Problem:** the `alerts-core` deploy failed: both SNS topic policies used `sns:*` in
   a TLS-only Deny, which SNS rejects at apply ("action out of service scope"); tf-check
