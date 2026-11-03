@@ -389,7 +389,11 @@ def test_rejected_message_logs_reason_without_value(latest_table, logs):
     assert record["device_id"] == WEARABLE
     assert record["message_id"] == event["message_id"]
     assert record["message"] == "vitals"
-    assert "999" not in "".join(str(v) for k, v in record.items() if k != "timestamp")
+    # message_id is a random UUID and location a line number: either can hold "999".
+    rest = (
+        v for k, v in record.items() if k not in {"timestamp", "location", "message_id"}
+    )
+    assert "999" not in "".join(str(v) for v in rest)
 
 
 def test_rejected_message_with_non_string_message_id_omits_it(latest_table, logs):
@@ -407,7 +411,11 @@ def test_rejected_message_with_non_uuid_message_id_logs_placeholder(latest_table
     (record,) = logs()
     assert record["message_id"] == "invalid"
     assert record["reason"] == "invalid:message_id"
-    assert "150" not in "".join(str(v) for k, v in record.items() if k != "timestamp")
+    # message_id is a random UUID and location a line number: either can hold "150".
+    rest = (
+        v for k, v in record.items() if k not in {"timestamp", "location", "message_id"}
+    )
+    assert "150" not in "".join(str(v) for v in rest)
 
 
 def test_rejected_non_dict_event_logs_without_ids(latest_table, logs):

@@ -5,6 +5,15 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-03
 
+- **Problem:** Claude edited a test with a Python one-off script, which skips the format
+  hook, so the user's lint check failed. **Changed:** `.claude/skills/local-dev/SKILL.md`:
+  run `ruff format` after shell-script edits.
+
+- **Problem:** the fix for the flaky log tests only left out `timestamp`; history's
+  test still failed in the A2 PR checks because an S3 key's random UUID contained
+  `187` (and an ingest test could hit `999` in `message_id`). **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: drop timestamp/location **and** replace UUIDs.
+
 - **Problem:** two log-privacy tests (`test_fall_log_has_no_resident_or_fall_values`,
   history's `test_logs_contain_no_bodies_ids_or_values`) checked the raw log text, so a
   timestamp containing `33` or `187` failed them at random. **Changed:**
