@@ -72,7 +72,7 @@ module "alerts_table" {
   read_capacity  = 3
   write_capacity = 2
 
-  # Resolved alerts expire 30 days after resolved_at.
+  # Resolved and cancelled alerts expire 30 days after resolved_at / cancelled_at.
   ttl_attribute = "expires_at"
 
   global_secondary_indexes = [

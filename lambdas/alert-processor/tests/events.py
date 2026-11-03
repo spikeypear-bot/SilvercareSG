@@ -184,3 +184,59 @@ def check_message(**overrides: Any) -> dict[str, Any]:
 def check_body(**overrides: Any) -> str:
     """The check's SQS body text, compact JSON as alert-processor sends it."""
     return json.dumps(check_message(**overrides), separators=(",", ":"))
+
+
+# ---- status updates (docs/features/alert-cancel.md, criterion 6) ----
+
+# A synthetic Cognito sub (lowercase UUID) and a synthetic full name for acknowledges.
+STAFF_SUB = "a1b2c3d4-0000-4000-8000-00000000abcd"
+CAREGIVER_SUB = "a1b2c3d4-0000-4000-8000-00000000cafe"
+STAFF_NAME = "Test Nurse Alpha"
+CAREGIVER_NAME = "Test Caregiver Beta"
+# The cancel press reached AWS IoT 52.64 s after the default alert's event_ts.
+CHANGED_AT = "2026-10-18T03:15:00.000Z"
+
+
+def cancel_message(**overrides: Any) -> dict[str, Any]:
+    """A valid wearable cancel (by_role resident, device target) for the default
+    resident and device. Pass a field as DELETE to remove it."""
+    body: dict[str, Any] = {
+        "kind": "status_update",
+        "schema_version": 1,
+        "resident_id": RESIDENT,
+        "new_status": "cancelled",
+        "changed_at": CHANGED_AT,
+        "by_role": "resident",
+        "by": None,
+        "by_name": None,
+        "target": {"device_id": DEVICE},
+    }
+    for name, value in overrides.items():
+        if value is DELETE:
+            body.pop(name, None)
+        else:
+            body[name] = value
+    return body
+
+
+def ack_message(by_role: str = "staff", **overrides: Any) -> dict[str, Any]:
+    """A valid acknowledge (alert target) of the default alert by staff or a
+    caregiver."""
+    staff = by_role == "staff"
+    fields: dict[str, Any] = {
+        "new_status": "acknowledged",
+        "by_role": by_role,
+        "by": STAFF_SUB if staff else CAREGIVER_SUB,
+        "by_name": STAFF_NAME if staff else CAREGIVER_NAME,
+        "target": {"alert_id": ALERT_ID, "event_ts": EVENT_TS},
+    }
+    fields.update(overrides)
+    return cancel_message(**fields)
+
+
+def cancel_body(**overrides: Any) -> str:
+    return json.dumps(cancel_message(**overrides), separators=(",", ":"))
+
+
+def ack_body(by_role: str = "staff", **overrides: Any) -> str:
+    return json.dumps(ack_message(by_role, **overrides), separators=(",", ":"))

@@ -45,6 +45,8 @@ PAYLOADS: dict[str, dict[str, Any]] = {
         "direction": "above",
         "held_s": 10,
     },
+    # docs/metrics.md, alert_cancel (alert-cancel criterion 1): envelope only.
+    "alert_cancel": {},
     "wearable_status": {
         "battery_pct": 64,
         "worn": True,
@@ -62,6 +64,7 @@ STORED_FIELDS = {
     ("wearable", "fall"): {"confidence", "peak_g", "still_s"},
     ("wearable", "vitals_alert"): {"metric", "value", "limit", "direction", "held_s"},
     ("wearable", "status"): {"battery_pct", "worn", "charging", "fw_version"},
+    ("wearable", "alert_cancel"): set(),
     ("bedroom", "motion"): {"motion"},
     ("bedroom", "bed"): {"occupied"},
     ("bedroom", "status"): {"battery_pct", "fw_version"},

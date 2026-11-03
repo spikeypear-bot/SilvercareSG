@@ -19,8 +19,9 @@ MAX_ENTRIES = 5
 MAX_ATTEMPTS = 3
 
 # Item types without watch_type stay out of the sparse by-message index: the
-# device-raised alerts, which reach the dashboard as alerts.
-UNWATCHED_MESSAGES = frozenset({"fall", "vitals_alert"})
+# device-raised alerts, which reach the dashboard as alerts, and the "I'm OK" cancel
+# (docs/features/alert-cancel.md, criterion 4), which shows as cancelled alerts.
+UNWATCHED_MESSAGES = frozenset({"fall", "vitals_alert", "alert_cancel"})
 
 STORED = "stored"
 DUPLICATE = "duplicate"

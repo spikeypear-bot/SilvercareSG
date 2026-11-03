@@ -5,6 +5,23 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-03
 
+- **Problem:** the live `--alerts` check (spec by Claude) sent heart rates 125/128 at
+  once: a teammate's personal limit of 130 made them normal, and the two readings ran
+  in parallel, so no warning came. **Changed:** `.claude/skills/feature-spec/SKILL.md`:
+  live checks avoid shared mutable data and space out order-dependent messages.
+  (Fix: `scripts/iot-smoke-test.py` now sends 180/185/182 with a 3 s pause.)
+
+- **Problem:** in `alert-cancel` tests, `\u200b`/`\u202e` escapes were saved as raw
+  invisible characters, which ruff rejected, and took extra steps to repair.
+  **Changed:** `.claude/skills/lambda-test/SKILL.md`: keep such characters as escapes
+  and check the saved file.
+
+- **Problem:** the `alert-cancel` spec (written by Claude) told Track B its API "needs
+  only `sqs:SendMessage`" for `status_update`, without the identity, group, and link
+  checks it must make before sending (privacy-reviewer, low). **Changed:**
+  `.claude/skills/feature-spec/SKILL.md`: contracts other components send state the
+  sender's checks.
+
 - **Problem:** the `escalation` spec (written by Claude) let caregivers acknowledge
   without saying what others see about who acknowledged (privacy-reviewer, medium), and
   didn't say what a check redriven from the DLQ hours later does (iac-reviewer, low).

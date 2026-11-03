@@ -4,7 +4,8 @@ Three functions are built from this one zip, each with its own entry point:
 
 - `device_health_handler` (silvercare-device-health): `status`
 - `telemetry_handler` (silvercare-telemetry): `vitals`, `motion`, `bed`
-- `critical_alert_handler` (silvercare-critical-alert): `fall`, `vitals_alert`
+- `critical_alert_handler` (silvercare-critical-alert): `fall`, `vitals_alert`,
+  `alert_cancel`
 
 Each is invoked asynchronously by its IoT topic rule with the device payload plus
 `device_id`, `message`, and `received_at` added by the rule. It validates the message
@@ -20,6 +21,13 @@ off the slower write path. If the send or the write fails, the function raises a
 Lambda's async retry runs it again; the repeated alert message has the same alert_id,
 so alert-processor stores it once. After the retries, the event goes to
 silvercare-critical-alert-dlq (Terraform).
+
+A wearable `alert_cancel` (the "I'm OK" button, docs/features/alert-cancel.md,
+criteria 4-5) takes the same path in the same order: look up the resident, send a
+`status_update` (alerts.build_cancel_update) to the alerts queue, then store the
+message as MSG#alert_cancel. alert-processor cancels the device's open alerts. A failed
+send raises, like a failed alert send. Its log line has `status_update` = `queued`
+instead of alert_id and alert_outcome.
 
 `telemetry_handler` stores the message first, then, for a wearable `vitals` that is the
 device's newest entry, runs the cloud check (vitals-alerts criteria 7-11): look up the
@@ -57,7 +65,8 @@ logger = Logger()
 
 DEVICE_HEALTH_MESSAGES = frozenset({"status"})
 TELEMETRY_MESSAGES = frozenset({"vitals", "motion", "bed"})
-CRITICAL_ALERT_MESSAGES = frozenset({"fall", "vitals_alert"})
+CRITICAL_ALERT_MESSAGES = frozenset({"fall", "vitals_alert", "alert_cancel"})
+CANCEL_MESSAGE = "alert_cancel"
 
 # What _process does after validation, per function.
 MODE_STORE_ONLY = "store_only"  # device-health
@@ -97,6 +106,15 @@ def _queue_critical_alert(msg: ValidMessage) -> str:
     alert = alerts.build_critical_alert(msg, resident_id)
     alerts.send_alert(sqs_client(), os.environ["ALERTS_QUEUE_URL"], alert)
     return alert["alert_id"]
+
+
+def _queue_cancel(msg: ValidMessage) -> None:
+    """Look up the resident and send the status_update for a wearable alert_cancel."""
+    resident_id = registry.resident_for_device(
+        dynamodb_client(), os.environ["REGISTRY_TABLE"], msg.device_id
+    )
+    update = alerts.build_cancel_update(msg, resident_id)
+    alerts.send_status_update(sqs_client(), os.environ["ALERTS_QUEUE_URL"], update)
 
 
 def _log_invalid_thresholds(resident_id: str, fields: list[str]) -> None:
@@ -158,7 +176,8 @@ def _process(
 ) -> dict[str, str]:
     # Every log line is {"message": <message type>, "device_id", "message_id", plus
     # "outcome" or "reason"}, plus "alert_id" and "alert_outcome" once critical-alert
-    # has queued an alert, or "alert_ids" (a list, maybe empty) for telemetry. The
+    # has queued an alert, "status_update" once it has queued a cancel, or
+    # "alert_ids" (a list, maybe empty) for telemetry. The
     # message type goes in the log record's own "message" field, because Python
     # logging doesn't allow "message" as an extra key.
     message = _log_id(event, "message") or "-"
@@ -177,13 +196,17 @@ def _process(
         logger.warning(message, extra={**ids, "reason": result.reason})
         return {"outcome": "rejected", "reason": result.reason}
 
-    # critical-alert: alert_id and alert_outcome once the alert is queued.
+    # critical-alert: alert_id and alert_outcome once the alert is queued, or
+    # status_update once a cancel is queued.
     # telemetry: alert_ids, the warnings queued (empty when none).
     alert_log: dict[str, Any] = {}
     if mode == MODE_TELEMETRY:
         alert_log["alert_ids"] = []
     try:
-        if mode == MODE_CRITICAL_ALERT:
+        if mode == MODE_CRITICAL_ALERT and result.message == CANCEL_MESSAGE:
+            _queue_cancel(result)
+            alert_log = {"status_update": "queued"}
+        elif mode == MODE_CRITICAL_ALERT:
             alert_log = {
                 "alert_id": _queue_critical_alert(result),
                 "alert_outcome": "queued",
@@ -229,5 +252,5 @@ def telemetry_handler(event: Any, context: Any) -> dict[str, str]:
 
 def critical_alert_handler(event: Any, context: Any) -> dict[str, str]:
     """silvercare-critical-alert: queues a critical alert for a fall or a device
-    vitals_alert, then stores the message."""
+    vitals_alert, or a status_update for an alert_cancel, then stores the message."""
     return _process(event, CRITICAL_ALERT_MESSAGES, mode=MODE_CRITICAL_ALERT)

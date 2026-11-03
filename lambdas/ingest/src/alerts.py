@@ -26,8 +26,17 @@ An alert message is one JSON object:
                        device vitals (critical): metric, value, limit, direction,
                          held_s
 
-The builders, `alert_id_for`, and `encode` are pure. `send_alert` is the one AWS call:
-SQS SendMessage with the `alert_type` message attribute, no group or delay.
+Status updates (docs/features/alert-cancel.md, criterion 6) are a third message kind
+on the same queue. `critical-alert` sends one for a wearable `alert_cancel`:
+
+    {"kind": "status_update", "schema_version": 1, "resident_id": "res-0001",
+     "new_status": "cancelled", "changed_at": "<when the IoT rule received it>",
+     "by_role": "resident", "by": null, "by_name": null,
+     "target": {"device_id": "wearable-0001"}}
+
+The builders, `alert_id_for`, and `encode` are pure. `send_alert` and
+`send_status_update` are the AWS calls: SQS SendMessage, no group or delay
+(`send_alert` adds the `alert_type` message attribute).
 """
 
 from __future__ import annotations
@@ -48,6 +57,10 @@ SCHEMA_VERSION = 1
 ALERT_NAMESPACE = uuid.UUID("8d3c5f2a-6b1e-4f7d-9a0c-2e4b6d8f1a35")
 
 ALERT_TYPE_FALL = "fall"
+
+KIND_STATUS_UPDATE = "status_update"
+STATUS_CANCELLED = "cancelled"
+BY_ROLE_RESIDENT = "resident"
 
 SEVERITY_WARNING = "warning"
 SEVERITY_CRITICAL = "critical"
@@ -189,3 +202,27 @@ def send_alert(client: Any, queue_url: str, alert: dict[str, Any]) -> None:
             "alert_type": {"DataType": "String", "StringValue": alert["alert_type"]},
         },
     )
+
+
+def build_cancel_update(msg: ValidMessage, resident_id: str) -> dict[str, Any]:
+    """The status_update for a validated wearable `alert_cancel`: cancel every open
+    alert from this device up to the press. changed_at is when the IoT rule received
+    the message (server time, received_at), not the device's ts, so a wrong device
+    clock can't move the Query bound or the 30-day expiry."""
+    return {
+        "kind": KIND_STATUS_UPDATE,
+        "schema_version": SCHEMA_VERSION,
+        "resident_id": resident_id,
+        "new_status": STATUS_CANCELLED,
+        "changed_at": format_iso_ms(received_at_datetime(msg.received_at_ms)),
+        "by_role": BY_ROLE_RESIDENT,
+        "by": None,
+        "by_name": None,
+        "target": {"device_id": msg.device_id},
+    }
+
+
+def send_status_update(client: Any, queue_url: str, update: dict[str, Any]) -> None:
+    """Send one status_update to the alerts queue, without delay. AWS errors are
+    raised as they are."""
+    client.send_message(QueueUrl=queue_url, MessageBody=encode(update))
