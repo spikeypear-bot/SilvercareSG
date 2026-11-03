@@ -31,7 +31,7 @@ TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 # Messages each device type may send (docs/metrics.md, Summary).
 ALLOWED_MESSAGES: dict[str, frozenset[str]] = {
-    "wearable": frozenset({"vitals", "vitals_alert", "fall", "status"}),
+    "wearable": frozenset({"vitals", "vitals_alert", "fall", "status", "alert_cancel"}),
     "bedroom": frozenset({"motion", "bed", "status"}),
 }
 
@@ -157,6 +157,9 @@ STORED_FIELDS: dict[tuple[str, str], dict[str, Field]] = {
         "peak_g": Field("number", minimum=0, maximum=16),
         "still_s": Field("int", minimum=0, maximum=600),
     },
+    # The "I'm OK" button (docs/features/alert-cancel.md, criteria 1 and 4): envelope
+    # only, so no stored fields beyond the envelope.
+    ("wearable", "alert_cancel"): {},
     ("wearable", "status"): {
         "battery_pct": Field("int", minimum=0, maximum=100),
         "worn": Field("bool"),
@@ -240,10 +243,25 @@ def _check_vitals_alert(payload: dict) -> str | None:
     return None
 
 
+# The envelope plus the fields the IoT rule adds (device_id, message, received_at).
+ENVELOPE_AND_RULE_FIELDS = frozenset(
+    {"schema_version", "message_id", "ts", "device_id", "message", "received_at"}
+)
+
+
+def _check_envelope_only(payload: dict) -> str | None:
+    """alert_cancel is envelope only (docs/features/alert-cancel.md, criterion 4):
+    unlike other messages, unknown fields reject it instead of being dropped."""
+    if set(payload) - ENVELOPE_AND_RULE_FIELDS:
+        return "unknown_field"
+    return None
+
+
 EXTRA_CHECKS: dict[tuple[str, str], Callable[[dict], str | None]] = {
     ("wearable", "vitals"): _check_accel_g,
     ("wearable", "fall"): _check_accel_window,
     ("wearable", "vitals_alert"): _check_vitals_alert,
+    ("wearable", "alert_cancel"): _check_envelope_only,
 }
 
 
@@ -313,7 +331,8 @@ def validate_event(
         if reason:
             return Rejection(reason)
 
-    # Unknown fields, accel_g, and accel_window are dropped here (criteria 13, 18).
+    # Unknown fields, accel_g, and accel_window are dropped here (criteria 13, 18);
+    # alert_cancel was already rejected above if it had any unknown field.
     return ValidMessage(
         device_id=device_id,
         device_type=device_type,

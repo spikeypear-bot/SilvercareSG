@@ -36,6 +36,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] When a group gains a new action (e.g. caregivers acknowledge), the spec says what
       other users see about who did it (name, role, or nothing): that's a who-sees-what
       decision for the user.
+- [ ] A message or contract another component sends (e.g. a queue message from Track B's
+      API carrying who did something) states the checks the **sender** must make
+      (identity from the verified token, group, resident link): the receiver can't.
 - [ ] Every API route has method, path, groups, a request example, a response example
       per role, and error cases.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.

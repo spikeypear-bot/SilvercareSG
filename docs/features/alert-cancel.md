@@ -101,7 +101,9 @@ Access to a specific resident: unchanged. Caregiver and family follow-ups use th
      to build the masked name in the email; never stored, logged, or emailed in full.
    - `target`: either `{"device_id"}` (every open alert from that device, used by
      cancel) or `{"alert_id", "event_ts"}` (one alert, used by acknowledge).
-   - `changed_at` is the device's `ts` for a cancel, the API's time for an acknowledge.
+   - `changed_at` is the time AWS IoT received the cancel (the rule's `received_at`,
+     not the device's `ts`, so a wrong device clock can't skip alerts or shift the
+     expiry), and the API's time for an acknowledge.
    - `message.py` validates it; anything invalid is a failure (DLQ). Rules: a
      `resident` update must be `cancelled` with a device target and `by = null`;
      `staff`/`caregiver` updates must be `acknowledged` with an alert target, a
@@ -161,7 +163,9 @@ Access to a specific resident: unchanged. Caregiver and family follow-ups use th
     Acknowledge: `…was acknowledged by Ta* Me* Li** (staff) at …` or
     `… (caregiver) at …`, using the masked name (decisions table): each word of
     `by_name` keeps its first 2 characters and every further character becomes `*`;
-    a 1–2 character word is shown as is; words are split on spaces. Subject:
+    a 1–2 character word is shown as is; words are split on spaces.
+    Unassigned alerts (nurse follow-up only) add `Device: <device_id>` after
+    `Resident: unassigned`, or `Device: invalid` if it doesn't match the format. Subject:
     `… acknowledged` (no name). No reading or details lines.
 
 ### IAM and Terraform

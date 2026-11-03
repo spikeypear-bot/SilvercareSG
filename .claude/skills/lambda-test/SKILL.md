@@ -82,5 +82,8 @@ For alert logic: thresholds at, just below, and just above each boundary.
   parsed log records without `timestamp` and `location`, never the raw log text: a
   time like `13:33:05,187` contains `33` and `187`. Do **both**: other fields hold
   UUIDs too (`message_id`, S3 keys). Check real IDs are absent before replacing UUIDs.
+- Write invisible or control characters in tests as escapes (`"\u200b"`, `"\u202e"`),
+  and check the saved file still has the escape: some editors save the raw character,
+  which ruff rejects (PLE2502/PLE2515). Run `ruff check` on new test files.
 - One behaviour per test. Name tests after the behaviour:
   `test_duplicate_reading_is_not_written_twice`.

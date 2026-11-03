@@ -29,7 +29,9 @@ home is a registry change, not a device change.
 Worn on the wrist. Measures heart rate, SpO2, skin temperature, and 3-axis acceleration.
 Runs fall detection on the device and sends a `fall` event when it detects one; raw
 acceleration is not streamed. Also sends a `vitals_alert` at once when heart rate or
-SpO2 stays past a fixed critical limit for 10 seconds (the device safety net).
+SpO2 stays past a fixed critical limit for 10 seconds (the device safety net). Has an
+"I'm OK" button: pressing it sends an `alert_cancel`, which cancels the wearable's open
+alerts.
 
 ### Bedroom sensor (`bedroom`)
 
@@ -91,7 +93,8 @@ below.
   these (`device_id` and `message` from the topic, `received_at` from `timestamp()`), and
   a message that already has any of them is dropped by the rule, so a device can't
   claim to be another device.
-- Unknown fields are ignored. A missing required field, a wrong type, or an
+- Unknown fields are ignored, except in `alert_cancel`, which is envelope only and is
+  rejected if it has any other field. A missing required field, a wrong type, or an
   out-of-range value rejects the message: the ingest Lambda logs `device_id`,
   `message_id`, and the reason, and drops it. The raw message is still kept in S3
   history (see `docs/decisions/0001-iot-rule-routing.md`).
@@ -112,6 +115,7 @@ below.
 | wearable | `vitals` | reading | every 60 s while worn |
 | wearable | `vitals_alert` | event | when heart rate or SpO2 stays past a fixed critical limit for 10 s, then every 5 min while it lasts (only while worn) |
 | wearable | `fall` | event | when a fall is detected |
+| wearable | `alert_cancel` | event | once per "I'm OK" press (rare; presses at least 5 s apart) |
 | wearable | `status` | heartbeat | every 5 min, and immediately when `worn` or `charging` changes |
 | bedroom | `motion` | event | when motion state changes |
 | bedroom | `bed` | event | when bed occupancy changes |
@@ -251,6 +255,34 @@ of orientation, then little movement. `ts` is the time of the impact.
 }
 ```
 
+### `wearable` → `alert_cancel`
+
+Added to v1 on 2026-11-03 (docs/features/alert-cancel.md); `schema_version` stays `1`,
+because adding a message type is an addition. Sent once when the resident presses the
+wearable's "I'm OK" button. The device sends at most one per press and accepts presses
+at least 5 seconds apart, so the rate is rare. `ts` is the time of the press.
+
+Envelope only: `schema_version`, `message_id`, `ts`, and no other fields. Unlike the
+other messages, an `alert_cancel` with any other field is rejected (not ignored).
+Bedroom sensors can't send it (their device policy doesn't allow the topic).
+
+```json
+{
+  "schema_version": 1,
+  "message_id": "6d2a4c8e-1f3b-4a5d-9e7c-2b4d6f8a0c13",
+  "ts": "2026-11-03T02:00:05.000Z"
+}
+```
+
+The `alert` IoT rule routes it, with `fall` and `vitals_alert`, to `critical-alert`,
+which looks up the wearable's resident and sends a `status_update` to the alerts queue
+(contract in `docs/data-model.md`). `alert-processor` then cancels **every** alert from
+that wearable that is still `open` with `event_ts` up to the time the IoT rule
+received the press (`received_at`, server time, not the device's `ts`) (falls,
+warnings, and critical vitals alerts, including no pulse): they stop escalating, and
+caregivers (plus nurses, if already escalated to) get a short "cancelled" follow-up
+email. The message is also stored in the device's latest 5 (`MSG#alert_cancel`).
+
 ### `wearable` → `status`
 
 | Field | Type | Unit | Valid range | Description |
@@ -346,13 +378,16 @@ component raises each one is in `docs/decisions/0001-iot-rule-routing.md`.
   sent at once without waiting for the 60 s `vitals` message; a **critical** alert.
 - **Repeats:** the same alert type and severity for the same resident is emailed at
   most once per 30 minutes (`alert-processor`); falls are never held back.
+- **Cancel (built in docs/features/alert-cancel.md):** a wearable `alert_cancel`
+  cancels that wearable's open alerts up to the time the press was received
+  (`received_at`).
 - **Device problems:** device offline, low battery, wearable not worn for a long time.
 
 ## Volume
 
 | Device | Messages / day / device | × 20 |
 |---|---|---|
-| wearable | ~1,440 vitals + ~300 status + rare falls and vitals alerts ≈ 1,750 | ~35,000 |
+| wearable | ~1,440 vitals + ~300 status + rare falls, vitals alerts, and cancels ≈ 1,750 | ~35,000 |
 | bedroom | ~290 status + ~70 motion/bed ≈ 360 | ~7,200 |
 | **Total** | | **~42,000 / day ≈ 1.3 M / month** |
 
@@ -377,7 +412,8 @@ the contract does not have, change the contract first.
 
 ## Out of scope for v1
 
-- SOS / help button on the wearable.
+- SOS / help button on the wearable. (The "I'm OK" button, which only cancels the
+  wearable's open alerts with `alert_cancel`, is in v1.)
 - Commands or configuration pushed to devices.
 - Raw accelerometer streaming and cloud-side fall detection.
 - GPS or in-home room-level location (location is the home the device is registered to).

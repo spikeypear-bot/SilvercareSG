@@ -15,6 +15,7 @@ ENDPOINT ?=
 JOB ?=
 INGEST ?=
 ALERTS ?=
+CANCEL ?=
 # Local secrets (device keys and certs, the frontend .env), git-ignored. Share this one
 # folder privately with other developers (README.md, Sharing local secrets).
 SECRETS_DIR := secrets
@@ -64,5 +65,5 @@ device-keys: ## Create missing device keys + CSRs: make device-keys [DEVICE=<id>
 device-certs: ## Write secrets/device-keys/<id>.crt from secrets/device-keys/certificates.json
 	$(DEV) python scripts/device-certs.py --keys-dir $(KEYS_DIR)
 
-smoke-test: ## Test a device against AWS IoT: make smoke-test DEVICE=<id> ENDPOINT=<host> [JOB=1] [INGEST=1] [ALERTS=1]
-	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) --keys-dir $(KEYS_DIR) $(if $(JOB),--job) $(if $(INGEST),--ingest) $(if $(ALERTS),--alerts)
+smoke-test: ## Test a device against AWS IoT: make smoke-test DEVICE=<id> ENDPOINT=<host> [JOB=1] [INGEST=1] [ALERTS=1] [CANCEL=1]
+	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) --keys-dir $(KEYS_DIR) $(if $(JOB),--job) $(if $(INGEST),--ingest) $(if $(ALERTS),--alerts) $(if $(CANCEL),--cancel)

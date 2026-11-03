@@ -39,6 +39,30 @@ An unassigned alert's escalation email shows `Resident: unassigned` followed by
 `Device: <device_id>` (an opaque ID; caregiver emails never show the device), or
 `Device: invalid` if the stored device_id doesn't have the device ID format. A missing
 or unknown alert_type in an escalation email gets the label `Alert`.
+
+Follow-up emails (docs/features/alert-cancel.md, criteria 13-14), when an alert is
+cancelled or acknowledged, to caregivers and (if escalated) nurses:
+
+    Subject: SilverCare update: Fall - res-0001 cancelled
+
+    SilverCare update
+
+    The alert below was cancelled by the resident at 2026-11-03 10:00:05 SGT.
+
+    Type: Fall
+    Severity: Critical
+    Resident: res-0001
+    When: 2026-11-03 10:00:00 SGT
+
+    Open the SilverCare portal: https://<cloudfront domain>/
+
+    This is an automated message. Do not reply.
+
+An acknowledge says `was acknowledged by Ta* Me* Li** (staff) at ...` (or
+`(caregiver)`), with the masked name (mask_name), never the full name. No reading or
+details lines. A missing or unknown alert_type gets the label `Alert`. An
+unassigned alert's follow-up (nurses only) adds `Device: <device_id>` after
+`Resident: unassigned`, or `Device: invalid`, as in the escalation email.
 """
 
 from __future__ import annotations
@@ -81,6 +105,12 @@ DEFAULT_SEVERITY = "critical"
 ESCALATION_LINE = "Escalated: no response within 60 s of the first alert."
 UNASSIGNED = "unassigned"
 UNKNOWN_TYPE_LABEL = "Alert"
+
+# Follow-up emails (docs/features/alert-cancel.md, criteria 13-14).
+MASK_KEEP = 2
+MASK_CHAR = "*"
+UNKNOWN_SEVERITY_LABEL = "Unknown"
+BY_ROLE_TEXT = {"staff": "staff", "caregiver": "caregiver"}
 
 
 def _type_label(alert_type: str) -> str:
@@ -256,6 +286,72 @@ def _body(
     else:
         lines.append(_reading_line(details, severity))
     lines += [
+        "",
+        f"Open the SilverCare portal: {portal_url.rstrip('/')}/",
+        "",
+        "This is an automated message. Do not reply.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# ---- follow-up emails (docs/features/alert-cancel.md) ----
+
+
+def mask_name(name: str) -> str:
+    """PayNow-style masked name (decisions table, criterion 14): each word keeps its
+    first 2 characters and every further character becomes "*"; a 1-2 character word
+    is shown as is. Words are split on spaces; runs of spaces and leading or trailing
+    spaces are dropped. "Tan Mei Ling" -> "Ta* Me* Li**"."""
+    words = [word for word in name.split(" ") if word]
+    return " ".join(
+        word[:MASK_KEEP] + MASK_CHAR * max(len(word) - MASK_KEEP, 0) for word in words
+    )
+
+
+def follow_up_subject(alert_type: Any, resident_id: str, new_status: str) -> str:
+    """`SilverCare update: <label> - <resident_id> cancelled` (or acknowledged), no
+    name. At most 100 characters."""
+    label = _escalation_label(alert_type)
+    return f"SilverCare update: {label} - {resident_id} {new_status}"[:SUBJECT_MAX_LEN]
+
+
+def _changed_by(by_role: str, by_name: str | None) -> str:
+    """ "the resident", or the masked name plus " (staff)" / " (caregiver)"."""
+    if by_role == "resident" or by_name is None:
+        return "the resident"
+    return f"{mask_name(by_name)} ({BY_ROLE_TEXT.get(by_role, by_role)})"
+
+
+def follow_up_body(
+    item: dict[str, Any],
+    resident_id: str,
+    portal_url: str,
+    *,
+    new_status: str,
+    changed_at: datetime,
+    by_role: str,
+    by_name: str | None,
+) -> str:
+    """The follow-up body (criterion 14): who changed the alert and when, then the
+    alert's type, severity, resident, and time. No reading or details; a Device line
+    only for an unassigned alert."""
+    severity = item.get("severity") or DEFAULT_SEVERITY
+    event_dt = _parse_ts(item.get("event_ts"))
+    when = format_when(event_dt) if event_dt else "unknown time"
+    changed_by = _changed_by(by_role, by_name)
+    lines = [
+        "SilverCare update",
+        "",
+        f"The alert below was {new_status} by {changed_by} at {format_when(changed_at)}.",
+        "",
+        f"Type: {_escalation_label(item.get('alert_type'))}",
+        f"Severity: {SEVERITY_LABELS.get(severity, UNKNOWN_SEVERITY_LABEL)}",
+        f"Resident: {resident_id}",
+    ]
+    if resident_id == UNASSIGNED:
+        lines.append(_device_line(item.get("device_id")))
+    lines += [
+        f"When: {when}",
         "",
         f"Open the SilverCare portal: {portal_url.rstrip('/')}/",
         "",

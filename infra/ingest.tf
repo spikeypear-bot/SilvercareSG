@@ -17,6 +17,11 @@
 # failed async invocations and the silvercare_alert rule's failed actions go to
 # silvercare-critical-alert-dlq.
 #
+# critical-alert also handles the wearable "I'm OK" button, `alert_cancel`
+# (docs/features/alert-cancel.md): the same registry lookup, then a `status_update` to
+# the silvercare-alerts queue (alert-processor cancels the device's open alerts), then
+# the store. No new permissions: it already reads the assignment and sends to the queue.
+#
 # telemetry also runs the cloud vitals check (docs/features/vitals-alerts.md, criteria
 # 7-11): after storing a wearable `vitals`, it reads the device's assignment and the
 # resident's THRESHOLDS item in silvercare-registry and sends warnings to the alerts
@@ -47,7 +52,7 @@ locals {
     critical_alert = {
       name        = "silvercare-critical-alert"
       handler     = "handler.critical_alert_handler"
-      description = "Validates fall and vitals_alert messages, sends a critical alert to the alerts queue, and stores the latest 5 per device."
+      description = "Validates fall, vitals_alert, and alert_cancel messages, sends a critical alert or a cancel to the alerts queue, and stores the latest 5 per device."
     }
   }
 
@@ -74,8 +79,8 @@ locals {
     }
     silvercare_alert = {
       function    = "critical_alert"
-      description = "Wearable fall and vitals_alert events to silvercare-critical-alert."
-      sql         = "${local.rule_select} FROM 'silvercare/v1/+/+' WHERE (topic(4) = 'fall' OR topic(4) = 'vitals_alert') AND ${local.reserved_fields_undefined}"
+      description = "Wearable fall, vitals_alert, and alert_cancel events to silvercare-critical-alert."
+      sql         = "${local.rule_select} FROM 'silvercare/v1/+/+' WHERE (topic(4) = 'fall' OR topic(4) = 'vitals_alert' OR topic(4) = 'alert_cancel') AND ${local.reserved_fields_undefined}"
     }
   }
 }
@@ -114,7 +119,8 @@ data "aws_iam_policy_document" "ingest_latest_table" {
 
 # critical-alert only (alerts-core criterion 26): today's statement plus the registry
 # lookup (GetItem on the device's assignment item, DEVICE# partitions only) and sending
-# alert messages to the alerts queue. device-health keeps ingest_latest_table alone.
+# alert messages and cancel status_updates (alert-cancel criterion 15) to the alerts
+# queue. device-health keeps ingest_latest_table alone.
 # The module adds sending to the on-failure destination.
 data "aws_iam_policy_document" "critical_alert" {
   source_policy_documents = [data.aws_iam_policy_document.ingest_latest_table.json]
@@ -307,7 +313,8 @@ resource "aws_iot_topic_rule" "ingest" {
     use_base64 = false
   }
 
-  # silvercare_alert only (alerts-core criterion 10): a fall or vitals_alert the rule
+  # silvercare_alert only (alerts-core criterion 10): a fall, vitals_alert, or
+  # alert_cancel the rule
   # can't hand to critical-alert (or to the history queue) goes to
   # silvercare-critical-alert-dlq, whose alarm emails the team. The other rules have no error_action (no failed-message queue,
   # user's decision): if their Lambda action fails, the history action still runs, so

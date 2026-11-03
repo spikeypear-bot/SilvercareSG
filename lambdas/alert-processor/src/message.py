@@ -26,15 +26,32 @@ on the same queue, sent by alert-processor itself with a 60 s delay:
     {"kind": "escalation_check", "schema_version": 1, "alert_id": "<uuid>",
      "resident_id": "res-0003", "event_ts": "2026-10-18T03:14:07.360Z"}
 
+Status updates (docs/features/alert-cancel.md, criterion 6) are a third kind, sent
+without delay by `critical-alert` (the wearable "I'm OK" cancel) and later by Track B's
+acknowledge API:
+
+    {"kind": "status_update", "schema_version": 1, "resident_id": "res-0001",
+     "new_status": "cancelled", "changed_at": "2026-11-03T02:00:05.000Z",
+     "by_role": "resident", "by": null, "by_name": null,
+     "target": {"device_id": "wearable-0001"}}
+
+`target` is {"device_id"} (every open alert from that device) or
+{"alert_id", "event_ts"} (one alert). A `resident` update must be `cancelled` with a
+device target, `by` null and `by_name` null; a `staff` or `caregiver` update must be
+`acknowledged` with an alert target, a Cognito `sub` (UUID) as `by`, and a `by_name`
+of 1-100 characters. `by_name` is a full name: it is used only to build the masked name
+in the follow-up email and never stored or logged.
+
 A body without `kind` is an alert message. `parse_message` returns an `Alert`, an
-`EscalationCheck`, or a `Rejection`; an unknown `kind` is rejected like any invalid
-body.
+`EscalationCheck`, a `StatusUpdate`, or a `Rejection`; an unknown `kind` is rejected
+like any invalid body.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -66,6 +83,33 @@ FIELDS = (
 
 KIND_ESCALATION_CHECK = "escalation_check"
 CHECK_FIELDS = ("kind", "schema_version", "alert_id", "resident_id", "event_ts")
+
+# Status updates (docs/features/alert-cancel.md, criterion 6).
+KIND_STATUS_UPDATE = "status_update"
+KINDS = frozenset({KIND_ESCALATION_CHECK, KIND_STATUS_UPDATE})
+STATUS_UPDATE_FIELDS = (
+    "kind",
+    "schema_version",
+    "resident_id",
+    "new_status",
+    "changed_at",
+    "by_role",
+    "by",
+    "by_name",
+    "target",
+)
+STATUS_CANCELLED = "cancelled"
+STATUS_ACKNOWLEDGED = "acknowledged"
+NEW_STATUSES = frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED})
+ROLE_RESIDENT = "resident"
+ROLE_STAFF = "staff"
+ROLE_CAREGIVER = "caregiver"
+BY_ROLES = frozenset({ROLE_RESIDENT, ROLE_STAFF, ROLE_CAREGIVER})
+DEVICE_TARGET_FIELDS = frozenset({"device_id"})
+ALERT_TARGET_FIELDS = frozenset({"alert_id", "event_ts"})
+BY_NAME_MAX_LEN = 100
+# A Cognito user's sub: a UUID, lowercase.
+SUB_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
 @dataclass(frozen=True)
@@ -146,6 +190,23 @@ class EscalationCheck:
     alert_id: str
     resident_id: str
     event_ts: str
+
+
+@dataclass(frozen=True)
+class StatusUpdate:
+    """A validated status_update. Exactly one target: device_id (a cancel), or
+    alert_id + event_ts (an acknowledge). by and by_name are None for the resident."""
+
+    resident_id: str
+    new_status: str
+    changed_at: str
+    changed_dt: datetime
+    by_role: str
+    by: str | None
+    by_name: str | None
+    device_id: str | None = None
+    alert_id: str | None = None
+    event_ts: str | None = None
 
 
 def _reject_constant(value: str) -> Any:
@@ -360,6 +421,116 @@ def validate_check(body: dict) -> EscalationCheck | Rejection:
     )
 
 
+def _valid_by_name(value: Any) -> bool:
+    """1-100 characters, at least one that isn't a space, and no control or other
+    non-printing characters (they could break the email's lines)."""
+    if type(value) is not str or not 1 <= len(value) <= BY_NAME_MAX_LEN:
+        return False
+    if not value.strip():
+        return False
+    return not any(unicodedata.category(ch).startswith("C") for ch in value)
+
+
+def _check_target(target: Any) -> tuple[dict[str, str] | None, str]:
+    """(target fields, "") for a valid device or alert target, else (None, reason)."""
+    if not isinstance(target, dict):
+        return None, "wrong_type:target"
+    names = set(target)
+    if names == DEVICE_TARGET_FIELDS:
+        device_id = target["device_id"]
+        if type(device_id) is not str or not DEVICE_ID_RE.match(device_id):
+            return None, "invalid:target.device_id"
+        return {"device_id": device_id}, ""
+    if names == ALERT_TARGET_FIELDS:
+        alert_id = target["alert_id"]
+        if type(alert_id) is not str or not UUID_RE.match(alert_id):
+            return None, "invalid:target.alert_id"
+        if parse_ts(target["event_ts"]) is None:
+            return None, "invalid:target.event_ts"
+        return {"alert_id": alert_id, "event_ts": target["event_ts"]}, ""
+    return None, "invalid:target"
+
+
+def _check_role_rules(
+    by_role: str, new_status: str, target: dict[str, str], by: Any, by_name: Any
+) -> str | None:
+    """Criterion 6: what each by_role may send."""
+    if by_role == ROLE_RESIDENT:
+        if new_status != STATUS_CANCELLED:
+            return "invalid:new_status"
+        if "device_id" not in target:
+            return "invalid:target"
+        if by is not None:
+            return "invalid:by"
+        if by_name is not None:
+            return "invalid:by_name"
+        return None
+    if new_status != STATUS_ACKNOWLEDGED:
+        return "invalid:new_status"
+    if "alert_id" not in target:
+        return "invalid:target"
+    if type(by) is not str or not SUB_RE.match(by):
+        return "invalid:by"
+    if not _valid_by_name(by_name):
+        return "invalid:by_name"
+    return None
+
+
+def validate_status_update(body: dict) -> StatusUpdate | Rejection:
+    """Check a parsed body with kind status_update against its schema (criterion 6).
+    Reason codes name the field, never its value (by_name is a full name)."""
+    for name in STATUS_UPDATE_FIELDS:
+        if name not in body:
+            return Rejection(f"missing:{name}")
+    if set(body) - set(STATUS_UPDATE_FIELDS):
+        return Rejection("unknown_field")
+
+    version = body["schema_version"]
+    if type(version) is not int:
+        return Rejection("wrong_type:schema_version")
+    if version != SCHEMA_VERSION:
+        return Rejection("invalid:schema_version")
+
+    reason = _check_str(body, "resident_id", RESIDENT_ID_RE)
+    if reason:
+        return Rejection(reason)
+
+    for name, allowed in (("new_status", NEW_STATUSES), ("by_role", BY_ROLES)):
+        if type(body[name]) is not str:
+            return Rejection(f"wrong_type:{name}")
+        if body[name] not in allowed:
+            return Rejection(f"invalid:{name}")
+
+    if type(body["changed_at"]) is not str:
+        return Rejection("wrong_type:changed_at")
+    changed_dt = parse_ts(body["changed_at"])
+    if changed_dt is None:
+        return Rejection("invalid:changed_at")
+
+    target, reason = _check_target(body["target"])
+    if target is None:
+        return Rejection(reason)
+
+    role_reason = _check_role_rules(
+        body["by_role"], body["new_status"], target, body["by"], body["by_name"]
+    )
+    if role_reason:
+        return Rejection(role_reason)
+
+    return StatusUpdate(
+        resident_id=body["resident_id"],
+        new_status=body["new_status"],
+        changed_at=body["changed_at"],
+        changed_dt=changed_dt,
+        by_role=body["by_role"],
+        by=body["by"],
+        by_name=body["by_name"],
+        device_id=target.get("device_id"),
+        alert_id=target.get("alert_id"),
+        event_ts=target.get("event_ts"),
+    )
+
+
 def parse_alert(text: Any) -> Alert | Rejection:
     """Parse and validate one SQS record body as an alert message."""
     body = parse_body(text)
@@ -368,13 +539,16 @@ def parse_alert(text: Any) -> Alert | Rejection:
     return validate(body)
 
 
-def parse_message(text: Any) -> Alert | EscalationCheck | Rejection:
-    """Parse and validate one SQS record body of either kind: a body with a `kind`
-    field is an escalation check (or rejected), anything else an alert message."""
+def parse_message(text: Any) -> Alert | EscalationCheck | StatusUpdate | Rejection:
+    """Parse and validate one SQS record body of any kind: a body with `kind`
+    status_update is a status update, one with any other `kind` an escalation check
+    (or rejected), anything else an alert message."""
     body = parse_body(text)
     if body is None:
         return Rejection("invalid:json")
     if isinstance(body, dict) and "kind" in body:
+        if body["kind"] == KIND_STATUS_UPDATE:
+            return validate_status_update(body)
         return validate_check(body)
     return validate(body)
 
@@ -397,7 +571,8 @@ def log_ids(text: Any) -> dict[str, str | None]:
     """IDs for the log line of a rejected body: each only if it matches its format.
 
     Anything else is logged as "invalid" (or omitted when absent), so free text from a
-    malformed body never reaches the logs. Works for both message kinds.
+    malformed body never reaches the logs. Works for every message kind; for a status
+    update, device_id and alert_id come from `target`. Never `by` or `by_name`.
     """
     body = parse_body(text)
     body = body if isinstance(body, dict) else {}
@@ -415,7 +590,15 @@ def log_ids(text: Any) -> dict[str, str | None]:
         "device_id": pick("device_id", lambda v: bool(DEVICE_ID_RE.match(v))),
         "resident_id": pick("resident_id", lambda v: bool(RESIDENT_ID_RE.match(v))),
     }
-    # Only bodies that name a kind get the key (escalation checks or unknown kinds).
+    # Only bodies that name a kind get the key (escalation checks, status updates, or
+    # unknown kinds).
     if "kind" in body:
-        ids["kind"] = pick("kind", lambda v: v == KIND_ESCALATION_CHECK)
+        ids["kind"] = pick("kind", lambda v: v in KINDS)
+    target = body.get("target")
+    if body.get("kind") == KIND_STATUS_UPDATE and isinstance(target, dict):
+        for name, pattern in (("device_id", DEVICE_ID_RE), ("alert_id", UUID_RE)):
+            if name in target:
+                value = target[name]
+                ok = type(value) is str and pattern.match(value)
+                ids[name] = value if ok else "invalid"
     return ids
