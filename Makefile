@@ -14,12 +14,13 @@ DEVICE ?=
 ENDPOINT ?=
 JOB ?=
 INGEST ?=
+ARGS ?=
 # Local secrets (device keys and certs, the frontend .env), git-ignored. Share this one
 # folder privately with other developers (README.md, Sharing local secrets).
 SECRETS_DIR := secrets
 KEYS_DIR := $(SECRETS_DIR)/device-keys
 
-.PHONY: help build up down shell test test-integration lint fmt tf-check check device-keys device-certs smoke-test
+.PHONY: help build up down shell test test-integration lint fmt tf-check check seed-local device-keys device-certs smoke-test
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -54,6 +55,13 @@ tf-check: ## Terraform fmt check, validate, tflint, checkov (no AWS credentials 
 	$(DEV) sh docker/tf-check.sh
 
 check: test lint tf-check ## Everything above except integration tests
+
+# Seed data (docs/features/seed-data.md). The live-account seed runs on the host with your
+# own AWS credentials: python scripts/seed.py
+seed-local: DEVOPTS = -e DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+seed-local: ## Seed the registry in DynamoDB Local with synthetic data: make seed-local [ARGS=--delete]
+	$(COMPOSE) up -d --quiet-pull dynamodb-local
+	$(DEV) python scripts/seed.py --local $(ARGS)
 
 # IoT device targets (docs/features/iot-core.md). The developer runs these, not Claude:
 # they read or write the private keys in $(KEYS_DIR)/.

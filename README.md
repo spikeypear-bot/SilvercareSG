@@ -88,11 +88,16 @@ Every check should print `PASS`.
 
 Checks that messages reach the `silvercare-latest` table (`docs/features/ingest-live.md`).
 The second step reads DynamoDB, so it runs on your machine with your own AWS
-credentials, not in the dev container. Once, install its requirements on the host:
+credentials, not in the dev container. Once, install its requirements on the host. The
+scripts need Python 3.11 or newer; on macOS `python3` may be Apple's 3.9, so check
+`python3 --version` first and use a newer Python (Homebrew, conda, or python.org) if needed:
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
 ```
+
+Host scripts (`scripts/ingest-check.py`, `scripts/seed.py`) then run with
+`.venv/bin/python`.
 
 Then publish synthetic test messages as a device, and check them:
 
@@ -173,6 +178,19 @@ venv from "Checking ingest"):
 It creates synthetic residents `res-0001`–`res-0003`, assigns `wearable-000N` and
 `bedroom-000N` (N = 1–3) to `res-000N`, and adds every other device as an unassigned
 spare. Existing items are left alone (`exists`), so running it again is safe.
+
+For the full synthetic data set (20 residents with thresholds, all 40 devices assigned,
+4 test Cognito users, one per group, and their links), use `scripts/seed.py`
+(`docs/features/seed-data.md`). It asks you to type `seed`, can run before or after
+`seed-registry.py`, and writes the test users' passwords to `secrets/test-users.txt`
+(share that file privately):
+
+```sh
+.venv/bin/python scripts/seed.py                    # seed (or reset) the registry and users
+.venv/bin/python scripts/seed.py --reset-passwords  # new passwords for the 4 test users
+.venv/bin/python scripts/seed.py --delete           # remove everything the seed created
+make seed-local                                     # same data in DynamoDB Local, no AWS
+```
 
 ### Checking alerts
 

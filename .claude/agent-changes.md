@@ -3,6 +3,14 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-03
+
+- **Problem:** the live `seed-data` run stopped on 34 devices: it treated unassigned
+  spares (written by Track A's `scripts/seed-registry.py`) as "not owned", the same as
+  devices assigned to another resident. **Changed:** `.claude/agents/backend-builder.md`:
+  "not owned" means holding someone else's data; check what other scripts on `main`
+  already write.
+
 ## 2026-11-02
 
 - **Problem:** the `alerts-core` deploy failed: both SNS topic policies used `sns:*` in
@@ -32,6 +40,27 @@ a wasted step. Newest first. Review these in the diff before committing.
   line endings; it overwrote three uncommitted edits, which had to be redone.
   **Changed:** `.claude/skills/local-dev/SKILL.md`: fix CRLF per file, never suggest
   bulk checkout or reset while anything is uncommitted.
+
+## 2026-11-01
+
+- **Problem:** the rebuilt `seed-data` script crashed with `ImportError` on the user's
+  macOS `python3` (3.9) instead of explaining the version; the README said `python3`.
+  The privacy-reviewer found reserved IDs written down but not enforced, and device
+  assignments overwritten with no ownership check (medium). **Changed:**
+  `.claude/agents/backend-builder.md`: host-run scripts check Python 3.11+ first; seed
+  scripts enforce reserved ID ranges and don't overwrite items they don't own. README
+  host-script setup now states the Python version.
+
+## 2026-10-30
+
+- **Problem:** in `seed-data`, `--delete` found the seed's link items through the test
+  users' current Cognito subs, so links of a user already deleted from Cognito were left
+  behind (lambda-tester failure, privacy-reviewer low). The passwords file was rewritten,
+  then truncated in place (privacy-reviewer low). The builder's scratch check ran
+  `--delete` without `--passwords-file`, so cleanup code ran against the real default
+  path in `secrets/` (no file existed). **Changed:** `.claude/agents/backend-builder.md`:
+  scratch runs pass explicit scratch paths; script output files merge and write
+  atomically; cleanup finds its items by its own data marker.
 
 ## 2026-10-25
 
