@@ -219,7 +219,9 @@ It sends two high heart-rate `vitals` (one **warning**, "High heart rate"), a de
 high `vitals` that is suppressed (no email). Expect three emails, three new items under
 `RESIDENT#res-0001`, and the suppressed one only as `suppressed` in the
 `/aws/lambda/silvercare-alert-processor` log. Running it again within 30 minutes
-suppresses the warning and both critical alerts.
+suppresses the warning and both critical alerts. No warning email? The resident may
+have a personal limit (`THRESHOLDS#<resident>` in `silvercare-registry`) above the
+test readings (180–185 bpm): then they are normal and no warning is correct.
 
 Escalation: after any alert email, wait about a minute. Each nurse subscriber gets
 "SilverCare ESCALATED alert: …" for every alert that is still `open` (the

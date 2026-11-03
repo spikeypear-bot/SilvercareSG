@@ -24,14 +24,17 @@ checks (and the --ingest messages, if given) pass it publishes, on one more conn
 as the device, synthetic messages that exercise the vitals alerts, with all other
 fields normal:
 
-  1. vitals        hr_bpm 125                       -> past the warning limit, not yet 2
-  2. vitals        hr_bpm 128                       -> hr_high warning
+  1. vitals        hr_bpm 180                       -> past the warning limit, not yet 2
+  2. vitals        hr_bpm 185                       -> hr_high warning
   3. vitals_alert  hr_bpm 140 above 130, held 10 s  -> hr_high critical
   4. vitals_alert  hr_bpm 0 below 45, held 10 s     -> hr_low critical (no pulse)
-  5. vitals        hr_bpm 126                       -> hr_high warning, suppressed
+  5. vitals        hr_bpm 182                       -> hr_high warning, suppressed
 
-It pauses before the last message so the first warning is stored before the repeat
-arrives, then prints the message IDs and what to expect. Needs no AWS credentials.
+The vitals are well above the default limit (120) so a resident's personal limit
+(THRESHOLDS item) is unlikely to hide the warning. It pauses after the first message
+so telemetry stores it before the second arrives (two at once run in parallel and
+can't see each other), and before the last so the first warning is stored before the
+repeat. Then it prints the message IDs and what to expect. Needs no AWS credentials.
 
 With --cancel (wearables only; docs/features/alert-cancel.md, criterion 17), after the
 checks (and the --ingest and --alerts messages, if given) pass it publishes, on one
@@ -103,9 +106,15 @@ CHECK_CANCEL = "8 publish cancel test messages (PUBACK for each)"
 # --alerts (vitals-alerts criterion 27). Seconds between the messages' ts, so the
 # vitals pair is well within the cloud check's 3-minute pairing limit.
 ALERT_TS_STEP_S = 5
+# Pause after the first vitals, so telemetry has stored it before the second arrives:
+# two published together run in parallel and neither sees the other (2 in a row).
+ALERTS_PAIR_PAUSE_S = 3.0
 # Pause before the last (repeat) message, so alert-processor has stored the first
 # warning before the repeat arrives (the alerts queue is not ordered).
 ALERTS_REPEAT_PAUSE_S = 10.0
+# --alerts heart rates: well above the default limit (120), so a resident's personal
+# limit (e.g. 130) doesn't turn the warning off.
+ALERTS_HR_VALUES = (180, 185, 182)
 # The wearable's fixed vitals_alert limits (docs/metrics.md).
 DEVICE_HR_HIGH_LIMIT = 130
 DEVICE_HR_LOW_LIMIT = 45
@@ -311,9 +320,13 @@ def build_alert_messages(
         (
             "no alert yet (1 of 2)",
             "vitals",
-            build_vitals_payload(125, at(0), new_id()),
+            build_vitals_payload(ALERTS_HR_VALUES[0], at(0), new_id()),
         ),
-        ("hr_high warning", "vitals", build_vitals_payload(128, at(1), new_id())),
+        (
+            "hr_high warning",
+            "vitals",
+            build_vitals_payload(ALERTS_HR_VALUES[1], at(1), new_id()),
+        ),
         (
             "hr_high critical",
             "vitals_alert",
@@ -331,7 +344,7 @@ def build_alert_messages(
         (
             "hr_high warning, suppressed",
             "vitals",
-            build_vitals_payload(126, at(4), new_id()),
+            build_vitals_payload(ALERTS_HR_VALUES[2], at(4), new_id()),
         ),
     ]
 
@@ -362,7 +375,17 @@ def report_alerts(
     )
     print(
         "  an alert-processor log line with outcome 'suppressed' for the last"
-        " vitals; both DLQs empty.",
+        " vitals; both DLQs empty;",
+        file=out,
+    )
+    print(
+        "  about 60 s later, 3 'SilverCare ESCALATED alert' emails to the nurse"
+        " subscribers (nothing acknowledges them).",
+        file=out,
+    )
+    print(
+        "No warning email? Check the resident's THRESHOLDS item in silvercare-registry:"
+        " a personal heart-rate max above the readings makes them normal.",
         file=out,
     )
     print(
@@ -650,16 +673,20 @@ def run_ingest(
     tls: dict[str, str],
     messages: list[tuple[str, str, dict]],
     pause_before_last_s: float = 0.0,
+    pause_after_first_s: float = 0.0,
 ) -> bool:
     """Publish messages in order on one connection. True if all got PUBACK.
 
-    With pause_before_last_s, waits that long before the last message (--alerts).
+    With pause_before_last_s, waits that long before the last message (--alerts,
+    --cancel); with pause_after_first_s, that long after the first (--alerts).
     """
     conn = Connection(endpoint, device_id, tls)
     try:
         if conn.connect() != "connected":
             return False
         for i, (_, message, payload) in enumerate(messages):
+            if pause_after_first_s and i == 1:
+                time.sleep(pause_after_first_s)
             if pause_before_last_s and i == len(messages) - 1:
                 time.sleep(pause_before_last_s)
             topic = build_topic(device_id, message)
@@ -775,6 +802,7 @@ def main(argv: list[str] | None = None) -> int:
                 tls_paths,
                 alert_messages,
                 pause_before_last_s=ALERTS_REPEAT_PAUSE_S,
+                pause_after_first_s=ALERTS_PAIR_PAUSE_S,
             )
             results = [*results, (CHECK_ALERTS, published)]
             if not published:

@@ -242,11 +242,13 @@ The limits are synthetic and must be checked with a clinician before any real us
 ### Live check support
 
 27. `scripts/iot-smoke-test.py` gets `--alerts` (wearables only). After the existing
-    checks it publishes, as the device: `vitals` with `hr_bpm` 125 (warning threshold
-    crossed, not yet 2), `vitals` with `hr_bpm` 128 (→ `hr_high` warning),
+    checks it publishes, as the device: `vitals` with `hr_bpm` 180 (warning threshold
+    crossed, not yet 2), `vitals` with `hr_bpm` 185 (→ `hr_high` warning),
     `vitals_alert` `hr_bpm` 140 above 130 held 10 s (→ critical `hr_high`),
     `vitals_alert` `hr_bpm` 0 below 45 held 10 s (→ critical `hr_low`, no pulse), then
-    `vitals` with `hr_bpm` 126 (→ suppressed). All other fields normal and synthetic. It prints the
+    `vitals` with `hr_bpm` 182 (→ suppressed). (Changed 2026-11-03 from 125/128/126, which
+    a personal limit of 130 made normal; it also pauses 3 s between the first two
+    `vitals` so they aren't processed in parallel.) All other fields normal and synthetic. It prints the
     message IDs and what to expect. Needs no AWS credentials.
 
 ### Docs

@@ -39,6 +39,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] A message or contract another component sends (e.g. a queue message from Track B's
       API carrying who did something) states the checks the **sender** must make
       (identity from the verified token, group, resident link): the receiver can't.
+- [ ] Live checks (smoke tests against AWS) don't rely on shared data teammates can
+      change (e.g. thresholds: use values that fail any sensible limit), and space out
+      messages whose order matters (sent together, they run in parallel).
 - [ ] Every API route has method, path, groups, a request example, a response example
       per role, and error cases.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.

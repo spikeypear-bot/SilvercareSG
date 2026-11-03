@@ -5,6 +5,12 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-03
 
+- **Problem:** the live `--alerts` check (spec by Claude) sent heart rates 125/128 at
+  once: a teammate's personal limit of 130 made them normal, and the two readings ran
+  in parallel, so no warning came. **Changed:** `.claude/skills/feature-spec/SKILL.md`:
+  live checks avoid shared mutable data and space out order-dependent messages.
+  (Fix: `scripts/iot-smoke-test.py` now sends 180/185/182 with a 3 s pause.)
+
 - **Problem:** in `alert-cancel` tests, `\u200b`/`\u202e` escapes were saved as raw
   invisible characters, which ruff rejected, and took extra steps to repair.
   **Changed:** `.claude/skills/lambda-test/SKILL.md`: keep such characters as escapes
