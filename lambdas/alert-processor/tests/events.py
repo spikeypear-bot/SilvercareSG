@@ -161,3 +161,26 @@ def record(body: Any, message_id: str = "sqs-msg-0001") -> dict[str, Any]:
 
 def sqs_event(*records: dict[str, Any]) -> dict[str, Any]:
     return {"Records": list(records)}
+
+
+def check_message(**overrides: Any) -> dict[str, Any]:
+    """A valid escalation check (docs/features/escalation.md, criterion 1) for the
+    default alert. Pass a field as DELETE to remove it."""
+    body: dict[str, Any] = {
+        "kind": "escalation_check",
+        "schema_version": 1,
+        "alert_id": ALERT_ID,
+        "resident_id": RESIDENT,
+        "event_ts": EVENT_TS,
+    }
+    for name, value in overrides.items():
+        if value is DELETE:
+            body.pop(name, None)
+        else:
+            body[name] = value
+    return body
+
+
+def check_body(**overrides: Any) -> str:
+    """The check's SQS body text, compact JSON as alert-processor sends it."""
+    return json.dumps(check_message(**overrides), separators=(",", ":"))

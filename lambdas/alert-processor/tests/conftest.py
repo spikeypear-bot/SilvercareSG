@@ -3,7 +3,8 @@
 Fake AWS credentials and env vars are set before anything imports boto3, so no test
 can reach real AWS. `aws` starts moto and creates silvercare-alerts and
 silvercare-latest (keys and indexes as infra/dynamodb.tf), the history bucket, and the
-alerts SNS topic.
+alerts and nurses SNS topics, and the silvercare-alerts SQS queue (escalation checks are
+sent to it; docs/features/escalation.md).
 """
 
 from __future__ import annotations
@@ -32,6 +33,13 @@ os.environ.setdefault("HISTORY_BUCKET", "silvercare-history-test")
 # Replaced by the moto topic's ARN in the aws fixture.
 os.environ.setdefault(
     "ALERTS_TOPIC_ARN", "arn:aws:sns:ap-southeast-1:123456789012:silvercare-alerts"
+)
+os.environ.setdefault(
+    "NURSES_TOPIC_ARN", "arn:aws:sns:ap-southeast-1:123456789012:silvercare-nurses"
+)
+os.environ.setdefault(
+    "ALERTS_QUEUE_URL",
+    "https://sqs.ap-southeast-1.amazonaws.com/123456789012/silvercare-alerts",
 )
 os.environ.setdefault("PORTAL_URL", "https://d0000example.cloudfront.net")
 os.environ.setdefault("POWERTOOLS_SERVICE_NAME", "silvercare-alert-processor-test")
@@ -126,26 +134,56 @@ class SnsRecorder:
         return getattr(self._client, name)
 
 
+class SqsRecorder:
+    """Wraps the moto SQS client and keeps every send_message call's arguments."""
+
+    def __init__(self, client) -> None:
+        self._client = client
+        self.sends: list[dict] = []
+
+    def send_message(self, **kwargs):
+        self.sends.append(kwargs)
+        return self._client.send_message(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
 @dataclass
 class Aws:
     ddb: object
     s3: object
     sns: SnsRecorder
     topic_arn: str
+    sqs: SqsRecorder
+    queue_url: str
+    nurses_topic_arn: str
+
+    def alert_publishes(self) -> list[dict]:
+        return [p for p in self.sns.publishes if p["TopicArn"] == self.topic_arn]
+
+    def nurse_publishes(self) -> list[dict]:
+        return [p for p in self.sns.publishes if p["TopicArn"] == self.nurses_topic_arn]
 
 
 def _clear_clients() -> None:
     import handler
 
     # At teardown a test's monkeypatch may still replace a client function.
-    for fn in (handler.dynamodb_client, handler.s3_client, handler.sns_client):
+    for fn in (
+        handler.dynamodb_client,
+        handler.s3_client,
+        handler.sns_client,
+        handler.sqs_client,
+    ):
         if hasattr(fn, "cache_clear"):
             fn.cache_clear()
 
 
 @pytest.fixture
 def aws(monkeypatch):
-    """moto with both tables, the bucket, and the topic. SNS publishes are recorded."""
+    """moto with both tables, the bucket, both topics, and the alerts queue. SNS
+    publishes and SQS sends are recorded."""
     import handler
     from moto import mock_aws
 
@@ -161,9 +199,24 @@ def aws(monkeypatch):
         sns = boto3.client("sns", region_name=REGION)
         topic_arn = sns.create_topic(Name="silvercare-alerts")["TopicArn"]
         monkeypatch.setenv("ALERTS_TOPIC_ARN", topic_arn)
+        nurses_topic_arn = sns.create_topic(Name="silvercare-nurses")["TopicArn"]
+        monkeypatch.setenv("NURSES_TOPIC_ARN", nurses_topic_arn)
         recorder = SnsRecorder(sns)
         monkeypatch.setattr(handler, "sns_client", lambda: recorder)
-        yield Aws(ddb=ddb, s3=s3, sns=recorder, topic_arn=topic_arn)
+        sqs = boto3.client("sqs", region_name=REGION)
+        queue_url = sqs.create_queue(QueueName="silvercare-alerts")["QueueUrl"]
+        monkeypatch.setenv("ALERTS_QUEUE_URL", queue_url)
+        sqs_recorder = SqsRecorder(sqs)
+        monkeypatch.setattr(handler, "sqs_client", lambda: sqs_recorder)
+        yield Aws(
+            ddb=ddb,
+            s3=s3,
+            sns=recorder,
+            topic_arn=topic_arn,
+            sqs=sqs_recorder,
+            queue_url=queue_url,
+            nurses_topic_arn=nurses_topic_arn,
+        )
     _clear_clients()
 
 

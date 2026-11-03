@@ -8,6 +8,14 @@
 # resident's subscribers through the silvercare-alerts SNS topic, filtered by
 # resident_id.
 #
+# Escalation (docs/features/escalation.md): after emailing (or storing an unassigned
+# alert), alert-processor sends an escalation check back to silvercare-alerts with a
+# per-message DelaySeconds of 60 (the queue's own delay stays 0). 60 s later it reads
+# the alert again and, if it is still open and not yet escalated, emails every nurse
+# subscriber through the silvercare-nurses SNS topic (no filter: staff see every
+# resident). No extra queue, function, mapping, or alarm: failed checks reach
+# silvercare-alerts-dlq and its alarm like failed alerts.
+#
 # No critical alert may be lost on the way: critical-alert's failed async invocations
 # and the silvercare_alert rule's failed actions go to silvercare-critical-alert-dlq,
 # and alert messages that fail 5 receives go to silvercare-alerts-dlq. A CloudWatch
@@ -19,7 +27,8 @@
 # fall and vitals_alert payloads. Retention: alerts queue 4 days, DLQs 14 days, S3
 # alerts/ no expiry until Open decision #4 (retention).
 #
-# Cost: pay per use only, no fixed fees. SNS (1,000 emails/month free) and Lambda stay
+# Cost: pay per use only, no fixed fees. SNS (1,000 emails/month free, shared by the
+# alert and nurse emails) and Lambda stay
 # within the always-free tiers at a few alerts a day; 2 of the 10 free alarms; 1 of the
 # 10 free custom metrics; the AWS managed SNS key has no monthly fee. SQS: the
 # alert-processor trigger long-polls silvercare-alerts all the time, even when idle
@@ -42,7 +51,7 @@ locals {
   # Per-DLQ alarm text. silvercare-critical-alert-dlq holds Lambda on-failure records
   # and IoT rule error payloads, which have no source queue to redrive to.
   dlq_alarm_descriptions = {
-    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed. Inspect it, fix the cause, and redrive it to silvercare-alerts."
+    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed, or an escalation_check may not have emailed the nurses. Inspect it, fix the cause, and redrive it to silvercare-alerts. escalation_check messages are skipped as stale once 15 minutes have passed since the alert was stored, so redriving one later sends no nurse email."
     critical_alert_dlq = "silvercare-critical-alert-dlq has at least one message: a fall or device vitals_alert may not have become an alert. Inspect it, then replay the original payload manually (it cannot be redriven)."
   }
 }
@@ -120,8 +129,9 @@ data "aws_iam_policy_document" "alerts_queue" {
   # No "only the detectors may send" Deny (user's decision, 2026-11-02): a DLQ redrive
   # sends with the operator's own credentials, and such a Deny would block it even for
   # admins and root. Sending is limited by IAM instead: the critical-alert and
-  # telemetry role policies (ingest.tf) grant it, and the shared developer user has no
-  # SQS permissions.
+  # telemetry role policies (ingest.tf) and the alert-processor role policy (below, for
+  # its delayed escalation checks) grant it, and the shared developer user has no SQS
+  # permissions.
 }
 
 resource "aws_sqs_queue_policy" "alerts" {
@@ -240,6 +250,12 @@ locals {
     "sns:SetTopicAttributes",
     "sns:Subscribe",
   ]
+
+  # The only principal allowed to subscribe to the alerts and nurses topics
+  # (escalation criterion 14a): subscriptions come from Terraform only. The deploy
+  # role silvercare-cicd was made by hand and is not in Terraform (CLAUDE.md,
+  # Deployment; iam-policy skill), so its ARN is built from the account ID.
+  deploy_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/silvercare-cicd"
 }
 
 data "aws_iam_policy_document" "alerts_topic" {
@@ -258,6 +274,27 @@ data "aws_iam_policy_document" "alerts_topic" {
       test     = "StringNotEquals"
       variable = "aws:PrincipalArn"
       values   = [module.alert_processor.role_arn]
+    }
+  }
+
+  # Subscriptions only through Terraform: the deploy role may subscribe, nobody else
+  # (escalation criterion 14a). Existing subscriptions and "Confirm subscription"
+  # links are not affected.
+  statement {
+    sid       = "DenySubscribeFromOthers"
+    effect    = "Deny"
+    actions   = ["sns:Subscribe"]
+    resources = [aws_sns_topic.alerts.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.deploy_role_arn]
     }
   }
 
@@ -298,6 +335,93 @@ resource "aws_sns_topic_subscription" "alert_email" {
   filter_policy = jsonencode({
     resident_id = each.value.resident_ids
   })
+}
+
+# ---------------------------------------------------------------------------------------
+# SNS: nurse escalation emails (docs/features/escalation.md, criteria 11-12)
+# ---------------------------------------------------------------------------------------
+
+# Alerts still open 60 s after the first notification (or after being stored, for
+# unassigned devices). Carries the same health data as silvercare-alerts.
+resource "aws_sns_topic" "nurses" {
+  name = "silvercare-nurses"
+  # AWS managed key: free, no key policy to maintain.
+  kms_master_key_id = "alias/aws/sns"
+}
+
+# Only alert-processor may publish, only the deploy role may subscribe, and nothing
+# without TLS. Same pattern and reasons as
+# the alerts topic policy above (Deny on aws:PrincipalArn, no Allow naming the role).
+data "aws_iam_policy_document" "nurses_topic" {
+  statement {
+    sid       = "DenyPublishFromOthers"
+    effect    = "Deny"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.nurses.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [module.alert_processor.role_arn]
+    }
+  }
+
+  # Subscriptions only through Terraform, as for the alerts topic (criterion 14a).
+  statement {
+    sid       = "DenySubscribeFromOthers"
+    effect    = "Deny"
+    actions   = ["sns:Subscribe"]
+    resources = [aws_sns_topic.nurses.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.deploy_role_arn]
+    }
+  }
+
+  statement {
+    sid       = "DenyInsecureTransport"
+    effect    = "Deny"
+    actions   = local.sns_topic_actions
+    resources = [aws_sns_topic.nurses.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "nurses" {
+  arn    = aws_sns_topic.nurses.arn
+  policy = data.aws_iam_policy_document.nurses_topic.json
+}
+
+# One email subscription per label, no filter policy: nurses are staff and see every
+# resident. The subscriber confirms by clicking the link in AWS's confirmation email.
+resource "aws_sns_topic_subscription" "nurse_email" {
+  for_each = toset(var.nurse_subscribers)
+
+  topic_arn = aws_sns_topic.nurses.arn
+  protocol  = "email"
+  endpoint  = var.subscriber_emails[each.key]
 }
 
 # ---------------------------------------------------------------------------------------
@@ -430,21 +554,31 @@ data "archive_file" "alert_processor" {
 }
 
 # What the function does with AWS: the event source mapping polls silvercare-alerts with
-# the function's role (receive, delete, read attributes); the code does a Query of the
-# resident's recent alerts (repeat suppression, pattern 7; vitals-alerts criterion 24),
-# a conditional PutItem, a GetItem on a retry, and one UpdateItem (notified_at) on its
-# alert in silvercare-alerts (base table, RESIDENT# partitions only); a GetItem on the
-# device's vitals item in silvercare-latest; a PutObject under alerts/; and an SNS
-# Publish to the alerts topic. Nothing else: no indexes, no Scan/DeleteItem, no other
-# prefixes or reads in S3. No KMS
-# permissions: the topic uses the AWS managed key aws/sns, whose key policy already
-# lets SNS use it for principals in this account (the iam-policy skill asks for KMS
-# grants only for customer-managed keys). The module adds the log group permissions.
+# the function's role (receive, delete, read attributes); the code sends the delayed
+# escalation check back to silvercare-alerts (SendMessage, escalation criterion 13);
+# it does a Query of the resident's recent alerts (repeat suppression, pattern 7;
+# vitals-alerts criterion 24), a conditional PutItem, a GetItem on a retry or for an
+# escalation check (pattern 23), and conditional UpdateItems (notified_at,
+# escalation_queued_at, escalated_at) on its alert in silvercare-alerts (base table,
+# RESIDENT# partitions only); a GetItem on the device's vitals item in
+# silvercare-latest; a PutObject under alerts/; and an SNS Publish to the alerts and
+# nurses topics. Nothing else: no indexes, no Scan/DeleteItem, no other prefixes or
+# reads in S3. No KMS permissions: both topics use the AWS managed key aws/sns, whose
+# key policy already lets SNS use it for principals in this account (the iam-policy
+# skill asks for KMS grants only for customer-managed keys). The module adds the log
+# group permissions.
 data "aws_iam_policy_document" "alert_processor" {
   statement {
     sid       = "AlertsQueue"
     effect    = "Allow"
     actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+    resources = [aws_sqs_queue.alerts.arn]
+  }
+
+  statement {
+    sid       = "AlertsQueueEscalationChecks"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
     resources = [aws_sqs_queue.alerts.arn]
   }
 
@@ -487,13 +621,20 @@ data "aws_iam_policy_document" "alert_processor" {
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.alerts.arn]
   }
+
+  statement {
+    sid       = "NursesTopic"
+    effect    = "Allow"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.nurses.arn]
+  }
 }
 
 module "alert_processor" {
   source = "./modules/python-lambda"
 
   function_name = local.alert_processor_function_name
-  description   = "Stores alerts from the silvercare-alerts queue in DynamoDB and S3 and emails subscribers through SNS."
+  description   = "Stores alerts from the silvercare-alerts queue in DynamoDB and S3, emails subscribers through SNS, and escalates unanswered alerts to nurses."
   handler       = "handler.lambda_handler"
   zip_path      = data.archive_file.alert_processor.output_path
   zip_hash      = data.archive_file.alert_processor.output_base64sha256
@@ -506,6 +647,8 @@ module "alert_processor" {
     LATEST_TABLE                 = module.latest_table.name
     HISTORY_BUCKET               = aws_s3_bucket.history.bucket
     ALERTS_TOPIC_ARN             = aws_sns_topic.alerts.arn
+    ALERTS_QUEUE_URL             = aws_sqs_queue.alerts.url
+    NURSES_TOPIC_ARN             = aws_sns_topic.nurses.arn
     PORTAL_URL                   = "https://${aws_cloudfront_distribution.frontend.domain_name}"
     POWERTOOLS_SERVICE_NAME      = local.alert_processor_function_name
     POWERTOOLS_METRICS_NAMESPACE = "SilverCare"

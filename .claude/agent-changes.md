@@ -5,6 +5,13 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-03
 
+- **Problem:** the `escalation` spec (written by Claude) let caregivers acknowledge
+  without saying what others see about who acknowledged (privacy-reviewer, medium), and
+  didn't say what a check redriven from the DLQ hours later does (iac-reviewer, low).
+  **Changed:** `.claude/skills/feature-spec/SKILL.md` (readiness check: what others see
+  about a new action) and `.claude/skills/lambda-python/SKILL.md` (decide late-message
+  behaviour for time-bound notifications).
+
 - **Problem:** Claude edited a test with a Python one-off script, which skips the format
   hook, so the user's lint check failed. **Changed:** `.claude/skills/local-dev/SKILL.md`:
   run `ruff format` after shell-script edits.

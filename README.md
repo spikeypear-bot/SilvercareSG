@@ -129,7 +129,9 @@ become a **warning**, sent by `telemetry`. `alert-processor` holds back repeats 
 resident, type, and severity within 30 minutes), stores the alert in
 `silvercare-alerts`, archives it in S3 `alerts/`, and emails the resident's
 subscribers. The specs are `docs/features/alerts-core.md` and
-`docs/features/vitals-alerts.md`.
+`docs/features/vitals-alerts.md`. If an alert is still open 60 s after the first
+email (nobody acknowledged or cancelled it), `alert-processor` emails the nurse
+subscribers too ("ESCALATED"; `docs/features/escalation.md`).
 
 ### Subscribers
 
@@ -138,9 +140,10 @@ privately with the rest of `secrets/`:
 
 ```json
 {
-  "subscriber_emails": { "family-c1": "you@example.com", "ops-1": "you@example.com" },
+  "subscriber_emails": { "family-c1": "you@example.com", "ops-1": "you@example.com", "nurse-1": "you@example.com" },
   "alert_subscribers": { "family-c1": { "resident_ids": ["res-0001"] } },
-  "ops_subscribers": ["ops-1"]
+  "ops_subscribers": ["ops-1"],
+  "nurse_subscribers": ["nurse-1"]
 }
 ```
 
@@ -152,6 +155,7 @@ Secrets and variables → Actions), each as compact JSON:
 | `SUBSCRIBER_EMAILS` | secret | `subscriber_emails` (label → email) |
 | `ALERT_SUBSCRIBERS` | variable | `alert_subscribers` (label → resident IDs) |
 | `OPS_SUBSCRIBERS` | variable | `ops_subscribers` (labels that get DLQ alarm emails) |
+| `NURSE_SUBSCRIBERS` | variable | `nurse_subscribers` (labels that get escalated alerts for every resident) |
 
 - Labels appear in the public plan comment: use `family-c1`, `ops-1`, never names.
 - Use team addresses, not real family members': emails are stored in the Terraform
@@ -216,3 +220,17 @@ high `vitals` that is suppressed (no email). Expect three emails, three new item
 `RESIDENT#res-0001`, and the suppressed one only as `suppressed` in the
 `/aws/lambda/silvercare-alert-processor` log. Running it again within 30 minutes
 suppresses the warning and both critical alerts.
+
+Escalation: after any alert email, wait about a minute. Each nurse subscriber gets
+"SilverCare ESCALATED alert: …" for every alert that is still `open` (the
+`/aws/lambda/silvercare-alert-processor` log shows `escalated`). To check that an
+acknowledged alert doesn't escalate, send a fall (`INGEST=1`), then within 60 s open
+its item in DynamoDB → `silvercare-alerts` and set `status` to `acknowledged`: no
+nurse email, and the log shows `not_escalated` with reason `status:acknowledged`. If an
+escalation fails (an AWS error), it is retried after 3 minutes, so the nurse email
+can arrive about 4 minutes late; after 5 failures it lands in `silvercare-alerts-dlq`
+(alarm email). A check older than 15 minutes, e.g. one redriven from the DLQ later,
+emails nobody (`not_escalated`, reason `stale`).
+
+Subscriptions to `silvercare-alerts` and `silvercare-nurses` can only be added by the
+deploy (Terraform); adding one in the console is denied on purpose.

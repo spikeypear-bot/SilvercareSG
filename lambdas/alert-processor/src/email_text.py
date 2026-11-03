@@ -2,7 +2,8 @@
 docs/features/vitals-alerts.md, criteria 21-22).
 
 Plain text. Times in Singapore time (SGT, UTC+8, no daylight saving) only.
-No names, no device ID, no email addresses. Pure functions, no AWS calls.
+No names, no email addresses, and no device ID except in the escalation email of an
+unassigned alert (below). Pure functions, no AWS calls.
 
     Subject: SilverCare CRITICAL alert: Fall - res-0003
 
@@ -27,6 +28,17 @@ Vitals alerts replace the two fall lines with one reading line:
 
 Warnings have the subject `SilverCare alert: <label> - <resident_id>`, critical alerts
 `SilverCare CRITICAL alert: <label> - <resident_id>`.
+
+Nurse escalation emails (docs/features/escalation.md, criteria 9-10) have the subject
+`SilverCare ESCALATED alert: <label> - <resident_id>` for both severities, and the same
+body with one line after Severity:
+
+    Escalated: no response within 60 s of the first alert.
+
+An unassigned alert's escalation email shows `Resident: unassigned` followed by
+`Device: <device_id>` (an opaque ID; caregiver emails never show the device), or
+`Device: invalid` if the stored device_id doesn't have the device ID format. A missing
+or unknown alert_type in an escalation email gets the label `Alert`.
 """
 
 from __future__ import annotations
@@ -34,6 +46,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+
+from message import DEVICE_ID_RE
 
 # Singapore has been UTC+8 all year since 1982. A fixed offset avoids depending on the
 # runtime's time zone database.
@@ -62,6 +76,11 @@ NO_PULSE_VALUE = 0
 
 # Alert items stored before severity existed are all falls, which are critical.
 DEFAULT_SEVERITY = "critical"
+
+# Nurse escalation emails (docs/features/escalation.md, criteria 9-10).
+ESCALATION_LINE = "Escalated: no response within 60 s of the first alert."
+UNASSIGNED = "unassigned"
+UNKNOWN_TYPE_LABEL = "Alert"
 
 
 def _type_label(alert_type: str) -> str:
@@ -172,22 +191,67 @@ def _reading_line(details: dict[str, Any], severity: str) -> str:
     )
 
 
+def escalation_subject(alert_type: str, resident_id: str) -> str:
+    """Nurse email subject, both severities (escalation criterion 9). At most 100
+    characters."""
+    label = _escalation_label(alert_type)
+    return f"SilverCare ESCALATED alert: {label} - {resident_id}"[:SUBJECT_MAX_LEN]
+
+
+def _escalation_label(alert_type: Any) -> str:
+    """The type label, or "Alert" for a missing or unknown alert_type (a hand-edited
+    item still escalates, criterion 10)."""
+    if isinstance(alert_type, str) and alert_type in TYPE_LABELS:
+        return TYPE_LABELS[alert_type]
+    return UNKNOWN_TYPE_LABEL
+
+
+def _device_line(device_id: Any) -> str:
+    """Device: <device_id> only if it has the device ID format, else "invalid"."""
+    ok = isinstance(device_id, str) and DEVICE_ID_RE.match(device_id)
+    return f"Device: {device_id if ok else 'invalid'}"
+
+
 def body(item: dict[str, Any], resident_id: str, portal_url: str) -> str:
     """The email body for a stored alert item (the item has no resident_id attribute;
     it is in the key)."""
-    details = item.get("details") or {}
+    return _body(item, resident_id, portal_url, escalated=False)
+
+
+def escalation_body(item: dict[str, Any], resident_id: str, portal_url: str) -> str:
+    """The nurse email body (escalation criterion 10): the caregiver body with the
+    escalation line after Severity, and, for an unassigned alert, a Device line (an
+    opaque ID nurses need to find the device)."""
+    return _body(item, resident_id, portal_url, escalated=True)
+
+
+def _body(
+    item: dict[str, Any], resident_id: str, portal_url: str, *, escalated: bool
+) -> str:
+    details = item.get("details")
+    details = details if isinstance(details, dict) else {}
     severity = item.get("severity") or DEFAULT_SEVERITY
     event_dt = _parse_ts(item.get("event_ts"))
     when = format_when(event_dt) if event_dt else "unknown time"
+    if escalated:
+        alert_type = item.get("alert_type")
+        label = _escalation_label(alert_type)
+    else:
+        alert_type = item["alert_type"]
+        label = _type_label(alert_type)
     lines = [
         "SilverCare alert",
         "",
-        f"Type: {_type_label(item['alert_type'])}",
+        f"Type: {label}",
         f"Severity: {_severity_label(severity)}",
-        f"Resident: {resident_id}",
-        f"When: {when}",
     ]
-    if item["alert_type"] == "fall":
+    if escalated:
+        lines.append(ESCALATION_LINE)
+    lines.append(f"Resident: {resident_id}")
+    if escalated and resident_id == UNASSIGNED:
+        lines.append(_device_line(item.get("device_id")))
+    lines.append(f"When: {when}")
+    if alert_type == "fall":
         lines += [_fall_details_line(details), _vitals_line(details)]
     else:
         lines.append(_reading_line(details, severity))
