@@ -80,6 +80,7 @@ jobs:
           TF_VAR_subscriber_emails: ${{ secrets.SUBSCRIBER_EMAILS || '{}' }}
           TF_VAR_alert_subscribers: ${{ vars.ALERT_SUBSCRIBERS || '{}' }}
           TF_VAR_ops_subscribers: ${{ vars.OPS_SUBSCRIBERS || '[]' }}
+          TF_VAR_nurse_subscribers: ${{ vars.NURSE_SUBSCRIBERS || '[]' }}
         run: terraform plan -lock=false -no-color -out=tfplan > /dev/null 2> plan-stderr.txt
 
       - name: Summarise plan

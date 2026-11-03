@@ -33,6 +33,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] Every acceptance criterion is testable: a tester could write a pass/fail test for it.
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
       **specific resident** is decided.
+- [ ] When a group gains a new action (e.g. caregivers acknowledge), the spec says what
+      other users see about who did it (name, role, or nothing): that's a who-sees-what
+      decision for the user.
 - [ ] Every API route has method, path, groups, a request example, a response example
       per role, and error cases.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.

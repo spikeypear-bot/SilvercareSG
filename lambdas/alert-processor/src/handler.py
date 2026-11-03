@@ -28,10 +28,25 @@ For each record:
    resident_id message attribute (subscriptions filter on it), log and emit the
    dispatch latency, then set notified_at once. A crash between Publish and the update
    sends the email again on retry: a duplicate is accepted, a missing one isn't.
+5. Queue the escalation check (docs/features/escalation.md, criteria 2-4): after step
+   4 for an assigned alert, after step 2 for an unassigned one, if the item is open and
+   has no escalation_queued_at: SendMessage the check to this same queue with
+   DelaySeconds 60, then set escalation_queued_at once. A failed send fails the record;
+   the retry doesn't email again (notified_at is set). A crash between the send and the
+   update can queue a second check, which the check handling below makes harmless.
+
+Escalation checks (docs/features/escalation.md, criteria 5-8), 60 s later, skip the
+repeat check: strongly consistent GetItem of the alert (pattern 23). No item: failure.
+A present status other than open (acknowledged, cancelled, resolved): not_escalated;
+a missing status escalates (fail-safe). escalated_at
+already set: duplicate. More than 15 minutes after created_at: not_escalated, reason
+stale (an invalid created_at is not stale). Otherwise Publish to the nurses topic, then set escalated_at
+once (a failed condition after the Publish is a duplicate). status stays open.
 
 Any AWS error fails only that record. Logs hold one line per record with alert_id,
 alert_type, severity, device_id, resident_id, and the outcome (plus a reason or error
-code), never details, vitals, limits, email addresses, or the email body.
+code; checks add kind and escalation_delay_ms), never details, vitals, limits, email
+addresses, or the email body.
 """
 
 from __future__ import annotations
@@ -50,7 +65,20 @@ from aws_lambda_powertools.metrics import EphemeralMetrics, MetricUnit
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from message import UNASSIGNED, Alert, Rejection, log_ids, parse_alert, parse_ts
+from message import (
+    ALERT_TYPES,
+    DEVICE_ID_RE,
+    KIND_ESCALATION_CHECK,
+    SEVERITIES,
+    UNASSIGNED,
+    Alert,
+    EscalationCheck,
+    Rejection,
+    check_body,
+    log_ids,
+    parse_message,
+    parse_ts,
+)
 
 # The service name comes from POWERTOOLS_SERVICE_NAME, set by Terraform.
 logger = Logger()
@@ -71,6 +99,17 @@ SKIPPED_UNASSIGNED = "skipped_unassigned"
 SUPPRESSED = "suppressed"
 INVALID = "invalid"
 ERROR = "error"
+
+# Escalation (docs/features/escalation.md).
+ESCALATION_DELAY_S = 60
+STATUS_OPEN = "open"
+STALE_AFTER = timedelta(minutes=15)
+STALE = "stale"
+ESCALATED = "escalated"
+NOT_ESCALATED = "not_escalated"
+# Status values logged as they are; anything else is logged as "other", so a free-text
+# value written by mistake never reaches the logs.
+KNOWN_STATUSES = frozenset({"open", "acknowledged", "cancelled", "resolved"})
 
 _serializer = TypeSerializer()
 _deserializer = TypeDeserializer()
@@ -98,6 +137,11 @@ def s3_client() -> Any:
 @cache
 def sns_client() -> Any:
     return boto3.client("sns")
+
+
+@cache
+def sqs_client() -> Any:
+    return boto3.client("sqs")
 
 
 # ---- pure helpers ----
@@ -212,6 +256,57 @@ def archive_body(item: dict[str, Any]) -> bytes:
 
 def latency_ms(received_dt: datetime, published_dt: datetime) -> int:
     return round((published_dt - received_dt).total_seconds() * 1000)
+
+
+def needs_escalation_check(item: dict[str, Any]) -> bool:
+    """Criteria 3-4: queue a check only for an open item that has none queued yet."""
+    return item.get("status") == STATUS_OPEN and "escalation_queued_at" not in item
+
+
+def check_key(check: EscalationCheck) -> dict[str, str]:
+    return {
+        "pk": f"RESIDENT#{check.resident_id}",
+        "sk": f"ALERT#{check.event_ts}#{check.alert_id}",
+    }
+
+
+def status_reason(status: Any) -> str:
+    """Reason for the not_escalated log line: "status:<value>" for a known status,
+    "status:other" for any other present value (masked: it could be free text)."""
+    if isinstance(status, str) and status in KNOWN_STATUSES:
+        return f"status:{status}"
+    return "status:other"
+
+
+def escalation_decision(
+    item: dict[str, Any], now: datetime | None = None
+) -> tuple[str, str | None] | None:
+    """Criterion 5: (outcome, reason) when the check sends no email, None to escalate.
+
+    Order: status, then escalated_at, then staleness (`now` defaults to the current
+    time).
+    """
+    now = now or datetime.now(UTC)
+    status = item.get("status")
+    # Fail-safe: a missing status escalates. Only a present value other than "open"
+    # (acknowledged, cancelled, resolved, or anything else) stops it.
+    if status is not None and status != STATUS_OPEN:
+        return NOT_ESCALATED, status_reason(status)
+    if "escalated_at" in item:
+        return DUPLICATE, None
+    # A check handled long after the alert was stored (e.g. redriven from the DLQ)
+    # emails nobody. An invalid created_at is not treated as stale (fail-safe).
+    created_dt = parse_ts(item.get("created_at"))
+    if created_dt is not None and now - created_dt > STALE_AFTER:
+        return NOT_ESCALATED, STALE
+    return None
+
+
+def escalation_delay_ms(item: dict[str, Any], published_dt: datetime) -> int | None:
+    """Criterion 7: Publish time minus notified_at, or minus created_at when there is
+    no notified_at (unassigned alerts). None if neither is a valid timestamp."""
+    start = parse_ts(item.get("notified_at")) or parse_ts(item.get("created_at"))
+    return latency_ms(start, published_dt) if start else None
 
 
 def _serialize(item: dict[str, Any]) -> dict[str, Any]:
@@ -366,8 +461,35 @@ def notify(alert: Alert, item: dict[str, Any]) -> int:
     return latency
 
 
+def queue_escalation_check(alert: Alert, item: dict[str, Any]) -> None:
+    """Step 5: send the delayed check, then set escalation_queued_at once.
+
+    Send first: if the send fails the record fails and is retried; if the update fails
+    after a successful send, the retry may queue a second check (harmless, criterion 6).
+    """
+    if not needs_escalation_check(item):
+        return
+    sqs_client().send_message(
+        QueueUrl=os.environ["ALERTS_QUEUE_URL"],
+        MessageBody=check_body(alert.alert_id, alert.resident_id, alert.event_ts),
+        DelaySeconds=ESCALATION_DELAY_S,
+    )
+    try:
+        dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression="SET escalation_queued_at = :now",
+            ConditionExpression="attribute_not_exists(escalation_queued_at)",
+            ExpressionAttributeValues={":now": {"S": format_iso_ms(datetime.now(UTC))}},
+        )
+    except ClientError as exc:
+        # Another delivery already queued a check and set it: nothing more to do.
+        if not _is_condition_failure(exc):
+            raise
+
+
 def process(alert: Alert) -> tuple[str, int | None]:
-    """Steps 0b-4 for one valid alert. Returns (outcome, dispatch latency or None)."""
+    """Steps 0b-5 for one valid alert. Returns (outcome, dispatch latency or None)."""
     if alert.alert_type not in NEVER_SUPPRESSED and is_repeat(
         alert, recent_alerts(alert)
     ):
@@ -383,22 +505,129 @@ def process(alert: Alert) -> tuple[str, int | None]:
     archive_alert(alert, item)
 
     if alert.resident_id == UNASSIGNED:
+        queue_escalation_check(alert, item)
         return (SKIPPED_UNASSIGNED if outcome == STORED else DUPLICATE), None
     if "notified_at" in item:
+        # A retry after the email went out (e.g. the check's send failed last time).
+        queue_escalation_check(alert, item)
         return outcome, None
-    return NOTIFIED, notify(alert, item)
+    latency = notify(alert, item)
+    queue_escalation_check(alert, item)
+    return NOTIFIED, latency
+
+
+# ---- escalation checks ----
+
+
+def read_alert(check: EscalationCheck) -> dict[str, Any]:
+    """The alert item the check points to (pattern 23), strongly consistent, so a
+    status change made just before is seen. A missing item fails the record."""
+    key = check_key(check)
+    response = dynamodb_client().get_item(
+        TableName=os.environ["ALERTS_TABLE"],
+        Key={"pk": {"S": key["pk"]}, "sk": {"S": key["sk"]}},
+        ConsistentRead=True,
+    )
+    if "Item" not in response:
+        raise RuntimeError("alert item missing for escalation check")
+    return _deserialize(response["Item"])
+
+
+def escalate(check: EscalationCheck, item: dict[str, Any]) -> tuple[str, int | None]:
+    """Publish the nurse email, then set escalated_at once. Returns (outcome, delay)."""
+    sns_client().publish(
+        TopicArn=os.environ["NURSES_TOPIC_ARN"],
+        Subject=email_text.escalation_subject(
+            item.get("alert_type"), check.resident_id
+        ),
+        Message=email_text.escalation_body(
+            item, check.resident_id, os.environ["PORTAL_URL"]
+        ),
+    )
+    published_dt = datetime.now(UTC)
+    delay = escalation_delay_ms(item, published_dt)
+
+    try:
+        dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression="SET escalated_at = :now",
+            ConditionExpression="attribute_not_exists(escalated_at)",
+            ExpressionAttributeValues={":now": {"S": format_iso_ms(published_dt)}},
+        )
+    except ClientError as exc:
+        # Another delivery of a check for this alert escalated it first.
+        if not _is_condition_failure(exc):
+            raise
+        return DUPLICATE, delay
+    return ESCALATED, delay
+
+
+def _item_log_ids(check: EscalationCheck, item: dict[str, Any]) -> dict[str, Any]:
+    """IDs for a check's log line: alert_id and resident_id from the validated check,
+    type, severity, and device from the stored item, each only if it has its expected
+    format (else "invalid"), so a hand-edited item can't put free text in the logs."""
+    alert_type = item.get("alert_type")
+    severity = item.get("severity") or email_text.DEFAULT_SEVERITY
+    device_id = item.get("device_id")
+    return {
+        "alert_id": check.alert_id,
+        "alert_type": alert_type if alert_type in ALERT_TYPES else "invalid",
+        "severity": severity if severity in SEVERITIES else "invalid",
+        "device_id": (
+            device_id
+            if isinstance(device_id, str) and DEVICE_ID_RE.match(device_id)
+            else "invalid"
+        ),
+        "resident_id": check.resident_id,
+        "kind": KIND_ESCALATION_CHECK,
+    }
+
+
+def handle_check(check: EscalationCheck) -> bool:
+    """Handle one escalation check. Returns False if it must be reported as failed."""
+    ids: dict[str, Any] = {
+        "alert_id": check.alert_id,
+        "resident_id": check.resident_id,
+        "kind": KIND_ESCALATION_CHECK,
+    }
+    try:
+        item = read_alert(check)
+        ids = _item_log_ids(check, item)
+        decision = escalation_decision(item, datetime.now(UTC))
+        if decision is not None:
+            outcome, reason = decision
+            delay = None
+        else:
+            reason = None
+            outcome, delay = escalate(check, item)
+    except Exception as exc:  # noqa: BLE001 - any failure: retry only this record
+        logger.error(
+            LOG_MESSAGE, extra={**ids, "outcome": ERROR, "error": _error_code(exc)}
+        )
+        return False
+
+    extra: dict[str, Any] = {**ids, "outcome": outcome}
+    if reason is not None:
+        extra["reason"] = reason
+    if delay is not None:
+        extra["escalation_delay_ms"] = delay
+    logger.info(LOG_MESSAGE, extra=extra)
+    return True
 
 
 def handle_record(record: Any) -> bool:
     """Process one SQS record. Returns False if it must be reported as failed."""
     body = record.get("body") if isinstance(record, dict) else None
-    result = parse_alert(body)
+    result = parse_message(body)
     if isinstance(result, Rejection):
         logger.warning(
             LOG_MESSAGE,
             extra={**log_ids(body), "outcome": INVALID, "reason": result.reason},
         )
         return False
+    if isinstance(result, EscalationCheck):
+        return handle_check(result)
 
     ids = {
         "alert_id": result.alert_id,

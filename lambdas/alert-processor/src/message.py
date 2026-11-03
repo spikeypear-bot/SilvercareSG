@@ -19,6 +19,16 @@ warning or `held_s` for a critical alert. `metric` and `direction` must match th
 alert type; `value`, `limit`, and `previous_value` must be in the metric's valid range
 from docs/metrics.md (integers for hr_bpm and spo2_pct), except that a critical
 `hr_low` may have `value` 0 (no pulse); `held_s` is an integer 10-600.
+
+Escalation checks (docs/features/escalation.md, criterion 1) are a second message kind
+on the same queue, sent by alert-processor itself with a 60 s delay:
+
+    {"kind": "escalation_check", "schema_version": 1, "alert_id": "<uuid>",
+     "resident_id": "res-0003", "event_ts": "2026-10-18T03:14:07.360Z"}
+
+A body without `kind` is an alert message. `parse_message` returns an `Alert`, an
+`EscalationCheck`, or a `Rejection`; an unknown `kind` is rejected like any invalid
+body.
 """
 
 from __future__ import annotations
@@ -53,6 +63,9 @@ FIELDS = (
     "source_message_id",
     "details",
 )
+
+KIND_ESCALATION_CHECK = "escalation_check"
+CHECK_FIELDS = ("kind", "schema_version", "alert_id", "resident_id", "event_ts")
 
 
 @dataclass(frozen=True)
@@ -123,6 +136,16 @@ class Alert:
     received_dt: datetime
     source_message_id: str
     details: dict[str, Any]  # int or Decimal values
+
+
+@dataclass(frozen=True)
+class EscalationCheck:
+    """Enough to build the alert's key: RESIDENT#<resident_id>,
+    ALERT#<event_ts>#<alert_id>."""
+
+    alert_id: str
+    resident_id: str
+    event_ts: str
 
 
 def _reject_constant(value: str) -> Any:
@@ -298,19 +321,83 @@ def parse_body(text: Any) -> Any:
         return None
 
 
+def validate_check(body: dict) -> EscalationCheck | Rejection:
+    """Check a parsed body that has a `kind` against the escalation check schema."""
+    kind = body.get("kind")
+    if type(kind) is not str:
+        return Rejection("wrong_type:kind")
+    if kind != KIND_ESCALATION_CHECK:
+        return Rejection("invalid:kind")
+    for name in CHECK_FIELDS:
+        if name not in body:
+            return Rejection(f"missing:{name}")
+    if set(body) - set(CHECK_FIELDS):
+        return Rejection("unknown_field")
+
+    version = body["schema_version"]
+    if type(version) is not int:
+        return Rejection("wrong_type:schema_version")
+    if version != SCHEMA_VERSION:
+        return Rejection("invalid:schema_version")
+
+    for name, pattern in (
+        ("alert_id", UUID_RE),
+        ("resident_id", RESIDENT_ID_RE),
+    ):
+        reason = _check_str(body, name, pattern)
+        if reason:
+            return Rejection(reason)
+
+    if type(body["event_ts"]) is not str:
+        return Rejection("wrong_type:event_ts")
+    if parse_ts(body["event_ts"]) is None:
+        return Rejection("invalid:event_ts")
+
+    return EscalationCheck(
+        alert_id=body["alert_id"],
+        resident_id=body["resident_id"],
+        event_ts=body["event_ts"],
+    )
+
+
 def parse_alert(text: Any) -> Alert | Rejection:
-    """Parse and validate one SQS record body."""
+    """Parse and validate one SQS record body as an alert message."""
     body = parse_body(text)
     if body is None:
         return Rejection("invalid:json")
     return validate(body)
 
 
+def parse_message(text: Any) -> Alert | EscalationCheck | Rejection:
+    """Parse and validate one SQS record body of either kind: a body with a `kind`
+    field is an escalation check (or rejected), anything else an alert message."""
+    body = parse_body(text)
+    if body is None:
+        return Rejection("invalid:json")
+    if isinstance(body, dict) and "kind" in body:
+        return validate_check(body)
+    return validate(body)
+
+
+def check_body(alert_id: str, resident_id: str, event_ts: str) -> str:
+    """The escalation check message for one alert, as an SQS message body."""
+    return json.dumps(
+        {
+            "kind": KIND_ESCALATION_CHECK,
+            "schema_version": SCHEMA_VERSION,
+            "alert_id": alert_id,
+            "resident_id": resident_id,
+            "event_ts": event_ts,
+        },
+        separators=(",", ":"),
+    )
+
+
 def log_ids(text: Any) -> dict[str, str | None]:
     """IDs for the log line of a rejected body: each only if it matches its format.
 
     Anything else is logged as "invalid" (or omitted when absent), so free text from a
-    malformed body never reaches the logs.
+    malformed body never reaches the logs. Works for both message kinds.
     """
     body = parse_body(text)
     body = body if isinstance(body, dict) else {}
@@ -321,10 +408,14 @@ def log_ids(text: Any) -> dict[str, str | None]:
         value = body[name]
         return value if type(value) is str and ok(value) else "invalid"
 
-    return {
+    ids = {
         "alert_id": pick("alert_id", lambda v: bool(UUID_RE.match(v))),
         "alert_type": pick("alert_type", lambda v: v in ALERT_TYPES),
         "severity": pick("severity", lambda v: v in SEVERITIES),
         "device_id": pick("device_id", lambda v: bool(DEVICE_ID_RE.match(v))),
         "resident_id": pick("resident_id", lambda v: bool(RESIDENT_ID_RE.match(v))),
     }
+    # Only bodies that name a kind get the key (escalation checks or unknown kinds).
+    if "kind" in body:
+        ids["kind"] = pick("kind", lambda v: v == KIND_ESCALATION_CHECK)
+    return ids

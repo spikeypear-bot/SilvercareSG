@@ -1,5 +1,5 @@
 ---
-status: draft          # draft | ready | built
+status: ready          # draft | ready | built
 ---
 
 # Escalation to nurses (Track A3a)
@@ -51,6 +51,10 @@ variables, like the ops topic.
 | No email link | caregivers acknowledge with the portal button; there is no acknowledge link in emails (no public endpoint) |
 | Follow-up after a stop | caregivers get a short update email when an alert is cancelled or acknowledged. **Not in A3a**: sent by A3b / Track B when they change the status |
 | Split | A3a escalation (this), A3b wearable cancel |
+| Acknowledger's name (2026-11-03) | everyone linked to the resident sees who acknowledged, by name, caregivers included (for coordination). Track B's API shows it |
+| Subscriptions only via Terraform (2026-11-03) | `silvercare-nurses` and `silvercare-alerts` deny `sns:Subscribe` to everyone except the `silvercare-cicd` deploy role |
+| Stale checks (2026-11-03) | a check handled more than 15 minutes after the alert was stored (e.g. redriven from the DLQ) emails nobody: `not_escalated`, reason `stale` |
+| Fail-safe | a stored alert with no `status`, or no valid `alert_type`, still escalates (label `Alert`) |
 
 ## Acceptance criteria
 
@@ -85,6 +89,10 @@ variables, like the ops topic.
    - `status` is not `open`: no email, outcome `not_escalated` with reason
      `status:<value>`.
    - `escalated_at` already set: no email, outcome `duplicate`.
+   - Handled more than 15 minutes after the item's `created_at`: no email, outcome
+     `not_escalated` with reason `stale` (checked after `status` and `escalated_at`).
+   - No `status`: treated as open (fail-safe). Any present value other than `open`
+     stops it (unknown values log as `status:other`).
    - Otherwise: Publish to `silvercare-nurses` (no message attributes needed), then set
      `escalated_at` with an UpdateItem conditional on `attribute_not_exists(escalated_at)`
      (a failed condition after Publish is logged as `duplicate`, not a failure).
@@ -106,7 +114,9 @@ variables, like the ops topic.
     with one line after `Severity:`:
     `Escalated: no response within 60 s of the first alert.`
     For unassigned alerts, `Resident: unassigned` and a `Device: <device_id>` line
-    (nurses need it to find the device; it is an opaque ID).
+    (nurses need it to find the device; it is an opaque ID). `device_id` is printed only
+    if it matches the device ID format, otherwise `Device: invalid` (items can be
+    edited by hand). A missing or unknown `alert_type` uses the label `Alert`.
 
 ### Terraform
 
@@ -121,7 +131,17 @@ variables, like the ops topic.
     have it (`LeadingKeys` `RESIDENT#*`). Env gains `ALERTS_QUEUE_URL` and
     `NURSES_TOPIC_ARN`. Its `UpdateItem` already covers the new attributes.
 14. No new queue, function, event source mapping, or alarm. The alerts queue's DLQ
-    alarm covers failed checks.
+    alarm covers failed checks. Its description says the DLQ can also hold `escalation_check`
+    messages, which are skipped as `stale` after 15 minutes, so redriving one later
+    sends nothing.
+14a. Both topic policies (`silvercare-nurses`, `silvercare-alerts`) add a Deny on
+    `sns:Subscribe` for every principal whose `aws:PrincipalArn` is not the
+    `silvercare-cicd` deploy role (built from the account ID, since that role is not
+    in Terraform). Existing subscriptions and "Confirm subscription" links are not
+    affected. In-place policy updates.
+14b. Timing note (README): a check that fails is retried after the queue's 180 s
+    visibility timeout, so a transient error delays the nurse email to about 4
+    minutes; 5 failures reach the DLQ after about 15 minutes.
 
 ### CI (main session)
 
@@ -136,7 +156,8 @@ variables, like the ops topic.
     `escalated_at`; `status` values gain `cancelled` (set by A3b, listed now so the
     check handles it); new pattern: escalation check GetItem / UpdateItem by key;
     pattern 16 (acknowledge) becomes "staff, or caregiver after 13" and
-    `acknowledged_by` may be a caregiver's `sub`.
+    `acknowledged_by` may be a caregiver's `sub`, shown by name to everyone linked to
+    the resident (decisions table).
     (Main session: README "Alerts" gets the nurse subscribers, the `NURSE_SUBSCRIBERS`
     variable, and the live check; decision record 0001 notes the delayed check on the
     alerts queue.)

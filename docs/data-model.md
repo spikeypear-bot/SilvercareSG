@@ -47,10 +47,9 @@ Cognito `sub`), never names or other personal data.
 ## Access patterns
 
 *(proposed)* What each role sees: caregiver and family see the same things for the residents they
-are linked to, including raw vitals, alert `details`, and which staff member
-acknowledged or resolved an alert. The API turns `acknowledged_by` / `resolved_by`
-(staff `sub`) into the staff member's name from Cognito; the `sub` itself is not
-returned.
+are linked to, including raw vitals, alert `details`, and who acknowledged or resolved
+an alert. The API turns `acknowledged_by` (staff or caregiver `sub`) / `resolved_by`
+(staff `sub`) into the user's name from Cognito; the `sub` itself is not returned.
 
 Caller groups (Cognito): **staff** means the `doctor` and `nurse` groups and can read every resident. **caregiver/family** can read a
 resident only after the link check (pattern 13) passes, and the API also checks the
@@ -74,13 +73,14 @@ go stale. Lambdas without a caller are marked *backend*.
 | 13 | API, caregiver/family | Is this user linked to this resident? | registry | GetItem `pk = USER#<sub>`, `sk = RESIDENT#<resident_id>` | every caregiver/family request for a resident |
 | 14 | API, caregiver/family | Which residents can this user see? | registry | Query `pk = USER#<sub>`, `begins_with(sk, "RESIDENT#")` | caregiver/family home page |
 | 15 | *(not used yet)* backend: `alert-processor` | Who is linked to this resident (to notify) | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "USER#")` | per new alert. Not used by alerts-core: it notifies through SNS email subscriptions whose filter policy matches `resident_id`, set in Terraform variables (docs/features/alerts-core.md, criteria 21 and 24), because SNS can only email confirmed subscribers |
-| 16 | Staff only | Acknowledge or resolve an alert | alerts | UpdateItem `pk`, `sk` | per action |
+| 16 | Acknowledge: staff, or caregiver after 13 (docs/features/escalation.md; family can't). Resolve: staff only | Acknowledge or resolve an alert | alerts | UpdateItem `pk`, `sk` | per action |
 | 17 | Staff only, seed script | Add or edit a resident, assign a device, link a user | registry | PutItem / UpdateItem / DeleteItem | rare |
 | 18 | Resident page: staff, or caregiver/family after 13 | This resident's profile and thresholds | registry | BatchGetItem `RESIDENT#<resident_id>` / `PROFILE` and `THRESHOLDS#<resident_id>` / `THRESHOLDS` | per page view |
 | 19 | Resident page: staff, or caregiver/family after 13 | This resident's photo | S3 `silvercare-photos-<account_id>` | API returns a presigned GET URL for `photo_key`, valid 5 min | per page view |
 | 20 | Staff only | Upload or replace a photo | S3 | API returns a presigned POST (JPEG only, max 2 MB) | rare |
 | 21 | backend: `alert-processor` | A wearable's newest vitals, to add to a fall alert | latest | GetItem `pk = DEVICE#<device_id>`, `sk = MSG#vitals` (uses `entries[0]`) | per fall alert |
 | 22 | backend: `alert-processor` | Re-read an alert that already exists (a redelivered message) | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent | per redelivered alert message |
+| 23 | backend: `alert-processor` | Escalation: mark the check queued; 60 s later read the alert's `status` and mark it escalated (docs/features/escalation.md) | alerts | UpdateItem `SET escalation_queued_at` with `attribute_not_exists(escalation_queued_at)`; GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; UpdateItem `SET escalated_at` with `attribute_not_exists(escalated_at)` | per stored alert (one GetItem, up to two UpdateItems) |
 
 No pattern uses `Scan`.
 
@@ -329,12 +329,14 @@ gets enough write capacity for every vitals write.
 | `event_ts` | `2026-10-18T03:14:07.360Z` | see below |
 | `received_at` | `2026-10-18T03:14:07.410Z` | when the IoT rule received the triggering message (from the alert message) |
 | `created_at` | `2026-10-18T03:14:07.900Z` | when `alert-processor` stored the item |
-| `status` | `open` | `open`, `acknowledged`, `resolved` |
+| `status` | `open` | `open`, `acknowledged`, `cancelled` (the wearable "I'm OK" cancel, set by A3b; listed now so escalation handles it), `resolved`. Anything but `open` stops escalation |
 | `source_message_id` | `c2a1d4f0-8b6e-4f0a-a3c9-7e15d2b9f804` | for message-triggered alerts |
 | `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals). Vitals warning: `metric`, `value`, `limit`, `direction`, `previous_value`, e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above", "previous_value": 125}`. Vitals critical: `metric`, `value`, `limit`, `direction`, `held_s` (`hr_low` `value` 0 = no pulse) |
 | `notified_at` | `2026-10-18T03:14:08.300Z` | set once, after the SNS email was published; guards against a second email on redelivery. Absent for unassigned alerts |
 | `notification` | `skipped_unassigned` | only on unassigned alerts (`pk = RESIDENT#unassigned`): nobody is emailed |
-| `acknowledged_by`, `acknowledged_at` | staff `sub`, timestamp | |
+| `escalation_queued_at` | `2026-10-18T03:14:08.350Z` | set once, after the delayed escalation check was sent to the alerts queue (docs/features/escalation.md, criterion 3); guards against queuing a second check on redelivery. Absent on suppressed alerts and on alerts stored before escalation |
+| `escalated_at` | `2026-10-18T03:15:08.700Z` | set once, after the nurse email was published (criterion 5); guards against a second nurse email. `status` stays `open` |
+| `acknowledged_by`, `acknowledged_at` | staff or caregiver `sub`, timestamp | a caregiver may acknowledge alerts of residents they are linked to (pattern 13; docs/features/escalation.md) |
 | `resolved_by`, `resolved_at` | staff `sub`, timestamp | |
 | `open_pk` | `OPEN` | present until resolved; removing it takes the alert out of the `open` index |
 | `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days. See [Retention](#retention) |
@@ -342,7 +344,8 @@ gets enough write capacity for every vitals write.
 An alert from a device with no assignment (no `DEVICE#<id>` / `ASSIGNMENT` item in the
 registry, or one without `resident_id`) is still stored, with
 `resident_id = unassigned`, so `pk = RESIDENT#unassigned` (docs/features/alerts-core.md).
-It is never emailed.
+No caregiver is emailed; it is escalated to the nurses after 60 s like any other open
+alert (docs/features/escalation.md).
 
 `event_ts` is the time of the triggering event, so `alert_id` and the key are the same
 however many times the same event is processed:
@@ -379,6 +382,20 @@ docs/features/vitals-alerts.md): hold back a repeat (pattern 7, not for falls); 
 [S3 history](#s3-history)); then, if the resident is assigned and the item has no
 `notified_at`, publish the email and `SET notified_at` with
 `attribute_not_exists(notified_at)`. No `expires_at` until the alert is resolved.
+
+**Escalation** (docs/features/escalation.md): last, if the item is `open` and has no
+`escalation_queued_at` (after the email for an assigned alert, after the store for an
+unassigned one), `alert-processor` sends an escalation check
+(`{"kind": "escalation_check", "schema_version": 1, "alert_id", "resident_id",
+"event_ts"}`) to the alerts queue with `DelaySeconds = 60`, then `SET
+escalation_queued_at` with `attribute_not_exists(escalation_queued_at)` (pattern 23).
+When the check arrives it reads the alert (pattern 23, strongly consistent, no repeat
+check): a present `status` other than `open` → nothing (a missing `status` escalates);
+`escalated_at` set → nothing; more than 15 minutes after `created_at` (e.g. redriven
+from the DLQ) → nothing, reason `stale`; otherwise it emails the
+nurses (SNS `silvercare-nurses`) and `SET escalated_at` with
+`attribute_not_exists(escalated_at)`. A crash between a send and its update can send a
+second check or nurse email; a duplicate is accepted, a missing one isn't.
 
 ### Index
 
@@ -439,7 +456,7 @@ read of up to 4 KB per second, or two eventually consistent ones.
 | latest reads (write rule step 1) | ~0.5/s × 1 RCU ≈ **0.5 RCU** |
 | `by-message` index writes | vitals 0.33/s + status/bed/motion 0.15/s, 1 WCU each ≈ **0.5 WCU** |
 | registry reads | cached in Lambdas; dashboards ≈ **< 1 RCU** |
-| alerts | rare writes; one strongly consistent Query per non-fall alert (repeat check); dashboard polling ≈ **< 1 RCU** |
+| alerts | rare writes (plus up to two escalation UpdateItems per alert); one strongly consistent Query per non-fall alert (repeat check) and one strongly consistent GetItem per escalation check; dashboard polling ≈ **< 1 RCU** |
 
 Provisioned (fixed, no auto scaling):
 

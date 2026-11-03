@@ -49,6 +49,9 @@ function from the same zip, each with its own role, log group, and failure handl
   - Async-invoked functions get an on-failure destination or DLQ in Terraform, unless
     the spec decides against it (the ingest functions have none). Anything that raises
     alerts should have one: a dropped message there is a lost alert.
+  - A message that sends a time-bound notification ("no response within 60 s") can be
+    redriven from a DLQ hours later: decide in the spec what a late one does (e.g.
+    skip it as stale) and say so in the DLQ alarm text.
 - Use type hints. Keep functions small.
 
 ## API handlers

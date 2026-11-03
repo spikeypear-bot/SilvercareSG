@@ -154,6 +154,7 @@ def test_valid_alert_is_stored_with_data_model_attributes(aws):
         "details",
         "open_pk",
         "notified_at",
+        "escalation_queued_at",
     }
     assert item["pk"] == f"RESIDENT#{RESIDENT}"
     assert item["sk"] == f"ALERT#{EVENT_TS}#{ALERT_ID}"
@@ -218,8 +219,9 @@ def test_archive_is_the_item_as_one_json_object(aws):
     text = aws.s3.get_object(Bucket=BUCKET, Key=ARCHIVE_KEY)["Body"].read().decode()
     archived = json.loads(text, parse_float=Decimal)
     item = only_item(aws)
-    # Archived before notify, so notified_at isn't in the object.
-    assert archived == {k: v for k, v in item.items() if k != "notified_at"}
+    # Archived before notify and the escalation check, so neither timestamp is in it.
+    later = {"notified_at", "escalation_queued_at"}
+    assert archived == {k: v for k, v in item.items() if k not in later}
     assert '"confidence":0.91' in text
 
 

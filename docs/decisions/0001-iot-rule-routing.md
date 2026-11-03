@@ -74,6 +74,12 @@ Amended 2026-11-03 (`docs/features/vitals-alerts.md`): `fall-alert` was renamed
 every device-detected critical alert. `telemetry` sends vitals warnings to the alerts
 queue but still has no DLQ (a known gap, recorded in that spec).
 
+Amended 2026-11-03 (`docs/features/escalation.md`): escalation to nurses uses a
+delayed `escalation_check` message (`DelaySeconds = 60`) on the same alerts queue,
+handled by `alert-processor`, which emails the `silvercare-nurses` topic if the alert
+is still `open`. No new queue, function, or poller; failed checks reach the alerts DLQ
+and its alarm.
+
 Responsibilities:
 
 - **`device-health`**: validate, add the `status` to the device's latest 5 (the newest
