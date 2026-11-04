@@ -2,8 +2,9 @@
 docs/features/vitals-alerts.md, criteria 21-22).
 
 Plain text. Times in Singapore time (SGT, UTC+8, no daylight saving) only.
-No names, no email addresses, and no device ID except in the escalation email of an
-unassigned alert (below). Pure functions, no AWS calls.
+No email addresses, no names except a caregiver's masked name in a follow-up, and no
+device ID except in the nurse emails of an unassigned alert (below). Pure functions,
+no AWS calls.
 
     Subject: SilverCare CRITICAL alert: Fall - res-0003
 
@@ -16,6 +17,8 @@ unassigned alert (below). Pure functions, no AWS calls.
     Fall details: confidence 0.91, peak 3.8 g, still for 20 s
     Latest vitals (taken 11:13:00 SGT): heart rate 72 bpm, SpO2 97 %
 
+    The care centre nurse has also been alerted.
+
     Open the SilverCare portal: https://<cloudfront domain>/
 
     This is an automated message. Do not reply.
@@ -27,21 +30,30 @@ Vitals alerts replace the two fall lines with one reading line:
     no pulse:  Reading: no pulse detected for 10 s (heart rate 0 bpm)
 
 Warnings have the subject `SilverCare alert: <label> - <resident_id>`, critical alerts
-`SilverCare CRITICAL alert: <label> - <resident_id>`.
+`SilverCare CRITICAL alert: <label> - <resident_id>`. A critical caregiver email adds,
+after the reading lines, a blank line and `The care centre nurse has also been
+alerted.` (docs/features/alert-routing.md, criterion 8).
 
-Nurse escalation emails (docs/features/escalation.md, criteria 9-10) have the subject
-`SilverCare ESCALATED alert: <label> - <resident_id>` for both severities, and the same
-body with one line after Severity:
+Nurse emails sent at once (alert-routing, criterion 6), for critical alerts and every
+alert from an unassigned device, have the caregiver subject and body with one line
+after Severity:
 
-    Escalated: no response within 60 s of the first alert.
+    Sent to the care centre at once: critical alert.
+    Sent to the care centre at once: device not assigned to a resident.
 
-An unassigned alert's escalation email shows `Resident: unassigned` followed by
+Nurse escalation emails (docs/features/escalation.md, criteria 9-10; warnings only
+since alert-routing) have the subject `SilverCare ESCALATED alert: <label> -
+<resident_id>`, and the same body with one line after Severity:
+
+    Escalated: no response within 5 minutes of the first alert.
+
+A nurse email for an unassigned alert shows `Resident: unassigned` followed by
 `Device: <device_id>` (an opaque ID; caregiver emails never show the device), or
 `Device: invalid` if the stored device_id doesn't have the device ID format. A missing
-or unknown alert_type in an escalation email gets the label `Alert`.
+or unknown alert_type in a nurse email gets the label `Alert`.
 
-Follow-up emails (docs/features/alert-cancel.md, criteria 13-14), when an alert is
-cancelled or acknowledged, to caregivers and (if escalated) nurses:
+Follow-up emails (docs/features/alert-cancel.md, criteria 13-14; alert-routing,
+criteria 13-15), when an alert is cancelled or acknowledged:
 
     Subject: SilverCare update: Fall - res-0001 cancelled
 
@@ -58,11 +70,15 @@ cancelled or acknowledged, to caregivers and (if escalated) nurses:
 
     This is an automated message. Do not reply.
 
-An acknowledge says `was acknowledged by Ta* Me* Li** (staff) at ...` (or
-`(caregiver)`), with the masked name (mask_name), never the full name. No reading or
-details lines. A missing or unknown alert_type gets the label `Alert`. An
-unassigned alert's follow-up (nurses only) adds `Device: <device_id>` after
-`Resident: unassigned`, or `Device: invalid`, as in the escalation email.
+A caregiver cancel says `was cancelled by Ta* Me* Li** (caregiver) at ...`, with the
+masked name (mask_name), never the full name. A nurse acknowledge says `was
+acknowledged by the care centre nurse at ...` (a shared account, so no name). A cancel
+of an acknowledged alert adds `It had been acknowledged by the care centre nurse at
+...` after the first line. An acknowledge with a note adds, after When, a blank line,
+`Message from the care centre:`, and the note's lines, each quoted with `> `. No reading or details lines. A
+missing or unknown alert_type gets the label `Alert`. An unassigned alert's follow-up
+(nurses only) adds `Device: <device_id>` after `Resident: unassigned`, or
+`Device: invalid`, as in the nurse emails.
 """
 
 from __future__ import annotations
@@ -101,8 +117,13 @@ NO_PULSE_VALUE = 0
 # Alert items stored before severity existed are all falls, which are critical.
 DEFAULT_SEVERITY = "critical"
 
-# Nurse escalation emails (docs/features/escalation.md, criteria 9-10).
-ESCALATION_LINE = "Escalated: no response within 60 s of the first alert."
+# Nurse emails (docs/features/escalation.md, criteria 9-10; alert-routing, 6-8).
+ESCALATION_LINE = "Escalated: no response within 5 minutes of the first alert."
+AT_ONCE_CRITICAL_LINE = "Sent to the care centre at once: critical alert."
+AT_ONCE_UNASSIGNED_LINE = (
+    "Sent to the care centre at once: device not assigned to a resident."
+)
+NURSE_ALERTED_LINE = "The care centre nurse has also been alerted."
 UNASSIGNED = "unassigned"
 UNKNOWN_TYPE_LABEL = "Alert"
 
@@ -110,7 +131,9 @@ UNKNOWN_TYPE_LABEL = "Alert"
 MASK_KEEP = 2
 MASK_CHAR = "*"
 UNKNOWN_SEVERITY_LABEL = "Unknown"
-BY_ROLE_TEXT = {"staff": "staff", "caregiver": "caregiver"}
+CARE_CENTRE_NURSE = "the care centre nurse"
+NOTE_HEADING = "Message from the care centre:"
+NOTE_QUOTE = "> "
 
 
 def _type_label(alert_type: str) -> str:
@@ -243,26 +266,39 @@ def _device_line(device_id: Any) -> str:
 
 
 def body(item: dict[str, Any], resident_id: str, portal_url: str) -> str:
-    """The email body for a stored alert item (the item has no resident_id attribute;
-    it is in the key)."""
-    return _body(item, resident_id, portal_url, escalated=False)
+    """The caregiver email body for a stored alert item (the item has no resident_id
+    attribute; it is in the key). A critical alert says the nurses were alerted too
+    (alert-routing criterion 8)."""
+    return _body(item, resident_id, portal_url, nurse_line=None)
+
+
+def nurse_body(item: dict[str, Any], resident_id: str, portal_url: str) -> str:
+    """The nurse email sent at once (alert-routing criterion 6): the caregiver body
+    with the at-once line after Severity (the unassigned line for an unassigned device,
+    any severity) and, for an unassigned alert, a Device line."""
+    line = (
+        AT_ONCE_UNASSIGNED_LINE if resident_id == UNASSIGNED else AT_ONCE_CRITICAL_LINE
+    )
+    return _body(item, resident_id, portal_url, nurse_line=line)
 
 
 def escalation_body(item: dict[str, Any], resident_id: str, portal_url: str) -> str:
-    """The nurse email body (escalation criterion 10): the caregiver body with the
-    escalation line after Severity, and, for an unassigned alert, a Device line (an
-    opaque ID nurses need to find the device)."""
-    return _body(item, resident_id, portal_url, escalated=True)
+    """The nurse escalation email body (escalation criterion 10): the caregiver body
+    with the escalation line after Severity, and, for an unassigned alert, a Device
+    line (an opaque ID nurses need to find the device)."""
+    return _body(item, resident_id, portal_url, nurse_line=ESCALATION_LINE)
 
 
 def _body(
-    item: dict[str, Any], resident_id: str, portal_url: str, *, escalated: bool
+    item: dict[str, Any], resident_id: str, portal_url: str, *, nurse_line: str | None
 ) -> str:
+    """nurse_line None: the caregiver email; else a nurse email with that line."""
     details = item.get("details")
     details = details if isinstance(details, dict) else {}
     severity = item.get("severity") or DEFAULT_SEVERITY
     event_dt = _parse_ts(item.get("event_ts"))
     when = format_when(event_dt) if event_dt else "unknown time"
+    escalated = nurse_line is not None
     if escalated:
         alert_type = item.get("alert_type")
         label = _escalation_label(alert_type)
@@ -275,8 +311,8 @@ def _body(
         f"Type: {label}",
         f"Severity: {_severity_label(severity)}",
     ]
-    if escalated:
-        lines.append(ESCALATION_LINE)
+    if nurse_line is not None:
+        lines.append(nurse_line)
     lines.append(f"Resident: {resident_id}")
     if escalated and resident_id == UNASSIGNED:
         lines.append(_device_line(item.get("device_id")))
@@ -285,6 +321,8 @@ def _body(
         lines += [_fall_details_line(details), _vitals_line(details)]
     else:
         lines.append(_reading_line(details, severity))
+    if not escalated and severity == "critical":
+        lines += ["", NURSE_ALERTED_LINE]
     lines += [
         "",
         f"Open the SilverCare portal: {portal_url.rstrip('/')}/",
@@ -316,10 +354,13 @@ def follow_up_subject(alert_type: Any, resident_id: str, new_status: str) -> str
 
 
 def _changed_by(by_role: str, by_name: str | None) -> str:
-    """ "the resident", or the masked name plus " (staff)" / " (caregiver)"."""
-    if by_role == "resident" or by_name is None:
-        return "the resident"
-    return f"{mask_name(by_name)} ({BY_ROLE_TEXT.get(by_role, by_role)})"
+    """ "the resident", "the care centre nurse", or a caregiver's masked name plus
+    " (caregiver)"."""
+    if by_role == "nurse":
+        return CARE_CENTRE_NURSE
+    if by_role == "caregiver" and by_name is not None:
+        return f"{mask_name(by_name)} (caregiver)"
+    return "the resident"
 
 
 def follow_up_body(
@@ -331,10 +372,13 @@ def follow_up_body(
     changed_at: datetime,
     by_role: str,
     by_name: str | None,
+    note: str | None = None,
 ) -> str:
-    """The follow-up body (criterion 14): who changed the alert and when, then the
-    alert's type, severity, resident, and time. No reading or details; a Device line
-    only for an unassigned alert."""
+    """The follow-up body (alert-routing criterion 15): who changed the alert and when
+    (for a cancel of an acknowledged alert, also when the nurse acknowledged it), then
+    the alert's type, severity, resident, and time, then the nurse's note if there is
+    one (each line quoted with "> "). No reading or details; a Device line only for an
+    unassigned alert."""
     severity = item.get("severity") or DEFAULT_SEVERITY
     event_dt = _parse_ts(item.get("event_ts"))
     when = format_when(event_dt) if event_dt else "unknown time"
@@ -343,6 +387,12 @@ def follow_up_body(
         "SilverCare update",
         "",
         f"The alert below was {new_status} by {changed_by} at {format_when(changed_at)}.",
+    ]
+    if new_status == "cancelled" and "acknowledged_at" in item:
+        acked_dt = _parse_ts(item.get("acknowledged_at"))
+        acked = format_when(acked_dt) if acked_dt else "an unknown time"
+        lines.append(f"It had been acknowledged by {CARE_CENTRE_NURSE} at {acked}.")
+    lines += [
         "",
         f"Type: {_escalation_label(item.get('alert_type'))}",
         f"Severity: {SEVERITY_LABELS.get(severity, UNKNOWN_SEVERITY_LABEL)}",
@@ -350,8 +400,12 @@ def follow_up_body(
     ]
     if resident_id == UNASSIGNED:
         lines.append(_device_line(item.get("device_id")))
+    lines.append(f"When: {when}")
+    if note is not None:
+        # Quoted, so a note can't pass for SilverCare's own lines (e.g. a fake portal
+        # link): alert-routing criterion 15.
+        lines += ["", NOTE_HEADING, *(NOTE_QUOTE + line for line in note.split("\n"))]
     lines += [
-        f"When: {when}",
         "",
         f"Open the SilverCare portal: {portal_url.rstrip('/')}/",
         "",

@@ -1,4 +1,7 @@
-"""alert-processor end to end against moto (alerts-core criteria 14-20)."""
+"""alert-processor end to end against moto (alerts-core criteria 14-20).
+
+The default alert is a fall, which is critical: since docs/features/alert-routing.md
+it is emailed to the caregivers and the nurses at once, with no escalation check."""
 
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ OUR_KEYS = {
     "reason",
     "error",
     "dispatch_latency_ms",
+    "nurses",
 }
 ARCHIVE_KEY = f"alerts/date=2026-10-18/{ALERT_ID}.json"
 SUBJECT = "SilverCare CRITICAL alert: Fall - res-0003"
@@ -154,7 +158,7 @@ def test_valid_alert_is_stored_with_data_model_attributes(aws):
         "details",
         "open_pk",
         "notified_at",
-        "escalation_queued_at",
+        "escalated_at",
     }
     assert item["pk"] == f"RESIDENT#{RESIDENT}"
     assert item["sk"] == f"ALERT#{EVENT_TS}#{ALERT_ID}"
@@ -219,8 +223,8 @@ def test_archive_is_the_item_as_one_json_object(aws):
     text = aws.s3.get_object(Bucket=BUCKET, Key=ARCHIVE_KEY)["Body"].read().decode()
     archived = json.loads(text, parse_float=Decimal)
     item = only_item(aws)
-    # Archived before notify and the escalation check, so neither timestamp is in it.
-    later = {"notified_at", "escalation_queued_at"}
+    # Archived before the caregiver and nurse emails, so neither timestamp is in it.
+    later = {"notified_at", "escalated_at"}
     assert archived == {k: v for k, v in item.items() if k not in later}
     assert '"confidence":0.91' in text
 
@@ -235,10 +239,10 @@ def test_archive_date_is_the_utc_date_of_event_ts(aws):
 # ---- notify (criteria 16.4, 18, 19) ----
 
 
-def test_assigned_alert_is_published_once(aws):
+def test_assigned_alert_is_published_once_to_caregivers(aws):
     run(alert_body())
 
-    (call,) = aws.sns.publishes
+    (call,) = aws.alert_publishes()
     assert call["TopicArn"] == aws.topic_arn
     assert call["Subject"] == SUBJECT
     assert "Resident: res-0003" in call["Message"]
@@ -250,7 +254,7 @@ def test_assigned_alert_is_published_once(aws):
 def test_publish_carries_resident_id_message_attribute(aws):
     run(alert_body())
 
-    (call,) = aws.sns.publishes
+    (call,) = aws.alert_publishes()
     assert call["MessageAttributes"] == {
         "resident_id": {"DataType": "String", "StringValue": RESIDENT}
     }
@@ -312,7 +316,8 @@ def test_notified_at_already_set_by_another_delivery_is_not_an_error(aws, monkey
     monkeypatch.setattr(handler, "dynamodb_client", lambda: failing)
 
     assert run(alert_body()) == {"batchItemFailures": []}
-    assert len(aws.sns.publishes) == 1
+    assert len(aws.alert_publishes()) == 1
+    assert len(aws.nurse_publishes()) == 1
 
 
 # ---- duplicates (criterion 16.2, 16.4) ----
@@ -325,7 +330,8 @@ def test_redelivered_message_creates_no_second_item_and_no_second_publish(aws, l
     assert run(alert_body()) == {"batchItemFailures": []}
 
     assert only_item(aws) == first
-    assert len(aws.sns.publishes) == 1
+    assert len(aws.alert_publishes()) == 1
+    assert len(aws.nurse_publishes()) == 1
     assert archive_keys(aws) == [ARCHIVE_KEY]
     assert [r["outcome"] for r in logs()] == ["notified", "duplicate"]
 
@@ -365,7 +371,8 @@ def test_stored_but_unnotified_alert_is_notified_on_retry(aws, monkeypatch, logs
 
     assert run(alert_body()) == {"batchItemFailures": []}
 
-    assert len(aws.sns.publishes) == 1
+    assert len(aws.alert_publishes()) == 1
+    assert len(aws.nurse_publishes()) == 1
     assert "notified_at" in only_item(aws)
     assert logs()[-1]["outcome"] == "notified"
 
@@ -380,16 +387,17 @@ def test_unassigned_alert_is_stored_with_skipped_notification(aws, logs):
     assert item["pk"] == "RESIDENT#unassigned"
     assert item["notification"] == "skipped_unassigned"
     assert "notified_at" not in item
-    assert aws.sns.publishes == []
+    assert aws.alert_publishes() == []
     assert archive_keys(aws) == [ARCHIVE_KEY]
     assert logs()[-1]["outcome"] == "skipped_unassigned"
 
 
-def test_redelivered_unassigned_alert_is_never_published(aws, logs):
+def test_redelivered_unassigned_alert_is_never_published_to_caregivers(aws, logs):
     run(alert_body(resident_id="unassigned"))
     run(alert_body(resident_id="unassigned"))
 
-    assert aws.sns.publishes == []
+    assert aws.alert_publishes() == []
+    assert len(aws.nurse_publishes()) == 1
     assert len(alert_items(aws)) == 1
     assert [r["outcome"] for r in logs()] == ["skipped_unassigned", "duplicate"]
 
@@ -493,24 +501,27 @@ def test_partial_batch_failure_reports_only_the_failed_id(aws):
 
     assert result == {"batchItemFailures": [{"itemIdentifier": "sqs-msg-0002"}]}
     assert {i["alert_id"] for i in alert_items(aws)} == {ALERT_ID, ALERT_ID_2}
-    assert len(aws.sns.publishes) == 2
+    assert len(aws.alert_publishes()) == 2
+    assert len(aws.nurse_publishes()) == 2
 
 
 def test_aws_failure_on_one_record_reports_only_that_id(aws, monkeypatch):
     real = aws.sns
     calls = {"n": 0}
 
-    class FailSecond:
+    class FailSecondRecordsCaregiverEmail:
+        # Each fall is published twice (caregivers, then nurses): call 3 is the
+        # second record's caregiver email.
         def publish(self, **kwargs):
             calls["n"] += 1
-            if calls["n"] == 2:
+            if calls["n"] == 3:
                 raise ClientError(
                     {"Error": {"Code": "ThrottlingException", "Message": "x"}},
                     "Publish",
                 )
             return real.publish(**kwargs)
 
-    monkeypatch.setattr(handler, "sns_client", FailSecond)
+    monkeypatch.setattr(handler, "sns_client", FailSecondRecordsCaregiverEmail)
 
     result = run(
         alert_body(),
@@ -588,6 +599,7 @@ def test_one_log_line_per_message_with_ids_and_outcome(aws, logs):
     assert rec["device_id"] == DEVICE
     assert rec["resident_id"] == RESIDENT
     assert rec["outcome"] == "notified"
+    assert rec["nurses"] == "immediate"
 
 
 def test_logs_contain_no_health_values_details_or_email_text(aws, logs):

@@ -51,6 +51,15 @@ Access to a specific resident: unchanged. Caregiver and family follow-ups use th
 | Acknowledger in emails | masked name plus role, PayNow-style: each word keeps its first 2 letters, the rest become `*` (word lengths kept): "Tan Mei Ling" → `Ta* Me* Li**`, then ` (staff)` or ` (caregiver)`. The full name shows only in the portal |
 | Device contract | the wearable gains an "I'm OK" button and the `alert_cancel` message (the v1 "no SOS button" out-of-scope line is narrowed: still no SOS/help button) |
 
+**Changed by alert-routing (2026-11-04)** (docs/features/alert-routing.md): the
+`status_update` roles are now `resident` (cancel), `caregiver` (cancel of one alert
+through Track B's API, with the masked name in the email), and `nurse` (acknowledge,
+optional note emailed to caregivers, shown as "the care centre nurse"); `staff` and
+`family` are refused. A cancel (wearable or caregiver) works while the alert is `open`
+or `acknowledged`. Cancel follow-ups go to the nurses if they were emailed (critical and
+unassigned alerts are emailed to them at once; warnings after 5 minutes, not 60 s) or
+had acknowledged the alert; acknowledge follow-ups go to caregivers only.
+
 ## Acceptance criteria
 
 ### Device message `alert_cancel`

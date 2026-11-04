@@ -54,11 +54,15 @@ structure, not code that exists yet. Update this file as decisions land.
   A US$40/month AWS Budget (`infra/bootstrap/budget.tf`) emails alerts at 50/80/100% of
   actual and 100% of forecast spend, counted before credits.
 - **Auth:** one Cognito user pool (`silvercare-users`) with groups `doctor`, `nurse`,
-  `caregiver`, `family`. "Staff" in the docs means `doctor` or `nurse`: they get the
-  staff dashboard and see every resident. `caregiver` and `family` get the family view
-  and see only linked residents. Sign-in is email + password, MFA (authenticator app)
-  optional. Groups decide what a user can see; the API enforces it, the UI only hides
-  things.
+  `caregiver` (team decision 2026-11-04: `family` is removed, family members get
+  caregiver accounts; Track B removes the group). "Staff" in the docs means `doctor` or
+  `nurse`: they get the staff dashboard and see every resident. Nurses are a care centre
+  (one or two nurses, one shared account, "care centre nurse" in emails and the UI) who
+  watch alerts and acknowledge them; doctors (individual accounts) read resident data
+  and set alert thresholds. `caregiver` gets the family view, sees only linked residents
+  (several caregivers per resident), and can cancel their alerts. Sign-in is email +
+  password, MFA (authenticator app) optional. Groups decide what a user can see; the API
+  enforces it, the UI only hides things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
   caregiver/family views and the staff dashboard, chosen by Cognito group. Static build
   hosted on S3 behind CloudFront (no server-side rendering).

@@ -18,6 +18,8 @@ message (wearable: vitals with hr_bpm 999; bedroom: bed with occupied "yes"). It
 prints the message IDs and the scripts/ingest-check.py command that checks they were
 stored, plus its --history variant that also checks the S3 history
 (docs/features/ingest-history.md). Those steps need AWS credentials and run on the host.
+A wearable's fall also raises a critical alert, emailed to caregivers and nurses at
+once (docs/features/alert-routing.md); the script prints that expectation too.
 
 With --alerts (wearables only; docs/features/vitals-alerts.md, criterion 27), after the
 checks (and the --ingest messages, if given) pass it publishes, on one more connection
@@ -43,8 +45,9 @@ more connection as the device:
   1. fall          a synthetic fall                 -> fall alert email
   2. alert_cancel  the "I'm OK" button, 5 s later   -> "cancelled" update email
 
-then prints the message IDs and what to expect: the fall email, then the cancelled
-update email, and no nurse (ESCALATED) email, because the cancel lands within 60 s.
+then prints the message IDs and what to expect: the fall email to caregivers and nurses
+at once, then the cancelled update email to both (docs/features/alert-routing.md,
+criterion 18).
 The cancel also cancels any other open alert of the wearable (e.g. from --alerts).
 Needs no AWS credentials.
 
@@ -122,8 +125,7 @@ DEVICE_HELD_S = 10
 
 # --cancel (alert-cancel criterion 17): seconds between the fall and the alert_cancel,
 # both in their ts and in real time, so alert-processor has stored the fall before the
-# cancel arrives (the alerts queue is not ordered) and the cancel lands well within the
-# 60 s escalation delay.
+# cancel arrives (the alerts queue is not ordered).
 CANCEL_PAUSE_S = 5.0
 
 # Fall accel_window shape (docs/metrics.md): 25 Hz, 1 s before to 1 s after impact.
@@ -363,8 +365,16 @@ def report_alerts(
         file=out,
     )
     print(
-        "  3 emails: 'SilverCare alert: High heart rate', 'SilverCare CRITICAL alert:"
-        " High heart rate', and 'SilverCare CRITICAL alert: Low heart rate' (no pulse);",
+        "  3 caregiver emails: 'SilverCare alert: High heart rate', 'SilverCare"
+        " CRITICAL alert: High heart rate', and 'SilverCare CRITICAL alert: Low heart"
+        " rate' (no pulse); the 2 critical ones say 'The care centre nurse has also"
+        " been alerted.';",
+        file=out,
+    )
+    print(
+        "  at the same time, the 2 'SilverCare CRITICAL alert' emails to the nurse"
+        " subscribers, with the line 'Sent to the care centre at once: critical"
+        " alert.';",
         file=out,
     )
     print(
@@ -379,8 +389,8 @@ def report_alerts(
         file=out,
     )
     print(
-        "  about 60 s later, 3 'SilverCare ESCALATED alert' emails to the nurse"
-        " subscribers (nothing acknowledges them).",
+        "  about 5 minutes later, 1 'SilverCare ESCALATED alert: High heart rate'"
+        " email (the warning) to the nurse subscribers (nothing acknowledges it).",
         file=out,
     )
     print(
@@ -390,7 +400,7 @@ def report_alerts(
     )
     print(
         "An unassigned device stores the 3 alerts under RESIDENT#unassigned and"
-        " emails nobody. Within 30 minutes of a run, a second run's alerts are all"
+        " emails only the nurses, all 3 at once. Within 30 minutes of a run, a second run's alerts are all"
         " suppressed (same type and severity): wait 30 minutes to see the emails again.",
         file=out,
     )
@@ -439,27 +449,29 @@ def report_cancel(
         file=out,
     )
     print(
-        "  2 emails: 'SilverCare CRITICAL alert: Fall', then 'SilverCare update:"
-        " Fall - <resident> cancelled' (cancelled by the resident);",
+        "  to caregivers and to the nurse subscribers: 'SilverCare CRITICAL alert:"
+        " Fall' at once, then 'SilverCare update: Fall - <resident> cancelled'"
+        " (cancelled by the resident; the nurses get it because they were emailed);",
         file=out,
     )
     print(
-        "  no 'SilverCare ESCALATED alert' email to nurses, because the cancel lands"
-        " within 60 s;",
+        "  no 'SilverCare ESCALATED alert' email: a fall goes to the nurses at once,"
+        " with no escalation check;",
         file=out,
     )
     print(
-        "  the fall item in silvercare-alerts has status 'cancelled', cancelled_at,"
-        " expires_at, and status_notified_at, and no open_pk; an alert-processor log"
+        "  the fall item in silvercare-alerts has status 'cancelled', escalated_at,"
+        " cancelled_at, expires_at, and status_notified_at, and no open_pk; an"
+        " alert-processor log"
         " line with kind 'status_update' and outcome 'updated'; both DLQs empty.",
         file=out,
     )
     print(
         "Every other open alert of the wearable up to the press (e.g. from --alerts)"
-        " is cancelled too, with its own update email. An unassigned device cancels"
-        " under RESIDENT#unassigned and emails nobody. If the outcome is"
-        " 'no_open_alerts', the cancel was handled before the fall was stored: the"
-        " fall then escalates to the nurses after 60 s.",
+        " (open or acknowledged) is cancelled too, with its own update email. An"
+        " unassigned device cancels under RESIDENT#unassigned and emails only the"
+        " nurses. If the outcome is 'no_open_alerts', the cancel was handled before"
+        " the fall was stored: the fall stays open.",
         file=out,
     )
 
@@ -492,6 +504,13 @@ def report_ingest(
         print(f"  {kind:<9}  {message:<6}  {payload['message_id']}", file=out)
     valid_ids = [p["message_id"] for k, _, p in messages if k == "valid"]
     invalid_ids = [p["message_id"] for k, _, p in messages if k == "invalid"]
+    if any(message == "fall" for _, message, _ in messages):
+        print(
+            f"Expect within a minute, if {device_id} is assigned to a resident: a"
+            " 'SilverCare CRITICAL alert: Fall' email to caregivers and to the nurse"
+            " subscribers at once (unassigned: nurses only).",
+            file=out,
+        )
     # The plain command stays the last line (scripts and tests read it from there).
     print(
         "Next, on the host with your AWS credentials, check silvercare-latest and"

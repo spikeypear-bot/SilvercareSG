@@ -34,6 +34,7 @@ OUR_KEYS = {
     "reason",
     "error",
     "dispatch_latency_ms",
+    "nurses",
 }
 
 
@@ -122,6 +123,7 @@ def test_suppressed_log_line_has_ids_and_severity(aws, logs):
         "device_id": DEVICE,
         "resident_id": RESIDENT,
         "outcome": "suppressed",
+        "nurses": "none",
     }
 
 
@@ -186,7 +188,9 @@ def test_warning_does_not_hold_back_a_critical_alert(aws):
     run(vitals(2, at(5), severity="critical"))
 
     assert stored_ids(aws) == {aid(1), aid(2)}
-    assert len(aws.sns.publishes) == 2
+    assert len(aws.alert_publishes()) == 2
+    # The critical one also went to the nurses at once (alert-routing).
+    assert len(aws.nurse_publishes()) == 1
 
 
 def test_critical_does_not_hold_back_a_warning(aws):
@@ -285,7 +289,9 @@ def test_unassigned_alerts_from_different_devices_are_not_suppressed(aws):
     run(vitals(2, at(5), resident_id="unassigned", device_id="wearable-0002"))
 
     assert stored_ids(aws) == {aid(1), aid(2)}
-    assert aws.sns.publishes == []
+    assert aws.alert_publishes() == []
+    # Unassigned alerts go to the nurses at once, one email each (alert-routing).
+    assert len(aws.nurse_publishes()) == 2
 
 
 # ---- retries (criteria 17, 20) ----
@@ -437,7 +443,7 @@ def test_archive_has_severity(aws):
 def test_published_subject_per_severity(aws, severity, subject):
     run(vitals(1, at(0), severity=severity))
 
-    (call,) = aws.sns.publishes
+    (call,) = aws.alert_publishes()
     assert call["Subject"] == subject
     assert f"Severity: {severity.capitalize()}" in call["Message"]
 
@@ -445,7 +451,7 @@ def test_published_subject_per_severity(aws, severity, subject):
 def test_no_pulse_email_has_the_no_pulse_line(aws):
     run(vitals(1, at(0), "hr_low", "critical", details=NO_PULSE_DETAILS))
 
-    (call,) = aws.sns.publishes
+    (call,) = aws.alert_publishes()
     assert call["Subject"] == "SilverCare CRITICAL alert: Low heart rate - res-0003"
     assert "Reading: no pulse detected for 10 s (heart rate 0 bpm)" in call["Message"]
 

@@ -51,7 +51,14 @@ function from the same zip, each with its own role, log group, and failure handl
     alerts should have one: a dropped message there is a lost alert.
   - A message that sends a time-bound notification ("no response within 60 s") can be
     redriven from a DLQ hours later: decide in the spec what a late one does (e.g.
-    skip it as stale) and say so in the DLQ alarm text.
+    skip it as stale) and say so in the DLQ alarm text. Set the stale cutoff above the
+    last automatic retry (delay + (maxReceiveCount − 1) × visibility timeout), and
+    recheck it whenever the delay changes: a check skipped as stale counts as success,
+    so a persistent failure would never reach the DLQ or its alarm.
+  - Free text that ends up in an email (a note, a name): reject Unicode category C
+    except `\n` (bidi overrides, zero-width characters) and U+2028/U+2029, and set it
+    apart in the body (e.g. quote each line with `> `) so it can't pass for the
+    system's own lines or links.
 - Use type hints. Keep functions small.
 
 ## API handlers

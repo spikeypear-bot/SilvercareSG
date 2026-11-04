@@ -213,6 +213,34 @@ def test_report_ingest_prints_ids_and_command_but_no_values(smoke):
         assert value not in text
 
 
+def test_report_ingest_for_a_wearable_expects_the_fall_at_caregivers_and_nurses(
+    smoke,
+):
+    messages = smoke.build_ingest_messages("wearable", FIXED_NOW, counter_ids())
+    out = io.StringIO()
+
+    smoke.report_ingest(WEARABLE, messages, out)
+
+    text = out.getvalue()
+    # docs/features/alert-routing.md, criterion 18.
+    assert (
+        "'SilverCare CRITICAL alert: Fall' email to caregivers and to the nurse"
+        " subscribers at once (unassigned: nurses only)" in text
+    )
+    # The plain command stays the last line.
+    last = text.strip().splitlines()[-1]
+    assert last.lstrip().startswith("python scripts/ingest-check.py --device")
+
+
+def test_report_ingest_for_a_bedroom_device_expects_no_alert_email(smoke):
+    messages = smoke.build_ingest_messages("bedroom", FIXED_NOW, counter_ids())
+    out = io.StringIO()
+
+    smoke.report_ingest(BEDROOM, messages, out)
+
+    assert "SilverCare" not in out.getvalue()
+
+
 def test_printed_command_round_trips_through_ingest_check(
     smoke, check_mod, monkeypatch
 ):

@@ -3,6 +3,25 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-04
+
+- **Problem:** `alert-routing` raised the escalation delay from 60 s to 300 s but kept
+  the 15-minute stale cutoff, so a check failing on every try would be dropped as stale
+  and never reach the DLQ alarm (found by iac-reviewer). **Changed:**
+  `.claude/skills/lambda-python/SKILL.md`: the stale cutoff must sit above the last
+  retry and be rechecked when the delay changes; `.claude/skills/feature-spec/SKILL.md`:
+  checklist item to recheck changed timings against the others. (Fix: cutoff 20 min.)
+
+- **Problem:** the nurse's free-text note, emailed to caregivers, accepted bidi,
+  zero-width, and U+2028 characters and could imitate the email's own lines (found by
+  privacy-reviewer). **Changed:** `.claude/skills/lambda-python/SKILL.md`: rules for
+  free text in emails (reject category C except `\n` and U+2028/2029; quote it).
+
+- **Problem:** the spec's sender checks for Track B didn't say to validate the note
+  before sending (a bad note would sit in the DLQ, no error for the nurse) or to never
+  log request bodies. **Changed:** `.claude/skills/feature-spec/SKILL.md`: the
+  sender-checks item now includes both.
+
 ## 2026-11-03
 
 - **Problem:** the live `--alerts` check (spec by Claude) sent heart rates 125/128 at
