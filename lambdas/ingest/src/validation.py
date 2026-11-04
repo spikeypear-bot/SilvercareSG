@@ -31,7 +31,7 @@ TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 # Messages each device type may send (docs/metrics.md, Summary).
 ALLOWED_MESSAGES: dict[str, frozenset[str]] = {
-    "wearable": frozenset({"vitals", "fall", "status"}),
+    "wearable": frozenset({"vitals", "vitals_alert", "fall", "status", "alert_cancel"}),
     "bedroom": frozenset({"motion", "bed", "status"}),
 }
 
@@ -40,6 +40,26 @@ FALL_WINDOW_HZ = 25
 FALL_WINDOW_START_OFFSET_MS = -1000
 FALL_WINDOW_SAMPLES = 50
 FW_VERSION_MAX_LEN = 32
+
+# vitals_alert (docs/metrics.md; docs/features/vitals-alerts.md, criterion 13): the
+# device's fixed limits and the valid value range per metric. hr_bpm 0 means "no pulse
+# detected while worn" and is only valid with direction below.
+VITALS_ALERT_DIRECTIONS = frozenset({"above", "below"})
+VITALS_ALERT_METRICS: dict[str, dict[str, Any]] = {
+    "hr_bpm": {
+        "values": (20, 250),
+        "extra_values": frozenset({0}),
+        "limits": frozenset({45, 130}),
+        "directions": VITALS_ALERT_DIRECTIONS,
+    },
+    "spo2_pct": {
+        "values": (50, 100),
+        "extra_values": frozenset(),
+        "limits": frozenset({88}),
+        "directions": frozenset({"below"}),
+    },
+}
+NO_PULSE_VALUE = 0
 
 
 @dataclass(frozen=True)
@@ -124,11 +144,22 @@ STORED_FIELDS: dict[tuple[str, str], dict[str, Field]] = {
         "skin_temp_c": Field("number", nullable=True, minimum=20.0, maximum=45.0),
         "activity_pct": Field("int", minimum=0, maximum=100),
     },
+    ("wearable", "vitals_alert"): {
+        # Type checks only here; the per-metric rules are in _check_vitals_alert.
+        "metric": Field("str", max_len=16),
+        "value": Field("int"),
+        "limit": Field("int"),
+        "direction": Field("str", max_len=16),
+        "held_s": Field("int", minimum=10, maximum=600),
+    },
     ("wearable", "fall"): {
         "confidence": Field("number", minimum=0.0, maximum=1.0),
         "peak_g": Field("number", minimum=0, maximum=16),
         "still_s": Field("int", minimum=0, maximum=600),
     },
+    # The "I'm OK" button (docs/features/alert-cancel.md, criteria 1 and 4): envelope
+    # only, so no stored fields beyond the envelope.
+    ("wearable", "alert_cancel"): {},
     ("wearable", "status"): {
         "battery_pct": Field("int", minimum=0, maximum=100),
         "worn": Field("bool"),
@@ -187,9 +218,50 @@ def _check_accel_window(payload: dict) -> str | None:
     return None
 
 
+def _check_vitals_alert(payload: dict) -> str | None:
+    """Per-metric rules for vitals_alert (types and held_s are already checked).
+
+    Types and ranges only, on purpose (docs/features/vitals-alerts.md, decisions
+    table): no check that `value` is past `limit` or that `limit` matches `direction`,
+    so a device quirk can never drop a critical alert.
+    """
+    rules = VITALS_ALERT_METRICS.get(payload["metric"])
+    if rules is None:
+        return "invalid:metric"
+    if payload["direction"] not in VITALS_ALERT_DIRECTIONS:
+        return "invalid:direction"
+    value = payload["value"]
+    low, high = rules["values"]
+    if not (low <= value <= high or value in rules["extra_values"]):
+        return "out_of_range:value"
+    if payload["limit"] not in rules["limits"]:
+        return "invalid:limit"
+    if payload["direction"] not in rules["directions"]:
+        return "invalid:direction"
+    if value == NO_PULSE_VALUE and payload["direction"] != "below":
+        return "invalid:direction"
+    return None
+
+
+# The envelope plus the fields the IoT rule adds (device_id, message, received_at).
+ENVELOPE_AND_RULE_FIELDS = frozenset(
+    {"schema_version", "message_id", "ts", "device_id", "message", "received_at"}
+)
+
+
+def _check_envelope_only(payload: dict) -> str | None:
+    """alert_cancel is envelope only (docs/features/alert-cancel.md, criterion 4):
+    unlike other messages, unknown fields reject it instead of being dropped."""
+    if set(payload) - ENVELOPE_AND_RULE_FIELDS:
+        return "unknown_field"
+    return None
+
+
 EXTRA_CHECKS: dict[tuple[str, str], Callable[[dict], str | None]] = {
     ("wearable", "vitals"): _check_accel_g,
     ("wearable", "fall"): _check_accel_window,
+    ("wearable", "vitals_alert"): _check_vitals_alert,
+    ("wearable", "alert_cancel"): _check_envelope_only,
 }
 
 
@@ -259,7 +331,8 @@ def validate_event(
         if reason:
             return Rejection(reason)
 
-    # Unknown fields, accel_g, and accel_window are dropped here (criteria 13, 18).
+    # Unknown fields, accel_g, and accel_window are dropped here (criteria 13, 18);
+    # alert_cancel was already rejected above if it had any unknown field.
     return ValidMessage(
         device_id=device_id,
         device_type=device_type,

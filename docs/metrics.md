@@ -28,7 +28,10 @@ home is a registry change, not a device change.
 
 Worn on the wrist. Measures heart rate, SpO2, skin temperature, and 3-axis acceleration.
 Runs fall detection on the device and sends a `fall` event when it detects one; raw
-acceleration is not streamed.
+acceleration is not streamed. Also sends a `vitals_alert` at once when heart rate or
+SpO2 stays past a fixed critical limit for 10 seconds (the device safety net). Has an
+"I'm OK" button: pressing it sends an `alert_cancel`, which cancels the wearable's open
+alerts.
 
 ### Bedroom sensor (`bedroom`)
 
@@ -90,7 +93,8 @@ below.
   these (`device_id` and `message` from the topic, `received_at` from `timestamp()`), and
   a message that already has any of them is dropped by the rule, so a device can't
   claim to be another device.
-- Unknown fields are ignored. A missing required field, a wrong type, or an
+- Unknown fields are ignored, except in `alert_cancel`, which is envelope only and is
+  rejected if it has any other field. A missing required field, a wrong type, or an
   out-of-range value rejects the message: the ingest Lambda logs `device_id`,
   `message_id`, and the reason, and drops it. The raw message is still kept in S3
   history (see `docs/decisions/0001-iot-rule-routing.md`).
@@ -109,7 +113,9 @@ below.
 | Device | Message | Kind | Rate |
 |---|---|---|---|
 | wearable | `vitals` | reading | every 60 s while worn |
+| wearable | `vitals_alert` | event | when heart rate or SpO2 stays past a fixed critical limit for 10 s, then every 5 min while it lasts (only while worn) |
 | wearable | `fall` | event | when a fall is detected |
+| wearable | `alert_cancel` | event | once per "I'm OK" press (rare; presses at least 5 s apart) |
 | wearable | `status` | heartbeat | every 5 min, and immediately when `worn` or `charging` changes |
 | bedroom | `motion` | event | when motion state changes |
 | bedroom | `bed` | event | when bed occupancy changes |
@@ -150,6 +156,69 @@ errors and rejected; values inside it but abnormal are what alerts check.
 }
 ```
 
+### `wearable` → `vitals_alert`
+
+Added to v1 on 2026-11-02 (docs/features/vitals-alerts.md); `schema_version` stays `1`,
+because adding a message type is an addition. An instant safety net alongside the
+cloud's per-resident check of `vitals`, for emergencies where waiting up to 60 s for
+the next `vitals` message is too slow. The limits are fixed and the same for every
+resident, because a device doesn't know who wears it:
+
+| Metric | Sends when |
+|---|---|
+| heart rate | below 45 or above 130 bpm, or no pulse (0 bpm) |
+| SpO2 | below 88 % |
+
+- A reading must stay past the limit for **10 seconds** before the device sends, to
+  filter motion glitches. Skin temperature is not included (wrist temperature is
+  unreliable).
+- Sent once when the condition starts, then again every 5 minutes while it lasts.
+- Sent only while the wearable is worn (`worn` true, skin contact). `hr_bpm` `0` means
+  skin contact but no pulse found for 10 s (e.g. cardiac arrest). Off the wrist the
+  wearable sends nothing (routine `vitals` use `null` for "no reading", which is never
+  an alert, because a loose strap looks the same).
+- The limits are synthetic and must be checked with a clinician before any real use.
+
+| Field | Type | Unit | Valid range | Description |
+|---|---|---|---|---|
+| `metric` | string | — | `hr_bpm` or `spo2_pct` | Which reading crossed its limit. |
+| `value` | integer | bpm or % | `hr_bpm` 0 or 20–250, `spo2_pct` 50–100 | The reading that triggered it. `hr_bpm` 0 = no pulse detected while worn. |
+| `limit` | integer | bpm or % | `hr_bpm` 45 or 130, `spo2_pct` 88 | The fixed device limit crossed. |
+| `direction` | string | — | `above` or `below`; `spo2_pct` only `below`; `value` 0 only `below` | Which side of the limit. |
+| `held_s` | integer | s | 10–600 | Seconds the reading stayed past the limit. |
+
+```json
+{
+  "schema_version": 1,
+  "message_id": "3b9e2f1a-7c4d-4e8b-9a6f-1d2c3b4a5e60",
+  "ts": "2026-10-18T03:15:10.000Z",
+  "metric": "hr_bpm",
+  "value": 140,
+  "limit": 130,
+  "direction": "above",
+  "held_s": 10
+}
+```
+
+No pulse:
+
+```json
+{
+  "schema_version": 1,
+  "message_id": "8c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+  "ts": "2026-10-18T03:15:20.000Z",
+  "metric": "hr_bpm",
+  "value": 0,
+  "limit": 45,
+  "direction": "below",
+  "held_s": 10
+}
+```
+
+The `alert` IoT rule routes it, with `fall`, to `critical-alert`, which raises a
+critical alert at once (`hr_bpm` + `above` → `hr_high`, `hr_bpm` + `below` → `hr_low`,
+`spo2_pct` + `below` → `spo2_low`).
+
 ### `wearable` → `fall`
 
 Sent once when on-device detection sees a fall: an impact above ~2.5 g, then a change
@@ -185,6 +254,34 @@ of orientation, then little movement. `ts` is the time of the impact.
   }
 }
 ```
+
+### `wearable` → `alert_cancel`
+
+Added to v1 on 2026-11-03 (docs/features/alert-cancel.md); `schema_version` stays `1`,
+because adding a message type is an addition. Sent once when the resident presses the
+wearable's "I'm OK" button. The device sends at most one per press and accepts presses
+at least 5 seconds apart, so the rate is rare. `ts` is the time of the press.
+
+Envelope only: `schema_version`, `message_id`, `ts`, and no other fields. Unlike the
+other messages, an `alert_cancel` with any other field is rejected (not ignored).
+Bedroom sensors can't send it (their device policy doesn't allow the topic).
+
+```json
+{
+  "schema_version": 1,
+  "message_id": "6d2a4c8e-1f3b-4a5d-9e7c-2b4d6f8a0c13",
+  "ts": "2026-11-03T02:00:05.000Z"
+}
+```
+
+The `alert` IoT rule routes it, with `fall` and `vitals_alert`, to `critical-alert`,
+which looks up the wearable's resident and sends a `status_update` to the alerts queue
+(contract in `docs/data-model.md`). `alert-processor` then cancels **every** alert from
+that wearable that is still `open` with `event_ts` up to the time the IoT rule
+received the press (`received_at`, server time, not the device's `ts`) (falls,
+warnings, and critical vitals alerts, including no pulse): they stop escalating, and
+caregivers (plus nurses, if already escalated to) get a short "cancelled" follow-up
+email. The message is also stored in the device's latest 5 (`MSG#alert_cancel`).
 
 ### `wearable` → `status`
 
@@ -269,41 +366,28 @@ component raises each one is in `docs/decisions/0001-iot-rule-routing.md`.
 - **Confirmed fall:** a wearable `fall` event.
 - **Possible fall:** bedroom `bed` → `occupied: false`, then `motion: false` and no
   `occupied: true` within N minutes, at night. Stronger when the wearable is not worn.
-- **Abnormal vitals:** `vitals` compared against **per-resident** thresholds (each
-  resident has their own limits for heart rate, SpO2, and skin temperature).
-- **Critical vitals (device safety net):** a wearable `vitals_alert` event, sent at
-  once without waiting for the 60 s `vitals` message (below).
-
-### Planned: `wearable` → `vitals_alert`
-
-Decided 2026-10-25, built with the alerting feature: **not** in the v1 contract yet.
-Devices don't send it, the device policy doesn't allow its topic, and no rule routes
-it until then.
-
-An instant safety net alongside the cloud's per-resident check, for emergencies where
-waiting up to 60 s for the next `vitals` message is too slow. The limits are fixed and
-the same for every resident, because a device doesn't know who wears it:
-
-| Metric | Sends when |
-|---|---|
-| heart rate | below 45 or above 130 bpm |
-| SpO2 | below 88 % |
-
-- A reading must stay past the limit for **10 seconds** before the device sends, to
-  filter motion glitches. Skin temperature is not included (wrist temperature is
-  unreliable).
-- Sent once when the condition starts, then again every 5 minutes while it lasts.
-- Payload fields to be finalised in the alerting spec; expected: `metric`
-  (`hr_bpm` or `spo2_pct`), `value`, `limit`, `direction` (`below` or `above`),
-  `held_s`, plus the envelope.
-- The limits must be checked with a clinician before any real use.
+- **Abnormal vitals (cloud check, built in docs/features/vitals-alerts.md):**
+  `telemetry` compares every wearable `vitals` message with the resident's thresholds
+  (their `THRESHOLDS` item in the registry, per limit, else the defaults: heart rate
+  below 50 or above 120 bpm, SpO2 below 92 %, skin temperature below 30.0 or above
+  38.0 °C; a value equal to a limit is normal, `null` is never abnormal). For each
+  metric it raises a **warning** when the device's newest two readings are both
+  abnormal in the same direction and at most 3 minutes apart. Alert types: `hr_high`,
+  `hr_low`, `spo2_low`, `skin_temp_high`, `skin_temp_low`.
+- **Critical vitals (device safety net, built):** a wearable `vitals_alert` event (above),
+  sent at once without waiting for the 60 s `vitals` message; a **critical** alert.
+- **Repeats:** the same alert type and severity for the same resident is emailed at
+  most once per 30 minutes (`alert-processor`); falls are never held back.
+- **Cancel (built in docs/features/alert-cancel.md):** a wearable `alert_cancel`
+  cancels that wearable's open alerts up to the time the press was received
+  (`received_at`).
 - **Device problems:** device offline, low battery, wearable not worn for a long time.
 
 ## Volume
 
 | Device | Messages / day / device | × 20 |
 |---|---|---|
-| wearable | ~1,440 vitals + ~300 status + rare falls ≈ 1,750 | ~35,000 |
+| wearable | ~1,440 vitals + ~300 status + rare falls, vitals alerts, and cancels ≈ 1,750 | ~35,000 |
 | bedroom | ~290 status + ~70 motion/bed ≈ 360 | ~7,200 |
 | **Total** | | **~42,000 / day ≈ 1.3 M / month** |
 
@@ -328,7 +412,8 @@ the contract does not have, change the contract first.
 
 ## Out of scope for v1
 
-- SOS / help button on the wearable.
+- SOS / help button on the wearable. (The "I'm OK" button, which only cancels the
+  wearable's open alerts with `alert_cancel`, is in v1.)
 - Commands or configuration pushed to devices.
 - Raw accelerometer streaming and cloud-side fall detection.
 - GPS or in-home room-level location (location is the home the device is registered to).

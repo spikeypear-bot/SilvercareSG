@@ -28,6 +28,7 @@ POWERTOOLS_KEYS = {"level", "location", "message", "timestamp", "service"}
 OUR_KEYS = {
     "alert_id",
     "alert_type",
+    "severity",
     "device_id",
     "resident_id",
     "outcome",
@@ -36,7 +37,7 @@ OUR_KEYS = {
     "dispatch_latency_ms",
 }
 ARCHIVE_KEY = f"alerts/date=2026-10-18/{ALERT_ID}.json"
-SUBJECT = "SilverCare alert: Fall - res-0003"
+SUBJECT = "SilverCare CRITICAL alert: Fall - res-0003"
 
 _d = TypeDeserializer()
 _s = TypeSerializer()
@@ -143,6 +144,7 @@ def test_valid_alert_is_stored_with_data_model_attributes(aws):
         "sk",
         "alert_id",
         "alert_type",
+        "severity",
         "device_id",
         "event_ts",
         "received_at",
@@ -152,11 +154,13 @@ def test_valid_alert_is_stored_with_data_model_attributes(aws):
         "details",
         "open_pk",
         "notified_at",
+        "escalation_queued_at",
     }
     assert item["pk"] == f"RESIDENT#{RESIDENT}"
     assert item["sk"] == f"ALERT#{EVENT_TS}#{ALERT_ID}"
     assert item["alert_id"] == ALERT_ID
     assert item["alert_type"] == "fall"
+    assert item["severity"] == "critical"
     assert item["device_id"] == DEVICE
     assert item["event_ts"] == EVENT_TS
     assert item["received_at"] == RECEIVED_AT
@@ -215,8 +219,9 @@ def test_archive_is_the_item_as_one_json_object(aws):
     text = aws.s3.get_object(Bucket=BUCKET, Key=ARCHIVE_KEY)["Body"].read().decode()
     archived = json.loads(text, parse_float=Decimal)
     item = only_item(aws)
-    # Archived before notify, so notified_at isn't in the object.
-    assert archived == {k: v for k, v in item.items() if k != "notified_at"}
+    # Archived before notify and the escalation check, so neither timestamp is in it.
+    later = {"notified_at", "escalation_queued_at"}
+    assert archived == {k: v for k, v in item.items() if k not in later}
     assert '"confidence":0.91' in text
 
 
@@ -579,6 +584,7 @@ def test_one_log_line_per_message_with_ids_and_outcome(aws, logs):
     assert rec["message"] == "alert"
     assert rec["alert_id"] == ALERT_ID
     assert rec["alert_type"] == "fall"
+    assert rec["severity"] == "critical"
     assert rec["device_id"] == DEVICE
     assert rec["resident_id"] == RESIDENT
     assert rec["outcome"] == "notified"

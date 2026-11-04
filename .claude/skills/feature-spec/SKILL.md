@@ -33,11 +33,23 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] Every acceptance criterion is testable: a tester could write a pass/fail test for it.
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
       **specific resident** is decided.
+- [ ] When a group gains a new action (e.g. caregivers acknowledge), the spec says what
+      other users see about who did it (name, role, or nothing): that's a who-sees-what
+      decision for the user.
+- [ ] A message or contract another component sends (e.g. a queue message from Track B's
+      API carrying who did something) states the checks the **sender** must make
+      (identity from the verified token, group, resident link): the receiver can't.
+- [ ] Live checks (smoke tests against AWS) don't rely on shared data teammates can
+      change (e.g. thresholds: use values that fail any sensible limit), and space out
+      messages whose order matters (sent together, they run in parallel).
 - [ ] Every API route has method, path, groups, a request example, a response example
       per role, and error cases.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.
 - [ ] Data reads and writes map to access patterns in `docs/data-model.md` (or new ones
       are described).
+- [ ] Alerting inputs: validation ranges don't reject the emergency itself. Ranges
+      copied from routine readings can (heart rate 0 = no pulse, cardiac arrest); for
+      each alert, check the worst real reading is still accepted.
 - [ ] Personal data touched is listed, with its retention.
 - [ ] Out of scope is filled in.
 - [ ] Open questions is empty.

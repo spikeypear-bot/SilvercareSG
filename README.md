@@ -127,10 +127,16 @@ in the S3 history bucket, which is written in batches of up to 5 minutes. Leave 
 
 ## Alerts
 
-A wearable `fall` becomes an alert: `fall-alert` sends it to the `silvercare-alerts`
-queue, and `alert-processor` stores it in `silvercare-alerts`, archives it in S3
-`alerts/`, and emails the resident's subscribers. The spec is
-`docs/features/alerts-core.md`.
+A wearable `fall` or `vitals_alert` (a critical reading on the device, including no
+pulse) becomes a **critical** alert: `critical-alert` sends it to the
+`silvercare-alerts` queue. Two abnormal `vitals` in a row (per-resident thresholds)
+become a **warning**, sent by `telemetry`. `alert-processor` holds back repeats (same
+resident, type, and severity within 30 minutes), stores the alert in
+`silvercare-alerts`, archives it in S3 `alerts/`, and emails the resident's
+subscribers. The specs are `docs/features/alerts-core.md` and
+`docs/features/vitals-alerts.md`. If an alert is still open 60 s after the first
+email (nobody acknowledged or cancelled it), `alert-processor` emails the nurse
+subscribers too ("ESCALATED"; `docs/features/escalation.md`).
 
 ### Subscribers
 
@@ -139,9 +145,10 @@ privately with the rest of `secrets/`:
 
 ```json
 {
-  "subscriber_emails": { "family-c1": "you@example.com", "ops-1": "you@example.com" },
+  "subscriber_emails": { "family-c1": "you@example.com", "ops-1": "you@example.com", "nurse-1": "you@example.com" },
   "alert_subscribers": { "family-c1": { "resident_ids": ["res-0001"] } },
-  "ops_subscribers": ["ops-1"]
+  "ops_subscribers": ["ops-1"],
+  "nurse_subscribers": ["nurse-1"]
 }
 ```
 
@@ -153,6 +160,7 @@ Secrets and variables → Actions), each as compact JSON:
 | `SUBSCRIBER_EMAILS` | secret | `subscriber_emails` (label → email) |
 | `ALERT_SUBSCRIBERS` | variable | `alert_subscribers` (label → resident IDs) |
 | `OPS_SUBSCRIBERS` | variable | `ops_subscribers` (labels that get DLQ alarm emails) |
+| `NURSE_SUBSCRIBERS` | variable | `nurse_subscribers` (labels that get escalated alerts for every resident) |
 
 - Labels appear in the public plan comment: use `family-c1`, `ops-1`, never names.
 - Use team addresses, not real family members': emails are stored in the Terraform
@@ -177,7 +185,8 @@ venv from "Checking ingest"):
 
 It creates synthetic residents `res-0001`–`res-0003`, assigns `wearable-000N` and
 `bedroom-000N` (N = 1–3) to `res-000N`, and adds every other device as an unassigned
-spare. Existing items are left alone (`exists`), so running it again is safe.
+spare. It also gives `res-0002` a personal SpO2 limit of 88 % (`THRESHOLDS#res-0002`).
+Existing items are left alone (`exists`), so running it again is safe.
 
 For the full synthetic data set (20 residents with thresholds, all 40 devices assigned,
 4 test Cognito users, one per group, and their links), use `scripts/seed.py`
@@ -205,11 +214,56 @@ The smoke test sends a valid `fall`. Expect, within a minute:
 - one email to `res-0001`'s subscribers, and none to anyone else;
 - one item under `RESIDENT#res-0001` in `silvercare-alerts`, and one object under
   `alerts/date=<today, UTC>/` in the history bucket;
-- both `silvercare-alerts-dlq` and `silvercare-fall-alert-dlq` empty;
+- both `silvercare-alerts-dlq` and `silvercare-critical-alert-dlq` empty (the shared
+  developer user can't read SQS: check that CloudWatch alarms
+  `silvercare-alerts-dlq-not-empty` and `silvercare-critical-alert-dlq-not-empty` are
+  OK);
 - a datapoint for the `AlertDispatchLatency` metric (CloudWatch → Metrics →
   `SilverCare`).
 
 Then run it with `DEVICE=wearable-0010` (unassigned): one item under
 `RESIDENT#unassigned`, and no email. If a DLQ alarm email arrives, look at the queue's
-messages and the `/aws/lambda/silvercare-fall-alert` and
+messages and the `/aws/lambda/silvercare-critical-alert` and
 `/aws/lambda/silvercare-alert-processor` logs.
+
+Vitals alerts, from an assigned wearable:
+
+```sh
+make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) ALERTS=1
+```
+
+It sends two high heart-rate `vitals` (one **warning**, "High heart rate"), a device
+`vitals_alert` at 140 bpm and one with no pulse (two **CRITICAL** emails), then a third
+high `vitals` that is suppressed (no email). Expect three emails, three new items under
+`RESIDENT#res-0001`, and the suppressed one only as `suppressed` in the
+`/aws/lambda/silvercare-alert-processor` log. Running it again within 30 minutes
+suppresses the warning and both critical alerts. No warning email? The resident may
+have a personal limit (`THRESHOLDS#<resident>` in `silvercare-registry`) above the
+test readings (180–185 bpm): then they are normal and no warning is correct.
+
+Escalation: after any alert email, wait about a minute. Each nurse subscriber gets
+"SilverCare ESCALATED alert: …" for every alert that is still `open` (the
+`/aws/lambda/silvercare-alert-processor` log shows `escalated`). To check that an
+acknowledged alert doesn't escalate, send a fall (`INGEST=1`), then within 60 s open
+its item in DynamoDB → `silvercare-alerts` and set `status` to `acknowledged`: no
+nurse email, and the log shows `not_escalated` with reason `status:acknowledged`. If an
+escalation fails (an AWS error), it is retried after 3 minutes, so the nurse email
+can arrive about 4 minutes late; after 5 failures it lands in `silvercare-alerts-dlq`
+(alarm email). A check older than 15 minutes, e.g. one redriven from the DLQ later,
+emails nobody (`not_escalated`, reason `stale`).
+
+Subscriptions to `silvercare-alerts` and `silvercare-nurses` can only be added by the
+deploy (Terraform); adding one in the console is denied on purpose.
+
+Cancel ("I'm OK" on the wearable, `docs/features/alert-cancel.md`):
+
+```sh
+make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) CANCEL=1
+```
+
+It sends a `fall`, then an `alert_cancel` 5 s later. Expect the fall email, then
+"SilverCare update: Fall - res-0001 cancelled", and **no** nurse email (the cancel
+lands before the 60 s escalation). The alert item shows `status` `cancelled`, has no
+`open_pk`, and has an `expires_at` 30 days out. A press cancels every open alert from
+that wearable, so earlier test alerts that are still open get cancelled (and emailed)
+too.

@@ -1,4 +1,5 @@
-"""scripts/seed-registry.py (docs/features/alerts-core.md, criteria 30 and 34).
+"""scripts/seed-registry.py (docs/features/alerts-core.md, criteria 30 and 34;
+docs/features/vitals-alerts.md, criterion 26).
 
 Pure item building, the conditional put, and main() with moto or fakes. No network
 (the autouse no_network fixture), and every file written goes under tmp_path.
@@ -116,18 +117,53 @@ def test_every_device_in_the_repo_list_gets_one_item(seed):
     }
 
 
-def test_residents_come_first(seed, devices_file):
+def test_residents_then_thresholds_then_devices(seed, devices_file):
     items = seed.build_items(seed.load_devices(devices_file), NOW)
 
     assert [i["sk"] for i in items[:3]] == ["PROFILE"] * 3
-    assert all(i["sk"] == "ASSIGNMENT" for i in items[3:])
+    assert items[3]["pk"] == "THRESHOLDS#res-0002"
+    assert all(i["sk"] == "ASSIGNMENT" for i in items[4:])
 
 
-def test_serialize_writes_every_attribute_as_a_string(seed):
+def test_threshold_item_is_exact(seed):
+    assert seed.threshold_items(NOW) == [
+        {
+            "pk": "THRESHOLDS#res-0002",
+            "sk": "THRESHOLDS",
+            "spo2_pct": {"min": 88},
+            "updated_at": STAMP,
+        }
+    ]
+
+
+def test_threshold_item_has_no_updated_by(seed):
+    (item,) = seed.threshold_items(NOW)
+
+    assert "updated_by" not in item
+
+
+def test_serialize_writes_strings_as_s(seed):
     assert seed.serialize({"pk": "DEVICE#wearable-0001", "sk": "ASSIGNMENT"}) == {
         "pk": {"S": "DEVICE#wearable-0001"},
         "sk": {"S": "ASSIGNMENT"},
     }
+
+
+def test_serialize_writes_threshold_maps_and_numbers(seed):
+    (item,) = seed.threshold_items(NOW)
+
+    assert seed.serialize(item) == {
+        "pk": {"S": "THRESHOLDS#res-0002"},
+        "sk": {"S": "THRESHOLDS"},
+        "spo2_pct": {"M": {"min": {"N": "88"}}},
+        "updated_at": {"S": STAMP},
+    }
+
+
+@pytest.mark.parametrize("value", [True, 1.5, None, [1]])
+def test_serialize_refuses_unsupported_types(seed, value):
+    with pytest.raises(TypeError):
+        seed.serialize({"pk": "p", "x": value})
 
 
 def test_iso_now_is_utc_to_the_second(seed):
@@ -257,7 +293,10 @@ def test_main_writes_every_item(seed, moto_registry, devices_file):
     assert stored[("DEVICE#wearable-0001", "ASSIGNMENT")]["resident_id"] == {
         "S": "res-0001"
     }
-    assert out.getvalue().splitlines()[-1] == "done: 7 created"
+    assert stored[("THRESHOLDS#res-0002", "THRESHOLDS")]["spo2_pct"] == {
+        "M": {"min": {"N": "88"}}
+    }
+    assert out.getvalue().splitlines()[-1] == "done: 8 created"
 
 
 def test_second_run_changes_nothing_and_reports_exists(
@@ -280,7 +319,7 @@ def test_second_run_changes_nothing_and_reports_exists(
     assert scan(moto_registry) == before
     lines = out.getvalue().splitlines()
     assert all(line.endswith(": exists") for line in lines[:-1])
-    assert lines[-1] == "done: 7 exists"
+    assert lines[-1] == "done: 8 exists"
 
 
 def test_existing_assignment_is_never_reassigned(seed, moto_registry, devices_file):
@@ -302,7 +341,28 @@ def test_existing_assignment_is_never_reassigned(seed, moto_registry, devices_fi
     item = scan(moto_registry)[("DEVICE#wearable-0001", "ASSIGNMENT")]
     assert item["resident_id"] == {"S": "res-0002"}
     assert "DEVICE#wearable-0001 / ASSIGNMENT: exists" in out.getvalue()
-    assert out.getvalue().splitlines()[-1] == "done: 6 created, 1 exists"
+    assert out.getvalue().splitlines()[-1] == "done: 7 created, 1 exists"
+
+
+def test_existing_thresholds_are_never_overwritten(seed, moto_registry, devices_file):
+    # Staff already set res-0002's own SpO2 limit.
+    moto_registry.put_item(
+        TableName="silvercare-registry",
+        Item={
+            "pk": {"S": "THRESHOLDS#res-0002"},
+            "sk": {"S": "THRESHOLDS"},
+            "spo2_pct": {"M": {"min": {"N": "90"}}},
+        },
+    )
+    out = io.StringIO()
+
+    seed.main(
+        ["--devices-file", str(devices_file)], client=moto_registry, out=out, now=NOW
+    )
+
+    item = scan(moto_registry)[("THRESHOLDS#res-0002", "THRESHOLDS")]
+    assert item["spo2_pct"] == {"M": {"min": {"N": "90"}}}
+    assert "THRESHOLDS#res-0002 / THRESHOLDS: exists" in out.getvalue()
 
 
 def test_output_has_only_keys_and_outcomes(seed, moto_registry, devices_file):
@@ -313,7 +373,15 @@ def test_output_has_only_keys_and_outcomes(seed, moto_registry, devices_file):
     )
 
     text = out.getvalue()
-    for hidden in ("Test Resident", "home-000", STAMP, "entity_type", "gsi1"):
+    for hidden in (
+        "Test Resident",
+        "home-000",
+        STAMP,
+        "entity_type",
+        "gsi1",
+        "spo2_pct",
+        "88",
+    ):
         assert hidden not in text, hidden
     for line in text.splitlines()[:-1]:
         key, outcome = line.rsplit(": ", 1)
@@ -351,12 +419,13 @@ def test_dry_run_prints_items_and_writes_nothing(seed, devices_file, monkeypatch
         "RESIDENT#res-0001 / PROFILE: dry-run",
         "RESIDENT#res-0002 / PROFILE: dry-run",
         "RESIDENT#res-0003 / PROFILE: dry-run",
+        "THRESHOLDS#res-0002 / THRESHOLDS: dry-run",
         "DEVICE#wearable-0001 / ASSIGNMENT: dry-run",
         "DEVICE#wearable-0004 / ASSIGNMENT: dry-run",
         "DEVICE#bedroom-0001 / ASSIGNMENT: dry-run",
         "DEVICE#bedroom-0003 / ASSIGNMENT: dry-run",
     ]
-    assert lines[-1] == "done: 7 dry-run"
+    assert lines[-1] == "done: 8 dry-run"
 
 
 def test_real_run_creates_client_in_singapore_region(seed, devices_file, monkeypatch):
@@ -375,7 +444,7 @@ def test_real_run_creates_client_in_singapore_region(seed, devices_file, monkeyp
 
     assert rc == 0
     assert created == [("dynamodb", REGION)]
-    assert len(fake.items) == 7
+    assert len(fake.items) == 8
 
 
 def test_import_creates_no_aws_client(monkeypatch):

@@ -16,7 +16,7 @@ host. The container has no AWS credentials: AWS calls go to moto or DynamoDB Loc
 | `make up` / `make down` | Start/stop the dev container and DynamoDB Local in the background. While `up`, commands use `exec` (faster), and the format hook can format Python and Terraform. |
 | `make test` / `make test FN=<name>` | Unit tests for every Lambda, each in its own pytest run (they all have a module named `handler`) |
 | `make test-integration [FN=<name>]` | Only tests marked `@pytest.mark.integration`, against DynamoDB Local |
-| `make lint` / `make fmt` | Ruff check + format check / ruff format + terraform fmt |
+| `make lint` / `make fmt` | Ruff check + format check / ruff format + terraform fmt. The format hook only sees Edit/Write: after changing files with a shell script or `sed`, run `make fmt` (or `docker compose run --rm -T dev ruff format <file>`) before reporting done. |
 | `make tf-check` | terraform fmt check, validate (`init -backend=false`), tflint, checkov |
 | `make check` | test + lint + tf-check |
 | `make shell` | Shell in the container, for anything else |

@@ -35,7 +35,9 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
    dev container); fix any errors. Fix checkov findings or, if one doesn't apply, add a
    `#checkov:skip=<ID>:<reason>` comment on the resource and mention it in the summary.
 4. Summarise: resources added / changed / destroyed, and flag anything
-   destructive (replacements, deletions) or with ongoing cost.
+   destructive (replacements, deletions) or with ongoing cost. A replaced Lambda with a
+   new role is down for up to about a minute (destroy first, then IAM propagation),
+   not seconds: say so for anything on an alert path.
 
 ## Never
 - Run `terraform apply` or `terraform destroy`.

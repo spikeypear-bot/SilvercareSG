@@ -33,7 +33,7 @@ history queue that is written to S3 in batches (amended 2026-10-25, see
                     │
 device ── MQTT ──► IoT Core ─ rule: telemetry ─ silvercare/v1/+/{vitals,motion,bed} ─► telemetry λ ──► latest table
                     │                                                                       │ abnormal vitals
-                    └─ rule: alert ───── silvercare/v1/+/fall ────────────► fall-alert λ ───┤
+                    └─ rule: alert ── silvercare/v1/+/{fall,vitals_alert} ► critical-alert λ ┤
                                                                                              ▼
              EventBridge schedule (5 min) ──► watchdog λ ── offline / possible fall ──► alerts queue (SQS) ── max retries ──► DLQ
                                                                                              │
@@ -51,7 +51,7 @@ every rule, second action ──► history queue (SQS) ── batches of up to 
 |---|---|---|
 | `health` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/status'` | Lambda `device-health`; SQS `silvercare-history` |
 | `telemetry` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/+' WHERE topic(4) = 'vitals' OR topic(4) = 'motion' OR topic(4) = 'bed'` | Lambda `telemetry`; SQS `silvercare-history` |
-| `alert` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/fall'` | Lambda `fall-alert`; SQS `silvercare-history` |
+| `alert` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/+' WHERE topic(4) = 'fall' OR topic(4) = 'vitals_alert' OR topic(4) = 'alert_cancel'` (reserved fields undefined) | Lambda `critical-alert`; SQS `silvercare-history` |
 
 All rules use SQL version `2016-03-23`. A message that a Lambda rejects as invalid is
 logged (`device_id`, `message_id`, reason) and dropped. Lambdas invoked by IoT run
@@ -69,6 +69,23 @@ messages it can't hand to the Lambda. A CloudWatch alarm emails the team when th
 queue, or the alerts queue's DLQ, holds a message. `device-health` and `telemetry` are
 unchanged.
 
+Amended 2026-11-03 (`docs/features/vitals-alerts.md`): `fall-alert` was renamed
+`critical-alert` (and its DLQ `silvercare-critical-alert-dlq`), because it now raises
+every device-detected critical alert. `telemetry` sends vitals warnings to the alerts
+queue but still has no DLQ (a known gap, recorded in that spec).
+
+Amended 2026-11-03 (`docs/features/escalation.md`): escalation to nurses uses a
+delayed `escalation_check` message (`DelaySeconds = 60`) on the same alerts queue,
+handled by `alert-processor`, which emails the `silvercare-nurses` topic if the alert
+is still `open`. No new queue, function, or poller; failed checks reach the alerts DLQ
+and its alarm.
+
+Amended 2026-11-03 (`docs/features/alert-cancel.md`): the `alert` rule also matches the
+wearable's `alert_cancel` ("I'm OK" button). `critical-alert` turns it into a
+`status_update` message on the alerts queue, and `alert-processor` cancels the
+device's open alerts and sends follow-up emails. Track B's acknowledge API sends the
+same `status_update` message (`acknowledged`).
+
 Responsibilities:
 
 - **`device-health`**: validate, add the `status` to the device's latest 5 (the newest
@@ -80,7 +97,7 @@ Responsibilities:
   compare vitals against the resident's thresholds. The newest `bed` and `motion`
   entries are the bedroom's current state. Sends an alert to the queue when vitals are
   abnormal.
-- **`fall-alert`**: validate, send a fall alert to the queue, add the fall to the device's latest 5. Kept separate so a telemetry backlog,
+- **`critical-alert`** (named `fall-alert` until 2026-11-03): validate, send a critical alert (fall or device `vitals_alert`) to the queue, add the message to the device's latest 5. Kept separate so a telemetry backlog,
   throttling, or bug can never delay a fall. Gets reserved concurrency if the account
   allows it: AWS keeps 10 concurrent executions unreserved, so an account whose limit is
   10 (common on new accounts) can't reserve any. Check Service Quotas → Lambda →

@@ -30,6 +30,7 @@ def item(**details_extra) -> dict:
         "pk": f"RESIDENT#{RESIDENT}",
         "sk": f"ALERT#{EVENT_TS}#x",
         "alert_type": "fall",
+        "severity": "critical",
         "device_id": DEVICE,
         "event_ts": EVENT_TS,
         "details": {
@@ -47,6 +48,7 @@ def expected_body(vitals_line: str) -> str:
             "SilverCare alert",
             "",
             "Type: Fall",
+            "Severity: Critical",
             f"Resident: {RESIDENT}",
             WHEN_LINE,
             "Fall details: confidence 0.91, peak 3.8 g, still for 20 s",
@@ -59,15 +61,19 @@ def expected_body(vitals_line: str) -> str:
     )
 
 
-def test_subject_is_exact():
-    assert email_text.subject("fall", RESIDENT) == "SilverCare alert: Fall - res-0003"
+def test_fall_subject_is_critical():
+    assert (
+        email_text.subject("fall", RESIDENT, "critical")
+        == "SilverCare CRITICAL alert: Fall - res-0003"
+    )
 
 
-def test_subject_is_at_most_100_characters():
+@pytest.mark.parametrize("severity", ["warning", "critical"])
+def test_subject_is_at_most_100_characters(severity):
     long_type = "x" * 200
 
-    assert len(email_text.subject(long_type, RESIDENT)) <= 100
-    assert len(email_text.subject("fall", "unassigned")) <= 100
+    assert len(email_text.subject(long_type, RESIDENT, severity)) <= 100
+    assert len(email_text.subject("fall", "unassigned", severity)) <= 100
 
 
 def test_body_with_latest_vitals_is_exact():

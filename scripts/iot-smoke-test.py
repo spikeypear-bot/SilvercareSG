@@ -19,6 +19,35 @@ prints the message IDs and the scripts/ingest-check.py command that checks they 
 stored, plus its --history variant that also checks the S3 history
 (docs/features/ingest-history.md). Those steps need AWS credentials and run on the host.
 
+With --alerts (wearables only; docs/features/vitals-alerts.md, criterion 27), after the
+checks (and the --ingest messages, if given) pass it publishes, on one more connection
+as the device, synthetic messages that exercise the vitals alerts, with all other
+fields normal:
+
+  1. vitals        hr_bpm 180                       -> past the warning limit, not yet 2
+  2. vitals        hr_bpm 185                       -> hr_high warning
+  3. vitals_alert  hr_bpm 140 above 130, held 10 s  -> hr_high critical
+  4. vitals_alert  hr_bpm 0 below 45, held 10 s     -> hr_low critical (no pulse)
+  5. vitals        hr_bpm 182                       -> hr_high warning, suppressed
+
+The vitals are well above the default limit (120) so a resident's personal limit
+(THRESHOLDS item) is unlikely to hide the warning. It pauses after the first message
+so telemetry stores it before the second arrives (two at once run in parallel and
+can't see each other), and before the last so the first warning is stored before the
+repeat. Then it prints the message IDs and what to expect. Needs no AWS credentials.
+
+With --cancel (wearables only; docs/features/alert-cancel.md, criterion 17), after the
+checks (and the --ingest and --alerts messages, if given) pass it publishes, on one
+more connection as the device:
+
+  1. fall          a synthetic fall                 -> fall alert email
+  2. alert_cancel  the "I'm OK" button, 5 s later   -> "cancelled" update email
+
+then prints the message IDs and what to expect: the fall email, then the cancelled
+update email, and no nurse (ESCALATED) email, because the cancel lands within 60 s.
+The cancel also cancels any other open alert of the wearable (e.g. from --alerts).
+Needs no AWS credentials.
+
 Prints only check names, PASS / FAIL, and message IDs, never payloads, keys, or
 certificates. Exits 0 only if every check passes.
 """
@@ -34,7 +63,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TextIO
 
@@ -54,9 +83,11 @@ FW_VERSION = "1.0.0"
 
 DEVICE_ID_RE = re.compile(r"^(wearable|bedroom)-([0-9]{4})$")
 ENDPOINT_RE = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
-MESSAGE_RE = re.compile(r"^[a-z]+$")
+MESSAGE_RE = re.compile(r"^[a-z]+(_[a-z]+)*$")
 
-# Per type: the messages its IoT policy allows, and one it doesn't (docs/metrics.md).
+# Per type: the messages --ingest sends (one valid message each), and one the IoT policy
+# doesn't allow (docs/metrics.md). The wearable policy also allows vitals_alert, which
+# --ingest leaves out so it raises no critical alert; --alerts sends it.
 ALLOWED_MESSAGES = {
     "wearable": ("vitals", "fall", "status"),
     "bedroom": ("motion", "bed", "status"),
@@ -69,6 +100,31 @@ CHECK_OTHER_DEVICE = "3 publish to another device's topic is refused"
 CHECK_DISALLOWED = "4 publish a disallowed message type is refused"
 CHECK_OTHER_CLIENT_ID = "5 connect with another client ID is refused"
 CHECK_INGEST = "6 publish ingest test messages (PUBACK for each)"
+CHECK_ALERTS = "7 publish alert test messages (PUBACK for each)"
+CHECK_CANCEL = "8 publish cancel test messages (PUBACK for each)"
+
+# --alerts (vitals-alerts criterion 27). Seconds between the messages' ts, so the
+# vitals pair is well within the cloud check's 3-minute pairing limit.
+ALERT_TS_STEP_S = 5
+# Pause after the first vitals, so telemetry has stored it before the second arrives:
+# two published together run in parallel and neither sees the other (2 in a row).
+ALERTS_PAIR_PAUSE_S = 3.0
+# Pause before the last (repeat) message, so alert-processor has stored the first
+# warning before the repeat arrives (the alerts queue is not ordered).
+ALERTS_REPEAT_PAUSE_S = 10.0
+# --alerts heart rates: well above the default limit (120), so a resident's personal
+# limit (e.g. 130) doesn't turn the warning off.
+ALERTS_HR_VALUES = (180, 185, 182)
+# The wearable's fixed vitals_alert limits (docs/metrics.md).
+DEVICE_HR_HIGH_LIMIT = 130
+DEVICE_HR_LOW_LIMIT = 45
+DEVICE_HELD_S = 10
+
+# --cancel (alert-cancel criterion 17): seconds between the fall and the alert_cancel,
+# both in their ts and in real time, so alert-processor has stored the fall before the
+# cancel arrives (the alerts queue is not ordered) and the cancel lands well within the
+# 60 s escalation delay.
+CANCEL_PAUSE_S = 5.0
 
 # Fall accel_window shape (docs/metrics.md): 25 Hz, 1 s before to 1 s after impact.
 FALL_WINDOW_HZ = 25
@@ -214,6 +270,198 @@ def build_ingest_messages(
     invalid_payload = build_message_payload(dtype, invalid_message, now, new_id())
     invalid_payload[field] = value
     return [*valid, duplicate, ("invalid", invalid_message, invalid_payload)]
+
+
+def build_vitals_payload(
+    hr_bpm: int, now: datetime | None = None, message_id: str | None = None
+) -> dict:
+    """A valid synthetic wearable vitals message with the given heart rate."""
+    payload = build_message_payload("wearable", "vitals", now, message_id)
+    payload["hr_bpm"] = hr_bpm
+    return payload
+
+
+def build_vitals_alert_payload(
+    value: int,
+    limit: int,
+    direction: str,
+    now: datetime | None = None,
+    message_id: str | None = None,
+) -> dict:
+    """A valid synthetic wearable vitals_alert for heart rate (docs/metrics.md)."""
+    payload = build_envelope(now, message_id)
+    payload.update(
+        {
+            "metric": "hr_bpm",
+            "value": value,
+            "limit": limit,
+            "direction": direction,
+            "held_s": DEVICE_HELD_S,
+        }
+    )
+    return payload
+
+
+def build_alert_messages(
+    now: datetime | None = None,
+    new_id: Callable[[], str] | None = None,
+) -> list[tuple[str, str, dict]]:
+    """The --alerts messages in send order, as (expected result, message type, payload).
+
+    Each message's ts is ALERT_TS_STEP_S after the one before, starting at `now`.
+    """
+    new_id = new_id or (lambda: str(uuid.uuid4()))
+    now = now or datetime.now(UTC)
+
+    def at(step: int) -> datetime:
+        return now + timedelta(seconds=step * ALERT_TS_STEP_S)
+
+    return [
+        (
+            "no alert yet (1 of 2)",
+            "vitals",
+            build_vitals_payload(ALERTS_HR_VALUES[0], at(0), new_id()),
+        ),
+        (
+            "hr_high warning",
+            "vitals",
+            build_vitals_payload(ALERTS_HR_VALUES[1], at(1), new_id()),
+        ),
+        (
+            "hr_high critical",
+            "vitals_alert",
+            build_vitals_alert_payload(
+                140, DEVICE_HR_HIGH_LIMIT, "above", at(2), new_id()
+            ),
+        ),
+        (
+            "hr_low critical (no pulse)",
+            "vitals_alert",
+            build_vitals_alert_payload(
+                0, DEVICE_HR_LOW_LIMIT, "below", at(3), new_id()
+            ),
+        ),
+        (
+            "hr_high warning, suppressed",
+            "vitals",
+            build_vitals_payload(ALERTS_HR_VALUES[2], at(4), new_id()),
+        ),
+    ]
+
+
+def report_alerts(
+    device_id: str, messages: list[tuple[str, str, dict]], out: TextIO | None = None
+) -> None:
+    """Print the sent message IDs (no other fields) and what to expect."""
+    out = out or sys.stdout
+    print("Alert messages sent (expected result):", file=out)
+    for expected, message, payload in messages:
+        print(f"  {message:<12}  {payload['message_id']}  {expected}", file=out)
+    print(
+        f"Expect within a minute, if {device_id} is assigned to a resident (seed"
+        " script) and you are subscribed to that resident:",
+        file=out,
+    )
+    print(
+        "  3 emails: 'SilverCare alert: High heart rate', 'SilverCare CRITICAL alert:"
+        " High heart rate', and 'SilverCare CRITICAL alert: Low heart rate' (no pulse);",
+        file=out,
+    )
+    print(
+        "  3 new items under the resident in silvercare-alerts (hr_high warning,"
+        " hr_high critical, hr_low critical) and 3 objects under alerts/ in the"
+        " history bucket;",
+        file=out,
+    )
+    print(
+        "  an alert-processor log line with outcome 'suppressed' for the last"
+        " vitals; both DLQs empty;",
+        file=out,
+    )
+    print(
+        "  about 60 s later, 3 'SilverCare ESCALATED alert' emails to the nurse"
+        " subscribers (nothing acknowledges them).",
+        file=out,
+    )
+    print(
+        "No warning email? Check the resident's THRESHOLDS item in silvercare-registry:"
+        " a personal heart-rate max above the readings makes them normal.",
+        file=out,
+    )
+    print(
+        "An unassigned device stores the 3 alerts under RESIDENT#unassigned and"
+        " emails nobody. Within 30 minutes of a run, a second run's alerts are all"
+        " suppressed (same type and severity): wait 30 minutes to see the emails again.",
+        file=out,
+    )
+
+
+def build_cancel_payload(
+    now: datetime | None = None, message_id: str | None = None
+) -> dict:
+    """A valid wearable alert_cancel: the envelope only (docs/metrics.md)."""
+    return build_envelope(now, message_id)
+
+
+def build_cancel_messages(
+    now: datetime | None = None,
+    new_id: Callable[[], str] | None = None,
+) -> list[tuple[str, str, dict]]:
+    """The --cancel messages in send order, as (expected result, message type,
+    payload): a fall at `now`, then an alert_cancel CANCEL_PAUSE_S later."""
+    new_id = new_id or (lambda: str(uuid.uuid4()))
+    now = now or datetime.now(UTC)
+    return [
+        (
+            "fall alert",
+            "fall",
+            build_message_payload("wearable", "fall", now, new_id()),
+        ),
+        (
+            "cancels the open alerts",
+            "alert_cancel",
+            build_cancel_payload(now + timedelta(seconds=CANCEL_PAUSE_S), new_id()),
+        ),
+    ]
+
+
+def report_cancel(
+    device_id: str, messages: list[tuple[str, str, dict]], out: TextIO | None = None
+) -> None:
+    """Print the sent message IDs (no other fields) and what to expect."""
+    out = out or sys.stdout
+    print("Cancel messages sent (expected result):", file=out)
+    for expected, message, payload in messages:
+        print(f"  {message:<12}  {payload['message_id']}  {expected}", file=out)
+    print(
+        f"Expect within a minute, if {device_id} is assigned to a resident (seed"
+        " script) and you are subscribed to that resident:",
+        file=out,
+    )
+    print(
+        "  2 emails: 'SilverCare CRITICAL alert: Fall', then 'SilverCare update:"
+        " Fall - <resident> cancelled' (cancelled by the resident);",
+        file=out,
+    )
+    print(
+        "  no 'SilverCare ESCALATED alert' email to nurses, because the cancel lands"
+        " within 60 s;",
+        file=out,
+    )
+    print(
+        "  the fall item in silvercare-alerts has status 'cancelled', cancelled_at,"
+        " expires_at, and status_notified_at, and no open_pk; an alert-processor log"
+        " line with kind 'status_update' and outcome 'updated'; both DLQs empty.",
+        file=out,
+    )
+    print(
+        "Every other open alert of the wearable up to the press (e.g. from --alerts)"
+        " is cancelled too, with its own update email. An unassigned device cancels"
+        " under RESIDENT#unassigned and emails nobody. If the outcome is"
+        " 'no_open_alerts', the cancel was handled before the fall was stored: the"
+        " fall then escalates to the nurses after 60 s.",
+        file=out,
+    )
 
 
 def ingest_check_command(
@@ -424,13 +672,23 @@ def run_ingest(
     endpoint: str,
     tls: dict[str, str],
     messages: list[tuple[str, str, dict]],
+    pause_before_last_s: float = 0.0,
+    pause_after_first_s: float = 0.0,
 ) -> bool:
-    """Publish the --ingest messages in order on one connection. True if all got PUBACK."""
+    """Publish messages in order on one connection. True if all got PUBACK.
+
+    With pause_before_last_s, waits that long before the last message (--alerts,
+    --cancel); with pause_after_first_s, that long after the first (--alerts).
+    """
     conn = Connection(endpoint, device_id, tls)
     try:
         if conn.connect() != "connected":
             return False
-        for _, message, payload in messages:
+        for i, (_, message, payload) in enumerate(messages):
+            if pause_after_first_s and i == 1:
+                time.sleep(pause_after_first_s)
+            if pause_before_last_s and i == len(messages) - 1:
+                time.sleep(pause_before_last_s)
             topic = build_topic(device_id, message)
             if conn.publish(topic, encode_payload(payload)) != "puback":
                 return False
@@ -457,6 +715,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="after the checks, publish ingest test messages and print the ingest-check command",
     )
+    parser.add_argument(
+        "--alerts",
+        action="store_true",
+        help="wearables only: after the checks, publish vitals alert test messages and print what to expect",
+    )
+    parser.add_argument(
+        "--cancel",
+        action="store_true",
+        help="wearables only: after the checks, publish a fall and an alert_cancel 5 s later and print what to expect",
+    )
     parser.add_argument("--ca-file", type=Path, default=DEFAULT_CA_FILE)
     parser.add_argument("--keys-dir", type=Path, default=DEFAULT_KEYS_DIR)
     args = parser.parse_args(argv)
@@ -467,9 +735,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     try:
-        device_type(args.device)
+        dtype = device_type(args.device)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.alerts and dtype != "wearable":
+        print("error: --alerts is for wearables only", file=sys.stderr)
+        return 2
+    if args.cancel and dtype != "wearable":
+        print("error: --cancel is for wearables only", file=sys.stderr)
         return 2
     if not ENDPOINT_RE.fullmatch(args.endpoint):
         print(
@@ -493,17 +767,76 @@ def main(argv: list[str] | None = None) -> int:
 
     tls_paths = {k: str(v) for k, v in tls.items()}
     results = run_checks(args.device, args.endpoint, tls_paths)
-    if not args.ingest:
+    if not args.ingest and not args.alerts and not args.cancel:
         return report(results)
 
-    if not all(passed for _, passed in results):
-        print("Skipping the ingest messages: an earlier check failed.", file=sys.stderr)
-        return report([*results, (CHECK_INGEST, False)])
-    messages = build_ingest_messages(device_type(args.device))
-    published = run_ingest(args.device, args.endpoint, tls_paths, messages)
-    code = report([*results, (CHECK_INGEST, published)])
-    if published:
-        report_ingest(args.device, messages)
+    ingest_messages: list[tuple[str, str, dict]] = []
+    if args.ingest:
+        if not all(passed for _, passed in results):
+            print(
+                "Skipping the ingest messages: an earlier check failed.",
+                file=sys.stderr,
+            )
+            results = [*results, (CHECK_INGEST, False)]
+        else:
+            ingest_messages = build_ingest_messages(dtype)
+            published = run_ingest(
+                args.device, args.endpoint, tls_paths, ingest_messages
+            )
+            results = [*results, (CHECK_INGEST, published)]
+            if not published:
+                ingest_messages = []
+
+    alert_messages: list[tuple[str, str, dict]] = []
+    if args.alerts:
+        if not all(passed for _, passed in results):
+            print(
+                "Skipping the alert messages: an earlier check failed.", file=sys.stderr
+            )
+            results = [*results, (CHECK_ALERTS, False)]
+        else:
+            alert_messages = build_alert_messages()
+            published = run_ingest(
+                args.device,
+                args.endpoint,
+                tls_paths,
+                alert_messages,
+                pause_before_last_s=ALERTS_REPEAT_PAUSE_S,
+                pause_after_first_s=ALERTS_PAIR_PAUSE_S,
+            )
+            results = [*results, (CHECK_ALERTS, published)]
+            if not published:
+                alert_messages = []
+
+    cancel_messages: list[tuple[str, str, dict]] = []
+    if args.cancel:
+        if not all(passed for _, passed in results):
+            print(
+                "Skipping the cancel messages: an earlier check failed.",
+                file=sys.stderr,
+            )
+            results = [*results, (CHECK_CANCEL, False)]
+        else:
+            cancel_messages = build_cancel_messages()
+            published = run_ingest(
+                args.device,
+                args.endpoint,
+                tls_paths,
+                cancel_messages,
+                pause_before_last_s=CANCEL_PAUSE_S,
+            )
+            results = [*results, (CHECK_CANCEL, published)]
+            if not published:
+                cancel_messages = []
+
+    code = report(results)
+    if alert_messages:
+        report_alerts(args.device, alert_messages)
+    if cancel_messages:
+        report_cancel(args.device, cancel_messages)
+    # The ingest report stays last: its last line is the plain ingest-check command.
+    if ingest_messages:
+        report_ingest(args.device, ingest_messages)
     return code
 
 
