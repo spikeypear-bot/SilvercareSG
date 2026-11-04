@@ -32,7 +32,10 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 
 - [ ] Every acceptance criterion is testable: a tester could write a pass/fail test for it.
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
-      **specific resident** is decided.
+      **specific resident** is decided. A new group (e.g. `ops`) also lists which
+      existing access patterns in `docs/data-model.md` it gets and which it's refused,
+      and the API's check order (group → link → read → type rule), so an error code
+      can't reveal that a record the caller may not see exists.
 - [ ] When a group gains a new action (e.g. caregivers acknowledge), the spec says what
       other users see about who did it (name, role, or nothing): that's a who-sees-what
       decision for the user.

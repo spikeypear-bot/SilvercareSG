@@ -25,6 +25,12 @@
 # had acknowledged. No new resources: failed updates reach silvercare-alerts-dlq like
 # failed alerts.
 #
+# Device problems (docs/features/watchdog.md): the watchdog (watchdog.tf) sends
+# device_offline, battery_low, and not_worn alerts and system resolves to the same
+# queue. alert-processor emails device problems to the resident's caregivers (alerts
+# topic) and to the ops team (silvercare-ops-devices, encrypted), never to the nurses, and resolves them
+# without email.
+#
 # No critical alert may be lost on the way: critical-alert's failed async invocations
 # and the silvercare_alert rule's failed actions go to silvercare-critical-alert-dlq,
 # and alert messages that fail 5 receives go to silvercare-alerts-dlq. A CloudWatch
@@ -436,7 +442,7 @@ resource "aws_sns_topic_subscription" "nurse_email" {
 }
 
 # ---------------------------------------------------------------------------------------
-# SNS: ops (DLQ alarm emails)
+# SNS: ops (alarm emails only; device problems go to silvercare-ops-devices below)
 # ---------------------------------------------------------------------------------------
 
 resource "aws_sns_topic" "ops" {
@@ -523,6 +529,96 @@ resource "aws_sns_topic_subscription" "ops_email" {
 }
 
 # ---------------------------------------------------------------------------------------
+# SNS: ops device problems (docs/features/watchdog.md; user's decision 2026-11-04)
+# ---------------------------------------------------------------------------------------
+
+# Device-problem emails and their acknowledge follow-ups (alert-processor) and the
+# mass-offline summary (watchdog). A separate topic from silvercare-ops so it can be
+# encrypted: it carries device IDs, opaque resident IDs, heartbeat times, battery level,
+# and a caregiver's masked name (no names or health readings). No alarm publishes here,
+# so the AWS managed key works (free).
+resource "aws_sns_topic" "ops_devices" {
+  name = "silvercare-ops-devices"
+  # AWS managed key: free, no key policy to maintain.
+  kms_master_key_id = "alias/aws/sns"
+}
+
+# Only alert-processor and the watchdog may publish, only the deploy role may subscribe,
+# and nothing without TLS. Same pattern and reasons as the alerts and nurses topic
+# policies (Deny on aws:PrincipalArn, no Allow naming the roles).
+data "aws_iam_policy_document" "ops_devices_topic" {
+  statement {
+    sid       = "DenyPublishFromOthers"
+    effect    = "Deny"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.ops_devices.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [module.alert_processor.role_arn, module.watchdog.role_arn]
+    }
+  }
+
+  # Subscriptions only through Terraform, as for the alerts and nurses topics.
+  statement {
+    sid       = "DenySubscribeFromOthers"
+    effect    = "Deny"
+    actions   = ["sns:Subscribe"]
+    resources = [aws_sns_topic.ops_devices.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.deploy_role_arn]
+    }
+  }
+
+  statement {
+    sid       = "DenyInsecureTransport"
+    effect    = "Deny"
+    actions   = local.sns_topic_actions
+    resources = [aws_sns_topic.ops_devices.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "ops_devices" {
+  arn    = aws_sns_topic.ops_devices.arn
+  policy = data.aws_iam_policy_document.ops_devices_topic.json
+}
+
+# One email subscription per ops_subscribers label, no filter policy: ops see device
+# problems for every resident. Each subscriber confirms from AWS's confirmation email.
+resource "aws_sns_topic_subscription" "ops_devices_email" {
+  for_each = toset(var.ops_subscribers)
+
+  topic_arn = aws_sns_topic.ops_devices.arn
+  protocol  = "email"
+  endpoint  = var.subscriber_emails[each.key]
+}
+
+# ---------------------------------------------------------------------------------------
 # Alarms
 # ---------------------------------------------------------------------------------------
 
@@ -575,8 +671,10 @@ data "archive_file" "alert_processor" {
 # status_notified_at) on its alert in silvercare-alerts (base table, RESIDENT#
 # partitions only); a GetItem on the device's vitals item in silvercare-latest; a
 # PutObject under alerts/; and an SNS Publish to the alerts and nurses topics (alerts,
-# escalations, and status follow-ups). The status updates need no new permission. Nothing else: no indexes, no Scan/DeleteItem, no other prefixes or
-# reads in S3. No KMS permissions: both topics use the AWS managed key aws/sns, whose
+# escalations, and status follow-ups) and to silvercare-ops-devices (device problems and their
+# acknowledge follow-ups, docs/features/watchdog.md). The status updates need no new
+# permission. Nothing else: no indexes, no Scan/DeleteItem, no other prefixes or
+# reads in S3. No KMS permissions: the alerts, nurses, and ops-devices topics use the AWS managed key aws/sns, whose
 # key policy already lets SNS use it for principals in this account (the iam-policy
 # skill asks for KMS grants only for customer-managed keys). The module adds the log
 # group permissions.
@@ -641,13 +739,21 @@ data "aws_iam_policy_document" "alert_processor" {
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.nurses.arn]
   }
+
+  # Device-problem emails and their acknowledge follow-ups (watchdog criteria 13, 14a).
+  statement {
+    sid       = "OpsTopic"
+    effect    = "Allow"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.ops_devices.arn]
+  }
 }
 
 module "alert_processor" {
   source = "./modules/python-lambda"
 
   function_name = local.alert_processor_function_name
-  description   = "Stores alerts from the silvercare-alerts queue in DynamoDB and S3, emails subscribers through SNS, escalates unanswered alerts to nurses, and applies cancels and acknowledges with follow-up emails."
+  description   = "Stores alerts from the silvercare-alerts queue in DynamoDB and S3, emails subscribers through SNS, escalates unanswered alerts to nurses, emails device problems to ops, and applies cancels, acknowledges, and resolves with follow-up emails."
   handler       = "handler.lambda_handler"
   zip_path      = data.archive_file.alert_processor.output_path
   zip_hash      = data.archive_file.alert_processor.output_base64sha256
@@ -662,6 +768,7 @@ module "alert_processor" {
     ALERTS_TOPIC_ARN             = aws_sns_topic.alerts.arn
     ALERTS_QUEUE_URL             = aws_sqs_queue.alerts.url
     NURSES_TOPIC_ARN             = aws_sns_topic.nurses.arn
+    OPS_TOPIC_ARN                = aws_sns_topic.ops_devices.arn
     PORTAL_URL                   = "https://${aws_cloudfront_distribution.frontend.domain_name}"
     POWERTOOLS_SERVICE_NAME      = local.alert_processor_function_name
     POWERTOOLS_METRICS_NAMESPACE = "SilverCare"

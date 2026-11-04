@@ -60,7 +60,10 @@ structure, not code that exists yet. Update this file as decisions land.
   (one or two nurses, one shared account, "care centre nurse" in emails and the UI) who
   watch alerts and acknowledge them; doctors (individual accounts) read resident data
   and set alert thresholds. `caregiver` gets the family view, sees only linked residents
-  (several caregivers per resident), and can cancel their alerts. Sign-in is email +
+  (several caregivers per resident), and can cancel their alerts. A new `ops` group
+  (team decision 2026-11-04, added by Track B) gets an ops view of device problems
+  (offline, low battery, not worn) for every resident and can acknowledge them;
+  caregivers can acknowledge their residents' device problems too. Sign-in is email +
   password, MFA (authenticator app) optional. Groups decide what a user can see; the API
   enforces it, the UI only hides things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the

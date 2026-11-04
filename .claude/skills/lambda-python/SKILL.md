@@ -77,6 +77,9 @@ Follow `tf-change` and `iam-policy`. Each function gets:
 - its own IAM role with only the actions the code uses
 - `aws_cloudwatch_log_group` named `/aws/lambda/<function-name>` with a retention period
 - `aws_lambda_permission` for whatever invokes it (IoT, API Gateway, EventBridge)
+- for a scheduled function (EventBridge rate/cron): besides an `Errors` alarm, an
+  `Invocations < 1` alarm with `treat_missing_data = "breaching"`, because a stopped
+  schedule produces no errors and so never trips the `Errors` alarm
 - for an SQS trigger: the queue's visibility timeout is at least 6 × the function
   timeout **plus** `maximum_batching_window_in_seconds`, or messages are redelivered
   while still in flight and reach the DLQ without ever failing

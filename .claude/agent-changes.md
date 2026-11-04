@@ -5,6 +5,26 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** for `watchdog`, Claude offered the user only "unencrypted ops topic" or
+  "paid KMS key"; privacy-reviewer pointed out the free option (a separate `aws/sns`
+  topic for Lambda emails, alarms on their own topic). **Changed:**
+  `.claude/skills/tf-change/SKILL.md`: the encryption rule names that option.
+
+- **Problem:** the `watchdog` Lambda had only an `Errors` alarm, which can't notice a
+  stopped schedule (found by iac-reviewer). **Changed:**
+  `.claude/skills/lambda-python/SKILL.md`: scheduled functions also get an
+  `Invocations < 1` alarm with missing data breaching.
+
+- **Problem:** the spec added an `ops` group without saying which existing read
+  patterns it may use or the API's check order, so Track B could have shown ops every
+  health alert or leaked an alert's existence through 409 vs 404 (found by
+  privacy-reviewer). **Changed:** `.claude/skills/feature-spec/SKILL.md`: the access
+  checklist item covers new groups and the check order.
+
+- **Problem:** backend-builder ran a repo-wide `ruff format` while lambda-tester was
+  writing tests in parallel. **Changed:** `.claude/agents/backend-builder.md`: format
+  only its own files when a tester may be running.
+
 - **Problem:** `alert-routing` raised the escalation delay from 60 s to 300 s but kept
   the 15-minute stale cutoff, so a check failing on every try would be dropped as stale
   and never reach the DLQ alarm (found by iac-reviewer). **Changed:**

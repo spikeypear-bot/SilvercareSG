@@ -13,12 +13,19 @@ Alert types and severities:
     fall                                  critical
     hr_high, hr_low, spo2_low             warning (cloud check) or critical (device)
     skin_temp_high, skin_temp_low         warning (the device sends no skin temperature)
+    device_offline, battery_low, not_worn warning (device problems, raised by the
+                                          watchdog; docs/features/watchdog.md)
 
 Vitals `details` are {metric, value, limit, direction} plus `previous_value` for a
 warning or `held_s` for a critical alert. `metric` and `direction` must match the
 alert type; `value`, `limit`, and `previous_value` must be in the metric's valid range
 from docs/metrics.md (integers for hr_bpm and spo2_pct), except that a critical
 `hr_low` may have `value` 0 (no pulse); `held_s` is an integer 10-600.
+
+Device-problem `details` (docs/features/watchdog.md, criteria 8, 8a, 12):
+`device_offline` {last_seen, optional grouped}, `battery_low` {battery_pct},
+`not_worn` {since}; `last_seen` and `since` are ISO 8601 ms Z timestamps,
+`battery_pct` an integer 0-100, `grouped` a boolean.
 
 Escalation checks (docs/features/escalation.md, criterion 1) are a second message kind
 on the same queue, sent by alert-processor itself with a 300 s delay (warnings from
@@ -38,11 +45,19 @@ cancel, nurse acknowledge):
      "target": {"device_id": "wearable-0001"}}
 
 `target` is {"device_id"} (every open or acknowledged alert from that device) or
-{"alert_id", "event_ts"} (one alert). The rules per `by_role`:
+{"alert_id", "event_ts"} (one alert). The rules per `by_role` (docs/features/watchdog.md,
+criteria 10 and 14a, add the ops and caregiver acknowledge and the system resolve):
 
     resident   cancelled     device target  by null         by_name null   no note
     caregiver  cancelled     alert target   by Cognito sub  by_name 1-100  no note
+    caregiver  acknowledged  alert target   by Cognito sub  by_name 1-100  no note
     nurse      acknowledged  alert target   by Cognito sub  by_name null   note optional
+    ops        acknowledged  alert target   by Cognito sub  by_name null   no note
+    system     resolved      alert target   by null         by_name null   no note
+
+`resolved` comes only from `system` (the watchdog) and `system` only with `resolved`.
+Which role may change which alert type (device problems or health alerts) depends on
+the stored alert, so alert-processor checks it after reading the target, not here.
 
 `note` (nurse acknowledge only) is absent, null, or 1-500 characters, not only
 whitespace, with no control or other non-printing characters except newline. Any other `by_role` (e.g.
@@ -110,11 +125,25 @@ STATUS_UPDATE_FIELDS = (
 STATUS_UPDATE_OPTIONAL_FIELDS = ("note",)
 STATUS_CANCELLED = "cancelled"
 STATUS_ACKNOWLEDGED = "acknowledged"
-NEW_STATUSES = frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED})
+STATUS_RESOLVED = "resolved"
+NEW_STATUSES = frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED, STATUS_RESOLVED})
 ROLE_RESIDENT = "resident"
 ROLE_CAREGIVER = "caregiver"
 ROLE_NURSE = "nurse"
-BY_ROLES = frozenset({ROLE_RESIDENT, ROLE_CAREGIVER, ROLE_NURSE})
+ROLE_OPS = "ops"
+ROLE_SYSTEM = "system"
+BY_ROLES = frozenset({ROLE_RESIDENT, ROLE_CAREGIVER, ROLE_NURSE, ROLE_OPS, ROLE_SYSTEM})
+# The new_status values each by_role may send (alert-routing criterion 9; watchdog
+# criteria 10 and 14a).
+ROLE_STATUSES: dict[str, frozenset[str]] = {
+    ROLE_RESIDENT: frozenset({STATUS_CANCELLED}),
+    ROLE_CAREGIVER: frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED}),
+    ROLE_NURSE: frozenset({STATUS_ACKNOWLEDGED}),
+    ROLE_OPS: frozenset({STATUS_ACKNOWLEDGED}),
+    ROLE_SYSTEM: frozenset({STATUS_RESOLVED}),
+}
+# Roles whose `by` is null (no Cognito user); every other role sends a sub.
+ROLES_WITHOUT_BY = frozenset({ROLE_RESIDENT, ROLE_SYSTEM})
 DEVICE_TARGET_FIELDS = frozenset({"device_id"})
 ALERT_TARGET_FIELDS = frozenset({"alert_id", "event_ts"})
 BY_NAME_MAX_LEN = 100
@@ -153,6 +182,19 @@ METRIC_RANGES: dict[str, NumberField] = {
 HELD_S = NumberField(integer=True, minimum=10, maximum=600)
 NO_PULSE_VALUE = 0
 
+# Device problems (docs/features/watchdog.md, criterion 12).
+DEVICE_OFFLINE = "device_offline"
+BATTERY_LOW = "battery_low"
+NOT_WORN = "not_worn"
+DEVICE_PROBLEM_TYPES = frozenset({DEVICE_OFFLINE, BATTERY_LOW, NOT_WORN})
+BATTERY_PCT = NumberField(integer=True, minimum=0, maximum=100)
+# alert_type -> (required details fields, optional details fields).
+DEVICE_PROBLEM_DETAILS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    DEVICE_OFFLINE: (("last_seen",), ("grouped",)),
+    BATTERY_LOW: (("battery_pct",), ()),
+    NOT_WORN: (("since",), ()),
+}
+
 # Vitals alert_type -> (metric, direction).
 VITALS_TYPES: dict[str, tuple[str, str]] = {
     "hr_high": ("hr_bpm", "above"),
@@ -170,6 +212,9 @@ TYPE_SEVERITIES: dict[str, frozenset[str]] = {
     "spo2_low": SEVERITIES,
     "skin_temp_high": frozenset({SEVERITY_WARNING}),
     "skin_temp_low": frozenset({SEVERITY_WARNING}),
+    DEVICE_OFFLINE: frozenset({SEVERITY_WARNING}),
+    BATTERY_LOW: frozenset({SEVERITY_WARNING}),
+    NOT_WORN: frozenset({SEVERITY_WARNING}),
 }
 ALERT_TYPES = frozenset(TYPE_SEVERITIES)
 
@@ -207,8 +252,9 @@ class EscalationCheck:
 @dataclass(frozen=True)
 class StatusUpdate:
     """A validated status_update. Exactly one target: device_id (a resident cancel),
-    or alert_id + event_ts (a caregiver cancel or a nurse acknowledge). by is None for
-    the resident, by_name is set only for a caregiver, note only for a nurse."""
+    or alert_id + event_ts (a caregiver cancel or acknowledge, a nurse or ops
+    acknowledge, a system resolve). by is None for the resident and the system,
+    by_name is set only for a caregiver, note only for a nurse."""
 
     resident_id: str
     new_status: str
@@ -303,11 +349,37 @@ def _check_vitals_details(alert_type: str, severity: str, details: dict) -> str 
     return None
 
 
+def _check_device_problem_details(alert_type: str, details: dict) -> str | None:
+    """Watchdog criteria 8, 8a, 12: last_seen / since timestamps, battery_pct an
+    integer 0-100, grouped (device_offline only) a boolean."""
+    required, optional = DEVICE_PROBLEM_DETAILS[alert_type]
+    if set(details) - set(required) - set(optional):
+        return "unknown_field:details"
+    for name in required:
+        if name not in details:
+            return f"missing:details.{name}"
+    for name in ("last_seen", "since"):
+        if name in details:
+            if type(details[name]) is not str:
+                return f"wrong_type:details.{name}"
+            if parse_ts(details[name]) is None:
+                return f"invalid:details.{name}"
+    if "battery_pct" in details:
+        reason = _check_number("battery_pct", details["battery_pct"], BATTERY_PCT)
+        if reason:
+            return reason
+    if "grouped" in details and type(details["grouped"]) is not bool:
+        return "wrong_type:details.grouped"
+    return None
+
+
 def _check_details(alert_type: str, severity: str, details: Any) -> str | None:
     if not isinstance(details, dict):
         return "wrong_type:details"
     if alert_type == "fall":
         return _check_fall_details(details)
+    if alert_type in DEVICE_PROBLEM_TYPES:
+        return _check_device_problem_details(alert_type, details)
     return _check_vitals_details(alert_type, severity, details)
 
 
@@ -486,17 +558,17 @@ def _valid_note(value: Any) -> bool:
 
 
 def _check_role_rules(body: dict, target: dict[str, str]) -> str | None:
-    """Alert-routing criterion 9: what each by_role may send. A cancel has no `note`
-    key at all; a nurse's may be absent or null."""
+    """Alert-routing criterion 9, watchdog criteria 10 and 14a: what each by_role may
+    send. Only a nurse's update may have a `note` key (absent or null means no note);
+    every other role's must not have the key at all."""
     by_role, new_status = body["by_role"], body["new_status"]
     by, by_name = body["by"], body["by_name"]
-    expected_status = STATUS_ACKNOWLEDGED if by_role == ROLE_NURSE else STATUS_CANCELLED
-    if new_status != expected_status:
+    if new_status not in ROLE_STATUSES[by_role]:
         return "invalid:new_status"
     expected_target = "device_id" if by_role == ROLE_RESIDENT else "alert_id"
     if expected_target not in target:
         return "invalid:target"
-    if by_role == ROLE_RESIDENT:
+    if by_role in ROLES_WITHOUT_BY:
         if by is not None:
             return "invalid:by"
     elif type(by) is not str or not SUB_RE.match(by):
