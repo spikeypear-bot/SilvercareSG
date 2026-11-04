@@ -238,7 +238,8 @@ describe('open alerts inbox', () => {
     expect(screen.queryByRole('button', { name: `Acknowledge: ${acked}` })).not.toBeInTheDocument()
     const row = within(rowFor(acked))
     expect(row.getByText('Acknowledged')).toBeInTheDocument()
-    expect(rowFor(acked)).toHaveTextContent(/Acknowledged by Test Nurse B, 6 min ago/)
+    expect(rowFor(acked)).toHaveTextContent(/Acknowledged by the care centre nurse, 6 min ago/)
+    expect(rowFor(acked)).not.toHaveTextContent(/Test Nurse/)
 
     // 9 open + 3 acknowledged in the demo data.
     expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(9)
@@ -334,7 +335,7 @@ describe('open alerts inbox', () => {
 describe('acknowledge', () => {
   const C = 'Fall detected, Test Resident C'
 
-  it('records "Acknowledged by Test Nurse A", removes the button, and keeps focus on Resolve', async () => {
+  it('records "Acknowledged by the care centre nurse" (no name), removes the button, and keeps focus on Resolve', async () => {
     const { user } = await renderLoaded()
     await user.click(ackButton(C))
 
@@ -342,7 +343,10 @@ describe('acknowledge', () => {
     const row = rowFor(C)
     expect(within(row).getByText('Acknowledged')).toBeInTheDocument()
     expect(within(row).queryByText('Open')).not.toBeInTheDocument()
-    expect(row).toHaveTextContent('Acknowledged by Test Nurse A, just now')
+    expect(row).toHaveTextContent('Acknowledged by the care centre nurse, just now')
+    expect(row).not.toHaveTextContent('Test Nurse A')
+    // No note from the button alone.
+    expect(row).not.toHaveTextContent('Message from the care centre')
     await waitFor(() => expect(resolveButton(C)).toHaveFocus())
   })
 
@@ -366,14 +370,27 @@ describe('acknowledge', () => {
     expect(within(rowFor(H)).getByRole('timer')).toBeInTheDocument()
     await user.click(ackButton(H))
     expect(within(rowFor(H)).queryByRole('timer')).not.toBeInTheDocument()
-    expect(rowFor(H)).not.toHaveTextContent('Escalated to nurses')
-    expect(rowFor(H)).toHaveTextContent('Acknowledged by Test Nurse A')
+    expect(rowFor(H)).not.toHaveTextContent('Escalated to the care centre nurse')
+    expect(rowFor(H)).toHaveTextContent('Acknowledged by the care centre nurse')
   })
 
-  it('falls back to "Staff member" when the user has no display name', async () => {
+  it('reads "the care centre nurse" whatever the user\'s display name, even none', async () => {
     const { user } = await renderLoaded(demoDataFor('staff'), { ...TEST_USERS.nurse, name: '' })
     await user.click(ackButton(C))
-    expect(rowFor(C)).toHaveTextContent('Acknowledged by Staff member, just now')
+    expect(rowFor(C)).toHaveTextContent('Acknowledged by the care centre nurse, just now')
+    expect(rowFor(C)).not.toHaveTextContent('Staff member')
+  })
+
+  it('shows the nurse notes on the acknowledged demo alerts, as plain text', async () => {
+    await renderLoaded()
+    const g = rowFor('High heart rate, Test Resident G')
+    expect(within(g).getByText('Message from the care centre:')).toBeInTheDocument()
+    expect(within(g).getByText('Synthetic note: ambulance on the way, 8 minutes.')).toHaveClass('whitespace-pre-line')
+    const o = rowFor('Device offline, Test Resident O')
+    expect(within(o).getByText('Message from the care centre:')).toBeInTheDocument()
+    expect(o).toHaveTextContent(/Synthetic note: called the caregiver\.\s+Wearable to be checked at 3 pm\./)
+    // res-0013 was acknowledged without a note.
+    expect(rowFor('Low battery, Test Resident M')).not.toHaveTextContent('Message from the care centre')
   })
 })
 
@@ -463,25 +480,31 @@ describe('resolve', () => {
 })
 
 describe('escalation status (real clock)', () => {
-  it('the mid-countdown alert shows the seconds left in a timer', async () => {
+  it('the mid-countdown alert shows the time left as m:ss in a timer', async () => {
     await renderLoaded()
     const timers = within(inbox()).getAllByRole('timer')
     expect(timers).toHaveLength(1)
-    const match = /^Escalates to nurses in (\d+) s$/.exec(timers[0].textContent ?? '')
+    const match = /^Escalates to the care centre nurse in (\d+):(\d{2})$/.exec(timers[0].textContent ?? '')
     expect(match).not.toBeNull()
-    const seconds = Number(match?.[1])
+    const seconds = Number(match?.[1]) * 60 + Number(match?.[2])
     expect(seconds).toBeGreaterThan(0)
-    expect(seconds).toBeLessThanOrEqual(30)
+    expect(seconds).toBeLessThanOrEqual(150)
     expect(rowFor('Possible fall, Test Resident H')).toContainElement(timers[0])
   })
 
-  it('already-escalated alerts show "Escalated to nurses" and are not announced on load', async () => {
+  it('already-escalated alerts show their escalation line and are not announced on load', async () => {
     await renderLoaded()
-    expect(rowFor('Possible fall, Test Resident L')).toHaveTextContent('Escalated to nurses')
-    expect(rowFor('Inactivity, Test Resident B')).toHaveTextContent('Escalated to nurses')
-    expect(rowFor('Fall detected, Test Resident C')).toHaveTextContent('Escalated to nurses')
-    // Every open alert but H's (mid-countdown): 9 open, 8 escalated.
-    expect(within(inbox()).getAllByText('Escalated to nurses')).toHaveLength(8)
+    // Warnings: escalated after 5 minutes.
+    expect(rowFor('Possible fall, Test Resident L')).toHaveTextContent('Escalated to the care centre nurse')
+    expect(rowFor('Inactivity, Test Resident B')).toHaveTextContent('Escalated to the care centre nurse')
+    // Critical: the nurse is the recipient, so the inbox shows just the Critical badge, no routing line.
+    for (const ctx of ['Fall detected, Test Resident C', 'Fall detected, Test Resident Q']) {
+      expect(rowFor(ctx)).toHaveTextContent('Critical')
+      expect(rowFor(ctx)).not.toHaveTextContent(/Sent to the care centre nurse|at once|Escalat/)
+    }
+    // Every open alert but H's (mid-countdown) and the 2 critical ones: 6 warnings escalated.
+    expect(within(inbox()).queryAllByText('Sent to the care centre nurse at once')).toEqual([])
+    expect(within(inbox()).getAllByText('Escalated to the care centre nurse')).toHaveLength(6)
     expect(announcer()).toBeEmptyDOMElement()
   })
 
@@ -493,11 +516,58 @@ describe('escalation status (real clock)', () => {
     }
   })
 
-  it('shows "Escalated to nurses" from escalated_at alone (no escalates_at)', async () => {
+  it('a critical open alert with escalated_at shows no "at once" line in the nurse inbox, only the Critical badge', async () => {
     await renderLoaded(oneAlert({ escalated_at: new Date(Date.now() - 4 * 60_000).toISOString() }))
     const row = rowFor('Fall detected, Test Resident C')
-    expect(row).toHaveTextContent('Escalated to nurses')
+    expect(within(row).getByText('Critical')).toBeInTheDocument()
+    expect(within(row).getByText('Open')).toBeInTheDocument()
+    expect(row).not.toHaveTextContent(/Sent to the care centre nurse|at once|Escalat/)
     expect(within(row).queryByRole('timer')).not.toBeInTheDocument()
+    expect(announcer()).toBeEmptyDOMElement()
+  })
+
+  it('an unassigned warning with escalated_at shows no "at once" line in the nurse inbox either', async () => {
+    await renderLoaded(
+      oneAlert({
+        resident_id: 'unassigned',
+        alert_type: 'device_offline',
+        severity: 'warning',
+        escalated_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+      }),
+    )
+    const row = rowFor('Device offline, Unknown resident')
+    expect(row).not.toHaveTextContent(/Sent to the care centre nurse|at once|Escalat/)
+  })
+
+  it('the nurse inbox: no "at once" for a critical alert, but "Escalated to the care centre nurse" for an escalated warning', async () => {
+    const escalatedAt = new Date(Date.now() - 4 * 60_000).toISOString()
+    const data = oneAlert({ escalated_at: escalatedAt })
+    const warning: ResidentAlert = {
+      ...data.alerts[0],
+      alert_id: 'alert-test-002',
+      resident_id: 'res-0002',
+      device_id: data.residents[1].bedroom.device_id,
+      alert_type: 'inactivity',
+      severity: 'warning',
+      escalated_at: escalatedAt,
+    }
+    await renderLoaded({ ...data, alerts: [data.alerts[0], warning] })
+    expect(rowFor('Fall detected, Test Resident C')).not.toHaveTextContent(/Sent to the care centre nurse|Escalat/)
+    expect(rowFor('Inactivity, Test Resident B')).toHaveTextContent('Escalated to the care centre nurse')
+    expect(inbox()).not.toHaveTextContent('at once')
+  })
+
+  it('shows "Escalated to the care centre nurse" for a warning from escalated_at alone', async () => {
+    await renderLoaded(
+      oneAlert({
+        alert_type: 'inactivity',
+        severity: 'warning',
+        escalated_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+      }),
+    )
+    const row = rowFor('Inactivity, Test Resident C')
+    expect(row).toHaveTextContent('Escalated to the care centre nurse')
+    expect(row).not.toHaveTextContent('at once')
     expect(announcer()).toBeEmptyDOMElement()
   })
 
@@ -506,7 +576,6 @@ describe('escalation status (real clock)', () => {
     const future = new Date(Date.now() + 60_000).toISOString()
     const data = oneAlert({
       status: 'acknowledged',
-      acknowledged_by: 'Test Nurse B',
       acknowledged_at: past,
       escalates_at: past,
       escalated_at: past,
@@ -521,8 +590,9 @@ describe('escalation status (real clock)', () => {
     }
     await renderLoaded({ ...data, alerts: [data.alerts[0], second] })
     expect(within(inbox()).queryByRole('timer')).not.toBeInTheDocument()
-    expect(inbox()).not.toHaveTextContent('Escalated to nurses')
-    expect(inbox()).not.toHaveTextContent('Escalates to nurses')
+    expect(inbox()).not.toHaveTextContent('Escalated to the care centre nurse')
+    expect(inbox()).not.toHaveTextContent('Escalates to the care centre nurse')
+    expect(inbox()).not.toHaveTextContent('Sent to the care centre nurse at once')
   })
 
   it('open alerts without escalates_at or escalated_at show neither', async () => {
@@ -561,28 +631,35 @@ describe('escalation countdown (fake clock)', () => {
       vi.advanceTimersByTime(ms)
     })
 
-  it('starts at 30 s and ticks down every second', async () => {
+  it('starts at 2:30 and ticks down every second', async () => {
     await renderAtNow()
     const timer = () => within(rowFor(H)).getByRole('timer')
-    expect(timer()).toHaveTextContent('Escalates to nurses in 30 s')
+    expect(timer()).toHaveTextContent(/^Escalates to the care centre nurse in 2:30$/)
     tick(1000)
-    expect(timer()).toHaveTextContent('Escalates to nurses in 29 s')
+    expect(timer()).toHaveTextContent(/^Escalates to the care centre nurse in 2:29$/)
     tick(1000)
-    expect(timer()).toHaveTextContent('Escalates to nurses in 28 s')
-    tick(27_000)
-    expect(timer()).toHaveTextContent('Escalates to nurses in 1 s')
+    expect(timer()).toHaveTextContent(/^Escalates to the care centre nurse in 2:28$/)
+    tick(88_000)
+    expect(timer()).toHaveTextContent(/^Escalates to the care centre nurse in 1:00$/)
+    tick(1000)
+    expect(timer()).toHaveTextContent(/^Escalates to the care centre nurse in 0:59$/)
+    tick(58_000)
+    expect(timer()).toHaveTextContent(/^Escalates to the care centre nurse in 0:01$/)
     expect(announcer()).toBeEmptyDOMElement()
   })
 
-  it('flips to "Escalated to nurses" at zero and announces it once', async () => {
+  it('flips to "Escalated to the care centre nurse" at zero and announces it once', async () => {
     await renderAtNow()
-    tick(29_000)
-    expect(within(rowFor(H)).getByRole('timer')).toHaveTextContent('in 1 s')
+    tick(149_000)
+    expect(within(rowFor(H)).getByRole('timer')).toHaveTextContent(/in 0:01$/)
     tick(1000)
     expect(within(rowFor(H)).queryByRole('timer')).not.toBeInTheDocument()
-    expect(rowFor(H)).toHaveTextContent('Escalated to nurses')
-    expect(announcer()).toHaveTextContent(`Escalated to nurses: ${H}.`)
-    expect(within(inbox()).getAllByText('Escalated to nurses')).toHaveLength(9)
+    expect(rowFor(H)).toHaveTextContent('Escalated to the care centre nurse')
+    expect(rowFor(H)).not.toHaveTextContent('at once')
+    expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
+    // 6 warnings escalated on load + H; the 2 critical ones show no routing line in the nurse inbox.
+    expect(within(inbox()).getAllByText('Escalated to the care centre nurse')).toHaveLength(7)
+    expect(within(inbox()).queryAllByText('Sent to the care centre nurse at once')).toEqual([])
 
     // A second announcement would toggle the trailing no-break space, so compare exactly.
     const announced = announcer().textContent
@@ -592,29 +669,29 @@ describe('escalation countdown (fake clock)', () => {
 
   it('a later action announcement replaces the escalation message', async () => {
     await renderAtNow()
-    tick(90_000)
-    expect(announcer()).toHaveTextContent(`Escalated to nurses: ${H}.`)
+    tick(180_000)
+    expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
     // fireEvent, not user-event: user-event's internal delays stall under fake timers.
     fireEvent.click(ackButton(H))
     expect(announcer()).toHaveTextContent(`Acknowledged: ${H}.`)
-    expect(rowFor(H)).not.toHaveTextContent('Escalated to nurses')
+    expect(rowFor(H)).not.toHaveTextContent('Escalated to the care centre nurse')
   })
 
   it('announces an escalation that happens while another panel is shown', async () => {
     await renderAtNow()
     fireEvent.click(tile('Devices offline'))
-    tick(90_000)
+    tick(180_000)
     // The announcer stays mounted; the nurse should still hear that the alert escalated.
-    expect(announcer()).toHaveTextContent(`Escalated to nurses: ${H}.`)
+    expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
   })
 
   it('returning to the inbox after an escalation shows it, without announcing it again', async () => {
     await renderAtNow()
     fireEvent.click(tile('Residents monitored'))
-    tick(90_000)
+    tick(180_000)
     const announced = announcer().textContent
     fireEvent.click(tile('Open alerts'))
-    expect(rowFor(H)).toHaveTextContent('Escalated to nurses')
+    expect(rowFor(H)).toHaveTextContent('Escalated to the care centre nurse')
     expect(within(rowFor(H)).queryByRole('timer')).not.toBeInTheDocument()
     tick(5000)
     expect(announcer().textContent).toBe(announced)
@@ -622,7 +699,7 @@ describe('escalation countdown (fake clock)', () => {
 
   it('acknowledging before the deadline means no escalation announcement', async () => {
     await renderAtNow()
-    tick(20_000)
+    tick(140_000)
     fireEvent.click(ackButton(H))
     expect(announcer()).toHaveTextContent(`Acknowledged: ${H}.`)
     const announced = announcer().textContent
@@ -633,7 +710,7 @@ describe('escalation countdown (fake clock)', () => {
 
   it('resolving before the deadline means no escalation announcement', async () => {
     await renderAtNow()
-    tick(20_000)
+    tick(140_000)
     fireEvent.click(resolveButton(H))
     const announced = announcer().textContent
     expect(announced).toContain(`Resolved: ${H}.`)
@@ -665,9 +742,9 @@ describe('escalation countdown (fake clock)', () => {
     await renderAtNow()
     tick(10_000)
     fireEvent.click(ackButton('Fall detected, Test Resident C'))
-    expect(within(rowFor(H)).getByRole('timer')).toHaveTextContent('Escalates to nurses in 20 s')
-    tick(20_000)
-    expect(announcer()).toHaveTextContent(`Escalated to nurses: ${H}.`)
+    expect(within(rowFor(H)).getByRole('timer')).toHaveTextContent(/^Escalates to the care centre nurse in 2:20$/)
+    tick(140_000)
+    expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
     const announced = announcer().textContent
     fireEvent.click(ackButton('Fall detected, Test Resident Q'))
     expect(announcer()).toHaveTextContent('Acknowledged: Fall detected, Test Resident Q.')
@@ -812,7 +889,8 @@ describe('icon and text, never colour alone', () => {
     })
     const timer = within(inbox()).getByRole('timer')
     expect(timer.parentElement?.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
-    const escalated = within(inbox()).getAllByText('Escalated to nurses')
+    const escalated = within(inbox()).getAllByText('Escalated to the care centre nurse')
+    expect(escalated).toHaveLength(6)
     escalated.forEach((el) => expect(el.querySelector('svg[aria-hidden="true"]')).not.toBeNull())
   })
 })

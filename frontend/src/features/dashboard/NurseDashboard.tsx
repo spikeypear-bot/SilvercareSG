@@ -48,7 +48,7 @@ export function NurseDashboard() {
 
 interface NurseContentProps {
   data: DashboardData
-  onAcknowledge: (alertId: string, by: string) => void
+  onAcknowledge: (alertId: string) => void
   onResolve: (alertId: string, by: string) => void
 }
 
@@ -62,7 +62,7 @@ function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
   )
   const { message, announce } = useAlertAnnouncer(data.alerts, residentsById)
   useEscalationWatcher(data.alerts, (alert) =>
-    announce(`Escalated to nurses: ${describeAlert(alert, residentsById)}.`),
+    announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )
 
   return (
@@ -74,7 +74,7 @@ function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
           alerts={data.alerts}
           residentsById={residentsById}
           announce={announce}
-          onAcknowledge={(id) => onAcknowledge(id, staffName)}
+          onAcknowledge={onAcknowledge}
           onResolve={(id) => onResolve(id, staffName)}
         />
       )}
@@ -126,6 +126,8 @@ function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve 
                 alert={alert}
                 resident={residentsById.get(alert.resident_id)}
                 now={now}
+                // The nurse is the recipient: the Critical badge already says it went to them.
+                showSentAtOnce={false}
                 actions={{
                   onAcknowledge: () => {
                     onAcknowledge(alert.alert_id)

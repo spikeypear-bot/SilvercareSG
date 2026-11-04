@@ -86,6 +86,12 @@ wearable's `alert_cancel` ("I'm OK" button). `critical-alert` turns it into a
 device's open alerts and sends follow-up emails. Track B's acknowledge API sends the
 same `status_update` message (`acknowledged`).
 
+Amended 2026-11-04 (`docs/features/alert-routing.md`): critical alerts and alerts from
+unassigned devices are emailed to `silvercare-nurses` at once by `alert-processor`, with
+no escalation check. Only warnings from assigned devices still use the delayed check,
+now `DelaySeconds = 300`. Nurses acknowledge and caregivers cancel, both through
+Track B's API sending a `status_update`.
+
 Responsibilities:
 
 - **`device-health`**: validate, add the `status` to the device's latest 5 (the newest

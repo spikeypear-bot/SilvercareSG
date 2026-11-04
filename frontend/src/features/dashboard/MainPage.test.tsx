@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axeViolations } from '../../test/axe'
-import { resetDashboardLoader } from '../../test/dashboardMock'
+import { dashboardLoader, resetDashboardLoader } from '../../test/dashboardMock'
 import { TEST_USERS } from '../../test/fixtures'
 import { renderWithAuth } from '../../test/render'
 import { flushPromises, trackUnhandledRejections } from '../../test/unhandled'
@@ -35,7 +35,7 @@ describe('view by group (Users and access, criterion 10)', () => {
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
     expect(within(screen.getByRole('button', { name: /user menu/i })).getByText(role)).toBeInTheDocument()
     expect(screen.queryByRole('heading', { level: 1, name: other })).not.toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'My family' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'My residents' })).not.toBeInTheDocument()
     await screen.findByRole('heading', { level: 2, name: /^Open alerts/ })
   })
 
@@ -53,13 +53,10 @@ describe('view by group (Users and access, criterion 10)', () => {
     expect(screen.queryAllByRole('button', { name: /Acknowledge|Resolve/ })).toEqual([])
   })
 
-  it.each([
-    ['caregiver', 'Caregiver'],
-    ['family', 'Family'],
-  ] as const)('%s sees the family view with role badge "%s"', async (key, role) => {
-    renderWithAuth(<MainPage />, { user: TEST_USERS[key] })
-    expect(screen.getByRole('heading', { level: 1, name: 'My family' })).toBeInTheDocument()
-    expect(within(screen.getByRole('button', { name: /user menu/i })).getByText(role)).toBeInTheDocument()
+  it('a caregiver sees the family view with role badge "Caregiver"', async () => {
+    renderWithAuth(<MainPage />, { user: TEST_USERS.caregiver })
+    expect(screen.getByRole('heading', { level: 1, name: 'My residents' })).toBeInTheDocument()
+    expect(within(screen.getByRole('button', { name: /user menu/i })).getByText('Caregiver')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /^(Nurse|Doctor) dashboard$/ })).not.toBeInTheDocument()
     expect(await screen.findAllByRole('article')).toHaveLength(2)
     expect(screen.queryByText('Residents monitored')).not.toBeInTheDocument()
@@ -71,7 +68,8 @@ describe('view by group (Users and access, criterion 10)', () => {
     [['doctor', 'nurse'], 'Nurse dashboard', 'Nurse'],
     [['family', 'doctor'], 'Doctor dashboard', 'Doctor'],
     [['caregiver', 'nurse'], 'Nurse dashboard', 'Nurse'],
-    [['caregiver', 'family'], 'My family', 'Caregiver'],
+    [['family', 'nurse'], 'Nurse dashboard', 'Nurse'],
+    [['caregiver', 'family'], 'My residents', 'Caregiver'],
   ])('a user in %j sees "%s" with role badge "%s"', async (groups, heading, role) => {
     renderWithAuth(<MainPage />, { user: withGroups(groups) })
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
@@ -81,7 +79,7 @@ describe('view by group (Users and access, criterion 10)', () => {
   })
 
   it.each([
-    ['caregiver', 'My family'],
+    ['caregiver', 'My residents'],
     ['doctor', 'Doctor dashboard'],
     ['nurse', 'Nurse dashboard'],
   ] as const)('the demo banner is shown for a %s user in "%s" (criterion 20)', async (key, heading) => {
@@ -96,7 +94,7 @@ describe('view by group (Users and access, criterion 10)', () => {
 })
 
 describe('no access', () => {
-  it.each([[[]], [['admin']], [['Doctor']], [['Nurse']]])('a user in %j sees the no-access screen', async (groups) => {
+  it.each([[[]], [['admin']], [['Doctor']], [['Nurse']], [['family']]])('a user in %j sees the no-access screen', async (groups) => {
     renderWithAuth(<MainPage />, { user: withGroups(groups) })
     expect(
       screen.getByRole('heading', { level: 1, name: "Your account isn't set up yet" }),
@@ -105,6 +103,15 @@ describe('no access', () => {
     expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Test Resident/)).not.toBeInTheDocument()
     await waitFor(() => expect(document.title).toBe('SilverCare - No access'))
+  })
+
+  it('the fixture user in only the removed "family" group gets no family view and loads no data', async () => {
+    renderWithAuth(<MainPage />, { user: TEST_USERS.family })
+    expect(screen.getByRole('heading', { level: 1, name: "Your account isn't set up yet" })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'My residents' })).not.toBeInTheDocument()
+    await waitFor(() => expect(document.title).toBe('SilverCare - No access'))
+    expect(dashboardLoader).not.toHaveBeenCalled()
+    expect(screen.queryByRole('article')).not.toBeInTheDocument()
   })
 
   it('Sign out signs out and goes to /login', async () => {

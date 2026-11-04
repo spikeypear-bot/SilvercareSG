@@ -56,10 +56,7 @@ describe('/devices route', () => {
     await waitFor(() => expect(document.title).toBe('SilverCare - Devices'))
   })
 
-  it.each([
-    ['caregiver', TEST_USERS.caregiver],
-    ['family', TEST_USERS.family],
-  ] as const)('a %s user sees the staff-only notice and devices are never loaded', async (_, user) => {
+  it.each([['caregiver', TEST_USERS.caregiver]] as const)('a %s user sees the staff-only notice and devices are never loaded', async (_, user) => {
     authMock.getCurrentUser.mockResolvedValue(user)
     renderApp('/devices')
     expect(await screen.findByRole('heading', { level: 2, name: 'This page is for care staff.' })).toBeInTheDocument()
@@ -70,8 +67,11 @@ describe('/devices route', () => {
     await waitFor(() => expect(document.title).toBe('SilverCare - Staff only'))
   })
 
-  it('a user with no group sees the no-access page and devices are never loaded', async () => {
-    authMock.getCurrentUser.mockResolvedValue(TEST_USERS.noGroup)
+  it.each([
+    ['no group', TEST_USERS.noGroup],
+    ['only the removed "family" group', TEST_USERS.family],
+  ] as const)('a user with %s sees the no-access page and devices are never loaded', async (_, user) => {
+    authMock.getCurrentUser.mockResolvedValue(user)
     renderApp('/devices')
     expect(await screen.findByRole('heading', { level: 1, name: "Your account isn't set up yet" })).toBeInTheDocument()
     expect(screen.queryByText('This page is for care staff.')).not.toBeInTheDocument()
@@ -79,10 +79,10 @@ describe('/devices route', () => {
     expect(deviceFleetLoader).not.toHaveBeenCalled()
   })
 
-  it('a family user on the main page has no Staff area nav, and devices are not loaded', async () => {
-    authMock.getCurrentUser.mockResolvedValue(TEST_USERS.family)
+  it('a caregiver on the main page (the family view) has no Staff area nav, and devices are not loaded', async () => {
+    authMock.getCurrentUser.mockResolvedValue(TEST_USERS.caregiver)
     renderApp('/')
-    expect(await screen.findByRole('heading', { level: 1, name: 'My family' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'My residents' })).toBeInTheDocument()
     expect(screen.queryByRole('navigation', { name: 'Staff area' })).not.toBeInTheDocument()
     expect(deviceFleetLoader).not.toHaveBeenCalled()
   })

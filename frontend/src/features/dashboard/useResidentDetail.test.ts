@@ -132,13 +132,13 @@ describe('useResidentDetail actions (local state only)', () => {
   it('acknowledge changes only that alert and does not reload', async () => {
     const { result, data, loader } = await loaded()
     const target = firstWith(data, 'open')
-    act(() => result.current.acknowledgeAlert(target.alert_id, 'Test Nurse D'))
+    act(() => result.current.acknowledgeAlert(target.alert_id))
     expect(find(result, target.alert_id)).toEqual({
       ...target,
       status: 'acknowledged',
-      acknowledged_by: 'Test Nurse D',
       acknowledged_at: ACTION_TIME.toISOString(),
     })
+    expect(find(result, target.alert_id)).not.toHaveProperty('acknowledged_by')
     const after = result.current.data as ResidentDetail
     after.alerts.forEach((a, i) => {
       if (a.alert_id !== target.alert_id) expect(a).toBe(data.alerts[i])
@@ -162,7 +162,7 @@ describe('useResidentDetail actions (local state only)', () => {
 
     const history = firstWith(data, 'resolved')
     act(() => result.current.resolveAlert(history.alert_id, 'Test Nurse D'))
-    act(() => result.current.acknowledgeAlert(history.alert_id, 'Test Nurse D'))
+    act(() => result.current.acknowledgeAlert(history.alert_id))
     expect(find(result, history.alert_id)).toBe(history)
     expect(result.current.data?.alerts).toHaveLength(data.alerts.length)
   })
@@ -172,10 +172,10 @@ describe('useResidentDetail actions (local state only)', () => {
     const cancelled = firstWith(data, 'cancelled')
     expect(cancelled).toBeDefined()
     act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse D'))
-    act(() => result.current.acknowledgeAlert(cancelled.alert_id, 'Test Nurse D'))
+    act(() => result.current.acknowledgeAlert(cancelled.alert_id))
     expect(find(result, cancelled.alert_id)).toBe(cancelled)
     expect(find(result, cancelled.alert_id)).not.toHaveProperty('resolved_by')
-    expect(find(result, cancelled.alert_id)).not.toHaveProperty('acknowledged_by')
+    expect(find(result, cancelled.alert_id)).toHaveProperty('status', 'cancelled')
     result.current.data?.alerts.forEach((a, i) => expect(a).toBe(data.alerts[i]))
   })
 
@@ -221,7 +221,7 @@ describe('useResidentDetail actions (local state only)', () => {
     const { result } = renderHook(() => useResidentDetail('res-0003', loader))
     const data = demoDetail('res-0003', NOW)
     act(() => {
-      result.current.acknowledgeAlert(data.alerts[0].alert_id, 'Test Nurse D')
+      result.current.acknowledgeAlert(data.alerts[0].alert_id)
       result.current.resolveAlert(data.alerts[0].alert_id, 'Test Nurse D')
       result.current.updateThresholds(data.thresholds, 'Test Doctor B')
     })

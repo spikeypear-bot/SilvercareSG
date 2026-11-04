@@ -92,11 +92,8 @@ describe('roles', () => {
     expect(residentDetailLoader).toHaveBeenCalledWith('res-0001')
   })
 
-  it.each([
-    ['caregiver', TEST_USERS.caregiver],
-    ['family', TEST_USERS.family],
-  ] as const)('a %s user gets the staff-only notice and nothing is loaded', async (_, user) => {
-    const { user: ue } = renderPage('res-0002', user)
+  it('a caregiver gets the staff-only notice and nothing is loaded', async () => {
+    const { user: ue } = renderPage('res-0002', TEST_USERS.caregiver)
     expect(screen.getByRole('heading', { level: 1, name: 'Staff only' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 2, name: 'This page is for care staff.' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: "Your account isn't set up yet" })).not.toBeInTheDocument()
@@ -114,8 +111,18 @@ describe('roles', () => {
     expect(residentDetailLoader).not.toHaveBeenCalled()
   })
 
+  it('a user only in the removed "family" group gets the no-access page, not the staff-only notice', async () => {
+    renderPage('res-0002', TEST_USERS.family)
+    expect(screen.getByRole('heading', { level: 1, name: "Your account isn't set up yet" })).toBeInTheDocument()
+    expect(screen.queryByText('This page is for care staff.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Resident details' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Test Resident/)).not.toBeInTheDocument()
+    expect(residentDetailLoader).not.toHaveBeenCalled()
+    await waitFor(() => expect(document.title).toBe('SilverCare - No access'))
+  })
+
   it('the staff-only notice has no axe violations and its headings are in order', async () => {
-    const { container } = renderPage('res-0002', TEST_USERS.family)
+    const { container } = renderPage('res-0002', TEST_USERS.caregiver)
     await screen.findByRole('heading', { level: 2, name: 'This page is for care staff.' })
     expect(await axeViolations(container)).toEqual([])
     const levels = screen.getAllByRole('heading').map((h) => Number(h.tagName.slice(1)))
@@ -479,14 +486,27 @@ const LIFECYCLE = { open: 'Open', acknowledged: 'Acknowledged', cancelled: 'Canc
 function expectRowMatches(row: HTMLElement, alert: ResidentAlert) {
   expect(row.querySelector('time')).toHaveAttribute('datetime', alert.event_ts)
   expect(within(row).getByText(LIFECYCLE[alert.status])).toBeInTheDocument()
-  if (alert.acknowledged_by) expect(row).toHaveTextContent(`Acknowledged by ${alert.acknowledged_by},`)
+  if (alert.acknowledged_at) expect(row).toHaveTextContent('Acknowledged by the care centre nurse,')
   else expect(row).not.toHaveTextContent('Acknowledged by')
+  if (alert.acknowledged_at && alert.ack_note) {
+    expect(row).toHaveTextContent('Message from the care centre:')
+    expect(row).toHaveTextContent(alert.ack_note.replace(/\s+/g, ' '))
+  } else {
+    expect(row).not.toHaveTextContent('Message from the care centre')
+  }
   if (alert.status === 'resolved') expect(row).toHaveTextContent(`Resolved by ${alert.resolved_by},`)
   else expect(row).not.toHaveTextContent('Resolved by')
+  if (alert.status === 'cancelled' && alert.cancelled_by_role === 'caregiver') {
+    expect(row).toHaveTextContent(`Cancelled by ${alert.cancelled_by ?? 'a caregiver'} (caregiver),`)
+  } else if (alert.status === 'cancelled') {
+    expect(row).toHaveTextContent('Cancelled by the resident ("I\'m OK"),')
+  } else {
+    expect(row).not.toHaveTextContent('Cancelled by')
+  }
 }
 
 describe('alert history (pattern 12)', () => {
-  it.each(['res-0003', 'res-0007', 'res-0002', 'res-0015'])(
+  it.each(['res-0003', 'res-0007', 'res-0002', 'res-0015', 'res-0004', 'res-0008'])(
     '%s lists every alert newest first, with lifecycle and by-lines',
     async (id) => {
       const detail = demoDetail(id)
@@ -501,26 +521,64 @@ describe('alert history (pattern 12)', () => {
     },
   )
 
-  it('res-0003: Open fall first, then resolved history with Acknowledged/Resolved by lines', async () => {
+  it('res-0003: Open fall first, then resolved, caregiver-cancelled, and resolved history', async () => {
     await renderLoaded('res-0003', TEST_USERS.doctor)
     const rows = historyRows()
     expect(rows).toHaveLength(4)
     expect(rows[0]).toHaveTextContent('Fall detected')
     expect(within(rows[0]).getByText('Open')).toBeInTheDocument()
     expect(within(rows[0]).getByText('Critical')).toBeInTheDocument()
+
     expect(rows[1]).toHaveTextContent('Possible fall')
-    expect(rows[1]).toHaveTextContent('Acknowledged by Test Nurse C')
+    expect(rows[1]).toHaveTextContent('Acknowledged by the care centre nurse,')
+    expect(rows[1]).toHaveTextContent('Message from the care centre:')
+    expect(rows[1]).toHaveTextContent('Synthetic note: the care centre is calling the resident.')
     expect(rows[1]).toHaveTextContent('Resolved by Test Nurse C')
-    expect(rows[2]).toHaveTextContent('Resolved by Test Nurse A')
+    expect(within(rows[1]).getByText('Resolved')).toBeInTheDocument()
+
+    // (i + k) = 3: cancelled by a caregiver in the portal, never acknowledged.
+    expect(rows[2]).toHaveTextContent('Fall detected')
+    expect(within(rows[2]).getByText('Cancelled')).toBeInTheDocument()
+    expect(within(rows[2]).getByText(/^Cancelled by/)).toHaveTextContent(/^Cancelled by Test Caregiver B \(caregiver\), /)
     expect(rows[2]).not.toHaveTextContent('Acknowledged by')
-    rows.slice(1).forEach((r) => expect(within(r).getByText('Resolved')).toBeInTheDocument())
+    expect(rows[2]).not.toHaveTextContent('Resolved by')
+
+    expect(rows[3]).toHaveTextContent('Resolved by Test Nurse B')
+    expect(within(rows[3]).getByText('Resolved')).toBeInTheDocument()
+    // No staff name ever appears in an acknowledge line.
+    rows.forEach((r) => expect(r).not.toHaveTextContent(/Acknowledged by Test/))
   })
 
-  it('res-0007: an acknowledged unresolved alert shows "Acknowledged by Test Nurse B"', async () => {
+  it('res-0007: an acknowledged unresolved alert shows "Acknowledged by the care centre nurse" and the note', async () => {
     await renderLoaded('res-0007', TEST_USERS.doctor)
     const first = historyRows()[0]
     expect(within(first).getByText('Acknowledged')).toBeInTheDocument()
-    expect(first).toHaveTextContent('Acknowledged by Test Nurse B')
+    expect(first).toHaveTextContent(/Acknowledged by the care centre nurse, 6 min ago/)
+    expect(within(first).getByText('Message from the care centre:')).toBeInTheDocument()
+    expect(within(first).getByText('Synthetic note: ambulance on the way, 8 minutes.')).toHaveClass('whitespace-pre-line')
+  })
+
+  it('a caregiver cancel after an acknowledge shows both lines and the note', async () => {
+    const detail = demoDetail('res-0003')
+    const [first, ...rest] = detail.alerts
+    const at = (s: number) => new Date(Date.parse(first.event_ts) + s * 1000).toISOString()
+    const cancelled: ResidentAlert = {
+      ...first,
+      status: 'cancelled',
+      acknowledged_at: at(60),
+      ack_note: 'Synthetic note: calling the caregiver.',
+      cancelled_at: at(120),
+      cancelled_by_role: 'caregiver',
+      cancelled_by: 'Test Caregiver A',
+    }
+    await renderLoaded('res-0003', NURSE_D, { ...detail, alerts: [cancelled, ...rest] })
+    const row = historyRows()[0]
+    expect(within(row).getByText('Cancelled')).toBeInTheDocument()
+    expect(row).toHaveTextContent('Acknowledged by the care centre nurse,')
+    expect(row).toHaveTextContent('Synthetic note: calling the caregiver.')
+    expect(within(row).getByText(/^Cancelled by/)).toHaveTextContent(/^Cancelled by Test Caregiver A \(caregiver\), /)
+    expect(row).not.toHaveTextContent(/Escalat|Sent to the care centre nurse/)
+    expect(within(row).queryAllByRole('button')).toEqual([])
   })
 
   it('res-0014 shows the empty text', async () => {
@@ -544,26 +602,39 @@ describe('alert history (pattern 12)', () => {
     })
   })
 
-  it('the escalation countdown shows on an open alert before its 60 s escalation (res-0008)', async () => {
+  it('the escalation countdown shows as m:ss on an open warning before its 5-minute escalation (res-0008)', async () => {
     await renderLoaded('res-0008', TEST_USERS.doctor)
-    expect(within(historyRows()[0]).getByRole('timer')).toHaveTextContent(/Escalates to nurses in \d+ s/)
+    expect(within(historyRows()[0]).getByRole('timer')).toHaveTextContent(
+      /^Escalates to the care centre nurse in [0-2]:[0-5]\d$/,
+    )
   })
 
-  it('an open alert past its 60 s shows "Escalated to nurses"; acknowledged and resolved rows show none', async () => {
+  it('an open critical alert shows "Sent to the care centre nurse at once"; closed rows show no escalation line', async () => {
     await renderLoaded('res-0003', TEST_USERS.doctor)
-    const [open, ...resolved] = historyRows()
-    expect(open).toHaveTextContent('Escalated to nurses')
+    const [open, ...closed] = historyRows()
+    expect(open).toHaveTextContent('Sent to the care centre nurse at once')
+    expect(open).not.toHaveTextContent('Escalated to the care centre nurse')
     expect(within(open).queryByRole('timer')).not.toBeInTheDocument()
-    resolved.forEach((row) => expect(row).not.toHaveTextContent(/Escalat/))
+    closed.forEach((row) => expect(row).not.toHaveTextContent(/Escalat|Sent to the care centre nurse/))
   })
 
-  it('res-0007: the acknowledged hr_high alert escalated before it was acknowledged, but shows no escalation line', async () => {
+  it('an open warning past its 5 minutes shows "Escalated to the care centre nurse" (res-0012)', async () => {
+    const detail = demoDetail('res-0012')
+    expect(detail.alerts[0]).toMatchObject({ alert_type: 'possible_fall', severity: 'warning', status: 'open' })
+    await renderLoaded('res-0012', TEST_USERS.doctor, detail)
+    const open = historyRows()[0]
+    expect(open).toHaveTextContent('Escalated to the care centre nurse')
+    expect(open).not.toHaveTextContent('at once')
+    expect(within(open).queryByRole('timer')).not.toBeInTheDocument()
+  })
+
+  it('res-0007: the acknowledged hr_high alert was sent to the nurse at once, but shows no escalation line', async () => {
     const detail = demoDetail('res-0007')
     expect(detail.alerts[0]).toMatchObject({ alert_type: 'hr_high', status: 'acknowledged' })
     expect(detail.alerts[0].escalated_at).toBeDefined()
     await renderLoaded('res-0007', TEST_USERS.doctor, detail)
     expect(historyRows()[0]).toHaveTextContent('High heart rate')
-    expect(historyRows()[0]).not.toHaveTextContent(/Escalat/)
+    expect(historyRows()[0]).not.toHaveTextContent(/Escalat|Sent to the care centre nurse/)
   })
 
   it('announces an escalation that happens while the page is open', async () => {
@@ -572,9 +643,9 @@ describe('alert history (pattern 12)', () => {
     const soon = { ...first, escalates_at: new Date(Date.now() + 1_200).toISOString() }
     await renderLoaded('res-0008', TEST_USERS.doctor, { ...detail, alerts: [soon, ...rest] })
     expect(announcer()).toBeEmptyDOMElement()
-    await waitFor(() => expect(announcer()).toHaveTextContent('Escalated to nurses: Possible fall, Test Resident H.'))
+    await waitFor(() => expect(announcer()).toHaveTextContent('Escalated to the care centre nurse: Possible fall, Test Resident H.'))
     // The countdown ticks once a second, so it can trail the announcement slightly.
-    await waitFor(() => expect(within(historyRows()[0]).getByText('Escalated to nurses')).toBeInTheDocument())
+    await waitFor(() => expect(within(historyRows()[0]).getByText('Escalated to the care centre nurse')).toBeInTheDocument())
   })
 })
 
@@ -660,7 +731,7 @@ describe('nurse alert actions', () => {
     expect(former).toHaveLength(1)
     await renderLoaded('res-0006', TEST_USERS.doctor, detail)
     const row = historyRows()[detail.alerts.indexOf(former[0])]
-    expect(row).toHaveTextContent('Acknowledged by Former staff member,')
+    expect(row).toHaveTextContent('Acknowledged by the care centre nurse,')
     expect(row).toHaveTextContent('Resolved by Former staff member,')
   })
 
@@ -670,7 +741,7 @@ describe('nurse alert actions', () => {
 
     await user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     expect(within(row()).getByText('Acknowledged')).toBeInTheDocument()
-    expect(row()).toHaveTextContent('Acknowledged by Test Nurse D, just now')
+    expect(row()).toHaveTextContent('Acknowledged by the care centre nurse, just now')
     expect(within(row()).queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
     expect(announcer()).toHaveTextContent('Acknowledged: Fall detected, Test Resident C.')
     const resolve = screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' })
@@ -679,7 +750,7 @@ describe('nurse alert actions', () => {
     await user.click(resolve)
     expect(within(row()).getByText('Resolved')).toBeInTheDocument()
     expect(row()).toHaveTextContent('Resolved by Test Nurse D, just now')
-    expect(row()).toHaveTextContent('Acknowledged by Test Nurse D')
+    expect(row()).toHaveTextContent('Acknowledged by the care centre nurse, ')
     expect(within(row()).queryAllByRole('button')).toEqual([])
     expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
     const heading = screen.getByRole('heading', { level: 2, name: 'Alert history (4)' })

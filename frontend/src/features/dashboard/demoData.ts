@@ -25,7 +25,7 @@ import type {
 } from '../../types/resident'
 import type { FleetDevice } from '../../types/devices'
 
-/** The demo residents linked to every caregiver/family account. */
+/** The demo residents linked to every caregiver account (the caregiver view). */
 export const FAMILY_LINKED_RESIDENT_IDS: readonly string[] = ['res-0002', 'res-0005']
 
 export const STATUS_TEXT: Record<ResidentStatus, string> = {
@@ -109,10 +109,15 @@ const SEEDS: readonly ResidentSeed[] = [
 ]
 
 /**
- * Every alert still `open` this long after its first notification escalates to nurses
- * (docs/features/escalation.md). The demo treats the notification as sent at `event_ts`.
+ * A warning still `open` this long after its first notification escalates to the care
+ * centre nurse (docs/features/escalation.md, alert-routing.md: 5 minutes). Critical
+ * alerts are sent to the nurse at once instead. The demo treats the notification as
+ * sent at `event_ts`.
  */
-export const DEMO_ESCALATION_DELAY_MS = 60_000
+export const DEMO_ESCALATION_DELAY_MS = 300_000
+
+/** The demo's nurse email for a critical alert goes out this soon after `event_ts`. */
+const DEMO_AT_ONCE_MS = 1_000
 
 interface AlertSeed {
   resident: number // 1-based resident number
@@ -120,13 +125,13 @@ interface AlertSeed {
   severity: AlertSeverity
   device: 'wearable' | 'bedroom'
   minutesAgo: number
-  /** Acknowledged by this synthetic staff member, this many minutes ago. */
-  acknowledged?: { by: string; minutesAgo: number }
+  /** Acknowledged by the care centre nurse this many minutes ago, with an optional synthetic note. */
+  acknowledged?: { minutesAgo: number; note?: string }
 }
 
 const ALERT_SEEDS: readonly AlertSeed[] = [
-  // Mid-countdown on every page load: 30 s into the 60 s escalation delay.
-  { resident: 8, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 0.5 },
+  // Mid-countdown on every page load: 2:30 into the 5-minute escalation delay.
+  { resident: 8, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 2.5 },
   { resident: 3, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 4 },
   {
     resident: 7,
@@ -134,7 +139,7 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
     severity: 'critical',
     device: 'wearable',
     minutesAgo: 9,
-    acknowledged: { by: 'Test Nurse B', minutesAgo: 6 },
+    acknowledged: { minutesAgo: 6, note: 'Synthetic note: ambulance on the way, 8 minutes.' },
   },
   { resident: 12, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 15 },
   { resident: 17, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 22 },
@@ -146,7 +151,7 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
     severity: 'warning',
     device: 'wearable',
     minutesAgo: 48,
-    acknowledged: { by: 'Test Nurse C', minutesAgo: 40 },
+    acknowledged: { minutesAgo: 40, note: 'Synthetic note: called the caregiver.\nWearable to be checked at 3 pm.' },
   },
   { resident: 6, type: 'low_battery', severity: 'warning', device: 'wearable', minutesAgo: 55 },
   { resident: 9, type: 'device_offline', severity: 'warning', device: 'bedroom', minutesAgo: 70 },
@@ -156,7 +161,7 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
     severity: 'warning',
     device: 'wearable',
     minutesAgo: 125,
-    acknowledged: { by: 'Test Nurse B', minutesAgo: 110 },
+    acknowledged: { minutesAgo: 110 },
   },
   { resident: 2, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 410 },
 ]
@@ -180,15 +185,20 @@ const homeNumber = (i: number) => ((i * 11 + 3) % 20) + 1
 export const residentId = (n: number) => `res-${pad4(n)}`
 
 /**
- * Escalation fields as the API returns them: `escalated_at` once the 60 s check found the
- * alert still open, or the computed `escalates_at` while the check is still to come.
- * Nothing if it was acknowledged within 60 s.
+ * Escalation fields as the API returns them (docs/features/alert-routing.md): a critical
+ * alert has `escalated_at` at once. A warning has `escalated_at` once the 5-minute check
+ * found it still open, or the computed `escalates_at` while the check is still to come,
+ * and nothing if it was acknowledged within 5 minutes.
  */
 function escalation(
   eventTs: string,
+  severity: AlertSeverity,
   acknowledgedAt: string | undefined,
   now: Date,
 ): Pick<ResidentAlert, 'escalates_at' | 'escalated_at'> {
+  if (severity === 'critical') {
+    return { escalated_at: new Date(Date.parse(eventTs) + DEMO_AT_ONCE_MS).toISOString() }
+  }
   const at = new Date(Date.parse(eventTs) + DEMO_ESCALATION_DELAY_MS).toISOString()
   if (acknowledgedAt && acknowledgedAt <= at) return {}
   return Date.parse(at) <= now.getTime() ? { escalated_at: at } : { escalates_at: at }
@@ -241,10 +251,15 @@ export function createDemoData(now: Date = new Date()): DashboardData {
       status: seed.acknowledged ? 'acknowledged' : 'open',
       event_ts: eventTs,
       ...(seed.acknowledged && {
-        acknowledged_by: seed.acknowledged.by,
         acknowledged_at: minutesBefore(now, seed.acknowledged.minutesAgo),
+        ...(seed.acknowledged.note && { ack_note: seed.acknowledged.note }),
       }),
-      ...escalation(eventTs, seed.acknowledged && minutesBefore(now, seed.acknowledged.minutesAgo), now),
+      ...escalation(
+        eventTs,
+        seed.severity,
+        seed.acknowledged && minutesBefore(now, seed.acknowledged.minutesAgo),
+        now,
+      ),
     }
   }).sort((a, b) => b.event_ts.localeCompare(a.event_ts))
 
@@ -265,6 +280,7 @@ export const DEMO_DEFAULT_THRESHOLDS: VitalsThresholds = {
 }
 
 const DEMO_STAFF = ['Test Nurse A', 'Test Nurse B', 'Test Nurse C'] as const
+const DEMO_CAREGIVERS = ['Test Caregiver A', 'Test Caregiver B'] as const
 const DEMO_DOCTORS = ['Test Doctor A', 'Test Doctor B'] as const
 
 interface ThresholdChangeSeed {
@@ -349,10 +365,12 @@ const demoUuid = (group: string, n: number) =>
 
 /**
  * Closed alerts from the last 30 days: resolved or cancelled ones expire 30 days later
- * (docs/data-model.md Retention). Some were acknowledged first. A few wearable alerts
- * were cancelled by the resident's "I'm OK" press (docs/features/alert-cancel.md), and a
- * few were handled by someone whose account has since been deleted, so the API shows
- * "Former staff member" (Actor names).
+ * (docs/data-model.md Retention). Some were acknowledged first by the care centre nurse,
+ * a few with a note. A few wearable alerts were cancelled by the resident's "I'm OK"
+ * press (docs/features/alert-cancel.md), others by a caregiver in the portal, some after
+ * the acknowledge (docs/features/alert-routing.md). A few were resolved or cancelled by
+ * someone whose account has since been deleted, so the API shows "Former staff member" /
+ * "Former caregiver" (Actor names).
  */
 function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[] {
   if (i + 1 === NO_HISTORY_RESIDENT) return []
@@ -379,15 +397,27 @@ function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[
         cancelled_by_role: 'resident',
       }
     }
-    const by = (i + k) % 7 === 5 ? 'Former staff member' : staff
+    const formerAccount = (i + k) % 7 === 5
+    const acknowledge = acknowledgedFirst && {
+      acknowledged_at: minutesBefore(now, minutesAgo - 3),
+      ...((i + k) % 2 === 0 && { ack_note: 'Synthetic note: the care centre is calling the resident.' }),
+    }
+    if ((i + k) % 5 === 3) {
+      // Cancelled by a caregiver in the portal (after the acknowledge, if there was one).
+      return {
+        ...base,
+        status: 'cancelled',
+        ...acknowledge,
+        cancelled_at: minutesBefore(now, minutesAgo - 10),
+        cancelled_by_role: 'caregiver',
+        cancelled_by: formerAccount ? 'Former caregiver' : DEMO_CAREGIVERS[(i + k) % DEMO_CAREGIVERS.length],
+      }
+    }
     return {
       ...base,
       status: 'resolved',
-      ...(acknowledgedFirst && {
-        acknowledged_by: by,
-        acknowledged_at: minutesBefore(now, minutesAgo - 3),
-      }),
-      resolved_by: by,
+      ...acknowledge,
+      resolved_by: formerAccount ? 'Former staff member' : staff,
       resolved_at: minutesBefore(now, minutesAgo - 25),
     }
   })

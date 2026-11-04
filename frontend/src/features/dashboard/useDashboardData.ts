@@ -59,13 +59,18 @@ export type DeviceFleetLoader = () => Promise<FleetDevice[]>
 
 interface AlertActionsState {
   /**
-   * Marks an open alert acknowledged. Local state only for now. `by` is the signed-in
-   * staff member's display name, used only to show the change on screen: the API call
-   * sends just the alert ID and action, and the server takes the actor from the JWT
-   * `sub`, stores the sub, and ignores any actor sent by the client.
+   * Marks an open alert acknowledged. Local state only for now. No name: an acknowledge is
+   * shown as "the care centre nurse" (docs/features/alert-routing.md). The API call sends
+   * just the alert ID and action (and later the optional note); the server takes the
+   * actor from the JWT `sub` and checks the caller is in the `nurse` group.
    */
-  acknowledgeAlert: (alertId: string, by: string) => void
-  /** Marks an unresolved alert resolved. `by` is for display only, as for `acknowledgeAlert`. */
+  acknowledgeAlert: (alertId: string) => void
+  /**
+   * Marks an open or acknowledged alert resolved. `by` is the signed-in staff member's
+   * display name, used only to show the change on screen: the API call sends just the
+   * alert ID and action, and the server takes the actor from the JWT `sub`, stores the
+   * sub, and ignores any actor sent by the client.
+   */
   resolveAlert: (alertId: string, by: string) => void
 }
 
@@ -142,9 +147,9 @@ function useLoaded<K, T>(key: K, loader: (key: K) => Promise<T>) {
   return { data, setData, loading, error, retry }
 }
 
-function acknowledged(alert: ResidentAlert, by: string): ResidentAlert | null {
+function acknowledged(alert: ResidentAlert): ResidentAlert | null {
   return alert.status === 'open'
-    ? { ...alert, status: 'acknowledged', acknowledged_by: by, acknowledged_at: new Date().toISOString() }
+    ? { ...alert, status: 'acknowledged', acknowledged_at: new Date().toISOString() }
     : null
 }
 
@@ -173,7 +178,7 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
   )
 
   const acknowledgeAlert = useCallback(
-    (alertId: string, by: string) => updateAlert(alertId, (a) => acknowledged(a, by)),
+    (alertId: string) => updateAlert(alertId, acknowledged),
     [updateAlert],
   )
   const resolveAlert = useCallback(

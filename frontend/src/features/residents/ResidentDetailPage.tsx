@@ -31,7 +31,7 @@ const TITLE = 'Resident details'
 
 /**
  * `/residents/:id` (opaque resident ID). Staff only this phase: nurses and doctors see
- * the page, caregiver/family get a "for care staff" screen, and users with no group the
+ * the page, caregivers get a "for care staff" screen, and users with no group the
  * no-access screen. This only hides things; the API enforces access.
  */
 export function ResidentDetailPage() {
@@ -85,7 +85,7 @@ function BackLink({ ref }: { ref: Ref<HTMLAnchorElement> }) {
 interface DetailContentProps {
   detail: ResidentDetail
   role: 'nurse' | 'doctor'
-  onAcknowledge: (alertId: string, by: string) => void
+  onAcknowledge: (alertId: string) => void
   onResolve: (alertId: string, by: string) => void
   onSaveThresholds: (values: VitalsThresholds, by: string) => void
 }
@@ -102,7 +102,7 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
   // The page's one screen-reader announcer, fed from the alert data and the actions.
   const { message, announce } = useAlertAnnouncer(detail.alerts, residentsById)
   useEscalationWatcher(detail.alerts, (alert) =>
-    announce(`Escalated to nurses: ${describeAlert(alert, residentsById)}.`),
+    announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )
 
   return (
@@ -119,7 +119,7 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
         actions={
           role === 'nurse'
             ? {
-                onAcknowledge: (id) => onAcknowledge(id, staffName),
+                onAcknowledge,
                 onResolve: (id) => onResolve(id, staffName),
               }
             : undefined

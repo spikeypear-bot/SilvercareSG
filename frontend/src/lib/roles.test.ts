@@ -5,19 +5,24 @@ describe('viewForGroups (Users and access rules)', () => {
     [['doctor'], 'doctor'],
     [['nurse'], 'nurse'],
     [['caregiver'], 'family'],
-    [['family'], 'family'],
+    // The `family` group is removed (docs/features/alert-routing.md): alone, no access.
+    [['family'], 'no-access'],
     // Nurse wins over doctor, whichever order the groups arrive in.
     [['nurse', 'doctor'], 'nurse'],
     [['doctor', 'nurse'], 'nurse'],
-    // Any staff group wins over caregiver/family.
+    // Any staff group wins over caregiver; a leftover `family` group changes nothing.
     [['family', 'doctor'], 'doctor'],
+    [['family', 'nurse'], 'nurse'],
     [['caregiver', 'nurse'], 'nurse'],
     [['caregiver', 'family', 'doctor'], 'doctor'],
     [['caregiver', 'family'], 'family'],
+    [['family', 'caregiver'], 'family'],
     [[], 'no-access'],
     [['admin'], 'no-access'],
     [['Doctor'], 'no-access'],
     [['Nurse'], 'no-access'],
+    [['Family'], 'no-access'],
+    [['Caregiver'], 'no-access'],
   ])('%j -> %s', (groups, view) => {
     expect(viewForGroups(groups)).toBe(view)
   })
@@ -28,7 +33,8 @@ describe('roleLabel', () => {
     [['doctor'], 'Doctor'],
     [['nurse'], 'Nurse'],
     [['caregiver'], 'Caregiver'],
-    [['family'], 'Family'],
+    // `family` is not a role any more.
+    [['family'], 'No role'],
     [['family', 'nurse'], 'Nurse'],
     [['family', 'doctor'], 'Doctor'],
     // Same precedence as viewForGroups, so the badge matches the dashboard shown.
@@ -41,16 +47,23 @@ describe('roleLabel', () => {
     expect(roleLabel(groups)).toBe(label)
   })
 
+  it('never returns "Family"', () => {
+    for (const groups of [['family'], ['family', 'caregiver'], ['family', 'nurse'], ['family', 'doctor'], []]) {
+      expect(roleLabel(groups)).not.toBe('Family')
+    }
+  })
+
   it.each([
     [['nurse', 'doctor']],
     [['doctor', 'nurse']],
     [['family', 'doctor']],
     [['caregiver', 'nurse']],
     [['caregiver', 'family']],
+    [['family']],
+    [[]],
   ])('%j: the badge names the group whose view is shown', (groups) => {
     const view = viewForGroups(groups)
-    const expected = { nurse: 'Nurse', doctor: 'Doctor' }[view as 'nurse' | 'doctor']
-    if (expected) expect(roleLabel(groups)).toBe(expected)
-    else expect(['Caregiver', 'Family']).toContain(roleLabel(groups))
+    const expected = { nurse: 'Nurse', doctor: 'Doctor', family: 'Caregiver', 'no-access': 'No role' }[view]
+    expect(roleLabel(groups)).toBe(expected)
   })
 })

@@ -12,7 +12,7 @@ export type StaffRole = 'nurse' | 'doctor'
 
 /**
  * Staff-only pages: renders `children` for nurses and doctors (nurse wins for a user in
- * both), a "for care staff" notice for caregiver/family, and the no-access screen for
+ * both), a "for care staff" notice for caregivers, and the no-access screen for
  * users with no group. Nothing inside loads for non-staff. This only hides things; the
  * API enforces access.
  */
@@ -23,7 +23,7 @@ export function StaffOnly({ children }: { children: (role: StaffRole) => ReactNo
   return <NoAccessPage />
 }
 
-/** For signed-in caregiver/family users who reach a staff-only page. Loads no data. */
+/** For signed-in caregivers who reach a staff-only page. Loads no data. */
 function StaffOnlyNotice() {
   return (
     <MainLayout title="Staff only" showGreeting={false}>

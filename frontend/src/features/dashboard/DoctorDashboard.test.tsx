@@ -147,9 +147,14 @@ describe('open alerts summary', () => {
     expect(rows[0]).toHaveTextContent('res-0003')
     expect(rows[1]).toHaveTextContent('High heart rate')
     expect(rows[1]).toHaveTextContent('Test Resident G')
-    expect(rows[1]).toHaveTextContent('Acknowledged by Test Nurse B')
+    expect(rows[1]).toHaveTextContent('Acknowledged by the care centre nurse')
+    expect(within(rows[1]).getByText('Message from the care centre:')).toBeInTheDocument()
+    expect(within(rows[1]).getByText('Synthetic note: ambulance on the way, 8 minutes.')).toBeInTheDocument()
     expect(rows[2]).toHaveTextContent('Fall detected')
     expect(rows[2]).toHaveTextContent('Test Resident Q')
+    // The open critical alerts were sent to the nurse at once.
+    expect(rows[0]).toHaveTextContent('Sent to the care centre nurse at once')
+    expect(rows[2]).toHaveTextContent('Sent to the care centre nurse at once')
     rows.forEach((row) => {
       expect(row).toHaveTextContent('Critical')
       expect(within(row).queryByRole('button')).not.toBeInTheDocument()
@@ -266,11 +271,13 @@ describe('open alerts summary', () => {
       alertFor(8, {
         alert_type: 'possible_fall',
         severity: 'warning',
-        escalates_at: new Date(Date.now() + 60_000).toISOString(),
+        escalates_at: new Date(Date.now() + 275_000).toISOString(),
       }),
     ]
     await renderLoaded({ ...data, alerts })
-    expect(within(summaryRows()[0]).getByRole('timer')).toHaveTextContent(/^Escalates to nurses in \d+ s$/)
+    expect(within(summaryRows()[0]).getByRole('timer')).toHaveTextContent(
+      /^Escalates to the care centre nurse in 4:[0-3]\d$/,
+    )
   })
 
   it('the summary is not a live region; the announcer is, and is quiet on load', async () => {
@@ -317,10 +324,10 @@ describe('escalation announcements (fake clock)', () => {
     summaryRows().forEach((row) => expect(row).not.toHaveTextContent('Test Resident H'))
     expect(screen.getByRole('status')).toBeEmptyDOMElement()
 
-    tick(29_000)
+    tick(149_000)
     expect(screen.getByRole('status')).toBeEmptyDOMElement()
     tick(1000)
-    expect(screen.getByRole('status')).toHaveTextContent(`Escalated to nurses: ${H}.`)
+    expect(screen.getByRole('status')).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
 
     const announced = screen.getByRole('status').textContent
     tick(5 * 60_000)

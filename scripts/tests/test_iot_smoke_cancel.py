@@ -167,6 +167,39 @@ def test_report_cancel_prints_ids_and_expectations_but_no_values(smoke):
         assert value not in stripped, value
 
 
+def _cancel_report(smoke) -> str:
+    out = io.StringIO()
+    smoke.report_cancel(WEARABLE, cancel_messages(smoke), out)
+    return out.getvalue()
+
+
+def test_report_cancel_expects_fall_and_cancelled_emails_to_caregivers_and_nurses(
+    smoke,
+):
+    text = _cancel_report(smoke)
+
+    # docs/features/alert-routing.md, criterion 18.
+    assert "to caregivers and to the nurse subscribers" in text
+    assert "'SilverCare CRITICAL alert: Fall' at once" in text
+    assert "the nurses get it because they were emailed" in text
+    assert "a fall goes to the nurses at once, with no escalation check" in text
+
+
+def test_report_cancel_expects_escalated_at_and_no_60_s_wait(smoke):
+    text = _cancel_report(smoke)
+
+    assert "escalated_at" in text
+    assert "60 s" not in text
+    assert "escalates to the nurses after" not in text
+
+
+def test_report_cancel_says_acknowledged_alerts_are_cancelled_too(smoke):
+    text = _cancel_report(smoke)
+
+    assert "(open or acknowledged) is cancelled too" in text
+    assert "emails only the nurses" in text
+
+
 # ---- main --cancel with a fake connection ----
 
 

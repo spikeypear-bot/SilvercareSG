@@ -80,7 +80,7 @@ describe('useEscalationWatcher', () => {
     const a = alert('alert-test-001', { escalates_at: inMs(90_000) })
     const { onEscalated, rerender } = watch([a])
     tick(30_000)
-    rerender({ alerts: [{ ...a, status: 'acknowledged', acknowledged_by: 'Test Nurse A', acknowledged_at: inMs(30_000) }] })
+    rerender({ alerts: [{ ...a, status: 'acknowledged', acknowledged_at: inMs(30_000) }] })
     tick(10 * 60_000)
     expect(onEscalated).not.toHaveBeenCalled()
   })

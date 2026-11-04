@@ -23,7 +23,9 @@ frontend/src/
 ## Rules
 
 - TypeScript `strict`. No `any`; type every API response.
-- Function components and hooks only.
+- Function components and hooks only. A `.tsx` component file exports only components;
+  put helpers it shares (predicates, formatters) in a plain `.ts` module, or lint warns
+  `only-export-components`.
 - **Tailwind v4:** use the `@tailwindcss/vite` plugin and `@import "tailwindcss";` in
   `src/index.css`. Style with utility classes. Pull repeated class sets into
   components, not `@apply`.
@@ -59,6 +61,9 @@ accessibility matters.
   IDs), page titles, or `console.log`.
 - No third-party analytics, fonts, or scripts that receive user data without the user
   deciding it.
+- When a screen starts showing new personal data (a note, another user's name), update
+  that feature spec's Privacy section in the same change: data touched, retention, and
+  what must not be logged.
 
 ## Checks
 

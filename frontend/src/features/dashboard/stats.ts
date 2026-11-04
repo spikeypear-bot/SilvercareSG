@@ -12,6 +12,14 @@ export function isOnOpenList(alert: ResidentAlert): boolean {
   return alert.status === 'open' || alert.status === 'acknowledged'
 }
 
+/**
+ * Critical alerts and alerts from unassigned devices are emailed to the care centre
+ * nurse at once; warnings only after 5 minutes (docs/features/alert-routing.md).
+ */
+export function sentToNurseAtOnce(alert: ResidentAlert): boolean {
+  return alert.severity === 'critical' || alert.resident_id === 'unassigned'
+}
+
 /** The alerts the staff dashboards list: open and acknowledged ones. */
 export function openListAlerts(alerts: readonly ResidentAlert[]): ResidentAlert[] {
   return alerts.filter(isOnOpenList)

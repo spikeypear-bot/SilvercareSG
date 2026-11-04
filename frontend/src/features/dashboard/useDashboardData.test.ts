@@ -109,34 +109,46 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
   const firstWith = (data: DashboardData, status: ResidentAlert['status']) =>
     data.alerts.find((a) => a.status === status) as ResidentAlert
 
-  it('acknowledge: open -> acknowledged, with by and at', async () => {
+  it('acknowledge: open -> acknowledged, with at and no name or note', async () => {
     const { result, data } = await loaded()
     const target = firstWith(data, 'open')
-    act(() => result.current.acknowledgeAlert(target.alert_id, 'Test Nurse A'))
-    expect(find(result, target.alert_id)).toEqual({
+    act(() => result.current.acknowledgeAlert(target.alert_id))
+    const after = find(result, target.alert_id)
+    expect(after).toEqual({
       ...target,
       status: 'acknowledged',
-      acknowledged_by: 'Test Nurse A',
       acknowledged_at: ACTION_TIME.toISOString(),
     })
+    // toEqual ignores undefined keys, so check the absent ones explicitly.
+    expect(after).not.toHaveProperty('acknowledged_by')
+    expect(after).not.toHaveProperty('ack_note')
+  })
+
+  it('acknowledgeAlert takes only the alert ID', async () => {
+    const { result } = await loaded()
+    expect(result.current.acknowledgeAlert).toHaveLength(1)
   })
 
   it('acknowledge leaves every other alert untouched (same objects)', async () => {
     const { result, data } = await loaded()
     const target = firstWith(data, 'open')
-    act(() => result.current.acknowledgeAlert(target.alert_id, 'Test Nurse A'))
+    act(() => result.current.acknowledgeAlert(target.alert_id))
     alertsOf(result).forEach((a, i) => {
       if (a.alert_id !== target.alert_id) expect(a).toBe(data.alerts[i])
     })
     expect(result.current.data?.residents).toBe(data.residents)
   })
 
-  it('acknowledge is a no-op on an already-acknowledged alert (keeps the original by/at)', async () => {
+  it('acknowledge is a no-op on an already-acknowledged alert (keeps the original at and note)', async () => {
     const { result, data } = await loaded()
     const acked = firstWith(data, 'acknowledged')
-    act(() => result.current.acknowledgeAlert(acked.alert_id, 'Test Nurse A'))
+    expect(acked.ack_note).toBeDefined()
+    const originalAt = acked.acknowledged_at
+    act(() => result.current.acknowledgeAlert(acked.alert_id))
     expect(find(result, acked.alert_id)).toBe(acked)
-    expect(find(result, acked.alert_id).acknowledged_by).toMatch(/^Test Nurse [BC]$/)
+    expect(find(result, acked.alert_id).acknowledged_at).toBe(originalAt)
+    expect(find(result, acked.alert_id).acknowledged_at).not.toBe(ACTION_TIME.toISOString())
+    expect(find(result, acked.alert_id).ack_note).toBe(acked.ack_note)
   })
 
   it('acknowledge is a no-op on a resolved alert', async () => {
@@ -144,10 +156,10 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     const target = firstWith(data, 'open')
     act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
     const resolved = find(result, target.alert_id)
-    act(() => result.current.acknowledgeAlert(target.alert_id, 'Test Nurse D'))
+    act(() => result.current.acknowledgeAlert(target.alert_id))
     expect(find(result, target.alert_id)).toBe(resolved)
     expect(resolved.status).toBe('resolved')
-    expect(resolved.acknowledged_by).toBeUndefined()
+    expect(resolved).not.toHaveProperty('acknowledged_at')
   })
 
   it('resolve: open -> resolved, with by and at', async () => {
@@ -162,13 +174,14 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     })
   })
 
-  it('resolve: acknowledged -> resolved, keeping the acknowledgement', async () => {
+  it('resolve: acknowledged -> resolved, keeping the acknowledgement and its note', async () => {
     const { result, data } = await loaded()
     const acked = firstWith(data, 'acknowledged')
+    expect(acked.ack_note).toBeDefined()
     act(() => result.current.resolveAlert(acked.alert_id, 'Test Nurse A'))
     expect(find(result, acked.alert_id)).toMatchObject({
       status: 'resolved',
-      acknowledged_by: acked.acknowledged_by,
+      ack_note: acked.ack_note,
       acknowledged_at: acked.acknowledged_at,
       resolved_by: 'Test Nurse A',
       resolved_at: ACTION_TIME.toISOString(),
@@ -217,10 +230,10 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
 
     it('acknowledge is a no-op too', async () => {
       const { result, cancelled } = await loadedWithCancelled()
-      act(() => result.current.acknowledgeAlert(cancelled.alert_id, 'Test Nurse A'))
+      act(() => result.current.acknowledgeAlert(cancelled.alert_id))
       const after = find(result, cancelled.alert_id)
       expect(after).toBe(cancelled)
-      expect(after).not.toHaveProperty('acknowledged_by')
+      expect(after).not.toHaveProperty('acknowledged_at')
     })
 
     it('resolving it leaves every other alert untouched (same objects)', async () => {
@@ -242,7 +255,7 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
 
   it('an unknown alert ID changes nothing', async () => {
     const { result, data } = await loaded()
-    act(() => result.current.acknowledgeAlert('alert-test-missing', 'Test Nurse A'))
+    act(() => result.current.acknowledgeAlert('alert-test-missing'))
     act(() => result.current.resolveAlert('alert-test-missing', 'Test Nurse A'))
     alertsOf(result).forEach((a, i) => expect(a).toBe(data.alerts[i]))
   })
@@ -252,7 +265,7 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     const loader = vi.fn<DashboardLoader>(() => pending.promise)
     const { result } = renderHook(() => useDashboardData('staff', loader))
     const data = demoDataFor('staff', NOW)
-    act(() => result.current.acknowledgeAlert(data.alerts[0].alert_id, 'Test Nurse A'))
+    act(() => result.current.acknowledgeAlert(data.alerts[0].alert_id))
     act(() => result.current.resolveAlert(data.alerts[0].alert_id, 'Test Nurse A'))
     expect(result.current).toMatchObject({ data: null, loading: true, error: false })
 

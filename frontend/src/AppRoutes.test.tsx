@@ -65,8 +65,8 @@ describe('signed in', () => {
   it.each([
     ['nurse', 'Nurse dashboard'],
     ['doctor', 'Doctor dashboard'],
-    ['caregiver', 'My family'],
-    ['family', 'My family'],
+    ['caregiver', 'My residents'],
+    ['family', "Your account isn't set up yet"],
   ] as const)('a %s user sees "%s" at /', async (key, heading) => {
     authMock.getCurrentUser.mockResolvedValue(TEST_USERS[key])
     renderApp('/')
@@ -74,10 +74,18 @@ describe('signed in', () => {
     expect(location()).toBe('/')
   })
 
-  it('redirects unknown routes to /', async () => {
+  it('a user only in the removed "family" group does not get the family view', async () => {
     authMock.getCurrentUser.mockResolvedValue(TEST_USERS.family)
+    renderApp('/')
+    expect(await screen.findByRole('heading', { level: 1, name: "Your account isn't set up yet" })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'My residents' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Test Resident/)).not.toBeInTheDocument()
+  })
+
+  it('redirects unknown routes to /', async () => {
+    authMock.getCurrentUser.mockResolvedValue(TEST_USERS.caregiver)
     renderApp('/nothing-here')
-    expect(await screen.findByRole('heading', { name: 'My family' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'My residents' })).toBeInTheDocument()
     expect(location()).toBe('/')
   })
 
@@ -99,7 +107,7 @@ describe('/residents/:id (staff only)', () => {
     expect(location()).toBe('/residents/res-0001')
   })
 
-  it.each(['caregiver', 'family'] as const)(
+  it.each(['caregiver'] as const)(
     'a %s user sees "This page is for care staff." and can go back to their dashboard',
     async (key) => {
       const user = userEvent.setup()
@@ -113,13 +121,13 @@ describe('/residents/:id (staff only)', () => {
       await waitFor(() => expect(document.title).toBe('SilverCare - Staff only'))
 
       await user.click(screen.getByRole('link', { name: 'Back to my dashboard' }))
-      expect(await screen.findByRole('heading', { level: 1, name: 'My family' })).toBeInTheDocument()
+      expect(await screen.findByRole('heading', { level: 1, name: 'My residents' })).toBeInTheDocument()
       expect(location()).toBe('/')
     },
   )
 
-  it('a user with no group sees the no-access page', async () => {
-    authMock.getCurrentUser.mockResolvedValue(TEST_USERS.noGroup)
+  it.each(['noGroup', 'family'] as const)('a %s user sees the no-access page', async (key) => {
+    authMock.getCurrentUser.mockResolvedValue(TEST_USERS[key])
     renderApp('/residents/res-0002')
     expect(await screen.findByRole('heading', { level: 1, name: "Your account isn't set up yet" })).toBeInTheDocument()
     expect(screen.queryByText('This page is for care staff.')).not.toBeInTheDocument()

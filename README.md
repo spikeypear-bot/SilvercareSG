@@ -129,9 +129,16 @@ become a **warning**, sent by `telemetry`. `alert-processor` holds back repeats 
 resident, type, and severity within 30 minutes), stores the alert in
 `silvercare-alerts`, archives it in S3 `alerts/`, and emails the resident's
 subscribers. The specs are `docs/features/alerts-core.md` and
-`docs/features/vitals-alerts.md`. If an alert is still open 60 s after the first
-email (nobody acknowledged or cancelled it), `alert-processor` emails the nurse
-subscribers too ("ESCALATED"; `docs/features/escalation.md`).
+`docs/features/vitals-alerts.md`. Who else is emailed (`docs/features/alert-routing.md`):
+
+- **critical** alerts, and every alert from an unassigned device: the nurse
+  subscribers (the care centre) at once, with the caregivers;
+- **warnings**: the nurse subscribers only if the alert is still open 5 minutes after
+  the first email (nobody acknowledged or cancelled it): "ESCALATED"
+  (`docs/features/escalation.md`).
+
+Nurses acknowledge in the portal (with an optional note, emailed to the caregivers);
+caregivers cancel. Both buttons come with Track B's API.
 
 ### Subscribers
 
@@ -140,24 +147,30 @@ privately with the rest of `secrets/`:
 
 ```json
 {
-  "subscriber_emails": { "family-c1": "you@example.com", "ops-1": "you@example.com", "nurse-1": "you@example.com" },
-  "alert_subscribers": { "family-c1": { "resident_ids": ["res-0001"] } },
+  "subscriber_emails": { "caregiver-c1": "you@example.com", "ops-1": "you@example.com", "nurse-1": "you@example.com" },
+  "alert_subscribers": { "caregiver-c1": { "resident_ids": ["res-0001"] } },
   "ops_subscribers": ["ops-1"],
   "nurse_subscribers": ["nurse-1"]
 }
 ```
 
 CI can't read `secrets/`. A repo admin copies the values into GitHub (Settings →
-Secrets and variables → Actions), each as compact JSON:
+Secrets and variables → Actions), each as compact JSON. Copy only the **value** of
+each key, not the key itself or the file's outer braces (otherwise the plan fails with
+"string required, but have object"):
 
-| Name | Kind | Value |
+| Name | Kind | Value (example) |
 |---|---|---|
-| `SUBSCRIBER_EMAILS` | secret | `subscriber_emails` (label → email) |
-| `ALERT_SUBSCRIBERS` | variable | `alert_subscribers` (label → resident IDs) |
-| `OPS_SUBSCRIBERS` | variable | `ops_subscribers` (labels that get DLQ alarm emails) |
-| `NURSE_SUBSCRIBERS` | variable | `nurse_subscribers` (labels that get escalated alerts for every resident) |
+| `SUBSCRIBER_EMAILS` | secret | the value of `subscriber_emails`, label → email: `{"caregiver-c1":"you@example.com","ops-1":"you@example.com","nurse-1":"you@example.com"}` |
+| `ALERT_SUBSCRIBERS` | variable | the value of `alert_subscribers`, label → resident IDs: `{"caregiver-c1":{"resident_ids":["res-0001"]}}` |
+| `OPS_SUBSCRIBERS` | variable | the value of `ops_subscribers`, labels that get DLQ alarm emails: `["ops-1"]` |
+| `NURSE_SUBSCRIBERS` | variable | the value of `nurse_subscribers`, labels that get critical, unassigned, and escalated alerts for every resident: `["nurse-1"]` |
 
-- Labels appear in the public plan comment: use `family-c1`, `ops-1`, never names.
+Renaming a label (e.g. `family-c1` → `caregiver-c1`) shows in the plan as a 🔴 destroy
+of the old email subscription and a ➕ create of the new one: expected, nothing else is
+lost, but the address has to confirm the new subscription.
+
+- Labels appear in the public plan comment: use `caregiver-c1`, `ops-1`, never names.
 - Use team addresses, not real family members': emails are stored in the Terraform
   state, which developers can read.
 - The next deploy creates one subscription per label. Each address gets an AWS
@@ -193,7 +206,8 @@ make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -r
 
 The smoke test sends a valid `fall`. Expect, within a minute:
 
-- one email to `res-0001`'s subscribers, and none to anyone else;
+- one email to `res-0001`'s subscribers and one to each nurse subscriber (a fall is
+  critical), and none to anyone else;
 - one item under `RESIDENT#res-0001` in `silvercare-alerts`, and one object under
   `alerts/date=<today, UTC>/` in the history bucket;
 - both `silvercare-alerts-dlq` and `silvercare-critical-alert-dlq` empty (the shared
@@ -204,7 +218,7 @@ The smoke test sends a valid `fall`. Expect, within a minute:
   `SilverCare`).
 
 Then run it with `DEVICE=wearable-0010` (unassigned): one item under
-`RESIDENT#unassigned`, and no email. If a DLQ alarm email arrives, look at the queue's
+`RESIDENT#unassigned`, no caregiver email, and one nurse email at once. If a DLQ alarm email arrives, look at the queue's
 messages and the `/aws/lambda/silvercare-critical-alert` and
 `/aws/lambda/silvercare-alert-processor` logs.
 
@@ -215,24 +229,27 @@ make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -r
 ```
 
 It sends two high heart-rate `vitals` (one **warning**, "High heart rate"), a device
-`vitals_alert` at 140 bpm and one with no pulse (two **CRITICAL** emails), then a third
-high `vitals` that is suppressed (no email). Expect three emails, three new items under
+`vitals_alert` at 140 bpm and one with no pulse (two **CRITICAL** emails, to the
+caregivers and the nurses at once), then a third
+high `vitals` that is suppressed (no email). Expect three caregiver emails, two nurse
+emails at once, an "ESCALATED" nurse email for the warning about 5 minutes later, three new items under
 `RESIDENT#res-0001`, and the suppressed one only as `suppressed` in the
 `/aws/lambda/silvercare-alert-processor` log. Running it again within 30 minutes
 suppresses the warning and both critical alerts. No warning email? The resident may
 have a personal limit (`THRESHOLDS#<resident>` in `silvercare-registry`) above the
 test readings (180–185 bpm): then they are normal and no warning is correct.
 
-Escalation: after any alert email, wait about a minute. Each nurse subscriber gets
-"SilverCare ESCALATED alert: …" for every alert that is still `open` (the
+Escalation (warnings only): after a warning email, wait about 5 minutes. Each nurse
+subscriber gets "SilverCare ESCALATED alert: …" if the warning is still `open` (the
 `/aws/lambda/silvercare-alert-processor` log shows `escalated`). To check that an
-acknowledged alert doesn't escalate, send a fall (`INGEST=1`), then within 60 s open
-its item in DynamoDB → `silvercare-alerts` and set `status` to `acknowledged`: no
-nurse email, and the log shows `not_escalated` with reason `status:acknowledged`. If an
-escalation fails (an AWS error), it is retried after 3 minutes, so the nurse email
-can arrive about 4 minutes late; after 5 failures it lands in `silvercare-alerts-dlq`
-(alarm email). A check older than 15 minutes, e.g. one redriven from the DLQ later,
-emails nobody (`not_escalated`, reason `stale`).
+acknowledged warning doesn't escalate, run `ALERTS=1`, then within 5 minutes open the
+warning's item in DynamoDB → `silvercare-alerts` and set `status` to `acknowledged`: no
+ESCALATED email, and the log shows `not_escalated` with reason `status:acknowledged`.
+If an escalation fails (an AWS error), it is retried after 3 minutes, so the nurse
+email can arrive about 8 minutes after the alert; after 5 failures it lands in
+`silvercare-alerts-dlq` (alarm email). A check handled more than 20 minutes after the
+alert was stored (e.g. one redriven from the DLQ later) emails nobody
+(`not_escalated`, reason `stale`).
 
 Subscriptions to `silvercare-alerts` and `silvercare-nurses` can only be added by the
 deploy (Terraform); adding one in the console is denied on purpose.
@@ -243,9 +260,9 @@ Cancel ("I'm OK" on the wearable, `docs/features/alert-cancel.md`):
 make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) CANCEL=1
 ```
 
-It sends a `fall`, then an `alert_cancel` 5 s later. Expect the fall email, then
-"SilverCare update: Fall - res-0001 cancelled", and **no** nurse email (the cancel
-lands before the 60 s escalation). The alert item shows `status` `cancelled`, has no
+It sends a `fall`, then an `alert_cancel` 5 s later. Expect the fall email to the
+caregivers and the nurses (critical, at once), then "SilverCare update: Fall - res-0001
+cancelled" to both (the nurses had been emailed). The alert item shows `status` `cancelled`, has no
 `open_pk`, and has an `expires_at` 30 days out. A press cancels every open alert from
 that wearable, so earlier test alerts that are still open get cancelled (and emailed)
 too.

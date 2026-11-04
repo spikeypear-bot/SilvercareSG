@@ -6,7 +6,7 @@ import { TEST_USERS } from '../../test/fixtures'
 import { renderApp, renderWithAuth } from '../../test/render'
 import { resetResidentDetailLoader } from '../../test/residentMock'
 import { DoctorDashboard } from './DoctorDashboard'
-import { FamilyView } from './FamilyView'
+import { CaregiverView } from './CaregiverView'
 import { NurseDashboard } from './NurseDashboard'
 import type { DashboardView } from './useDashboardData'
 
@@ -70,7 +70,7 @@ describe('ResidentCard link to the resident page', () => {
   })
 
   it('family cards do not link to the staff-only resident page', async () => {
-    renderWithAuth(<FamilyView />, { user: TEST_USERS.family })
+    renderWithAuth(<CaregiverView />, { user: TEST_USERS.caregiver })
     expect(await screen.findAllByRole('article')).toHaveLength(2)
     screen.getAllByRole('article').forEach((card) => {
       within(card)

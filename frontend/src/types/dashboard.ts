@@ -71,10 +71,11 @@ export interface Resident {
 }
 
 /**
- * Alert lifecycle (docs/data-model.md): `cancelled` is the wearable "I'm OK" cancel
- * (docs/features/alert-cancel.md). Anything but `open` stops escalation. Only `open` and
- * `acknowledged` alerts are on the open list (pattern 9); a cancel, like a resolve, takes
- * the alert off it.
+ * Alert lifecycle (docs/data-model.md): `acknowledged` is by the care centre nurse;
+ * `cancelled` is the wearable "I'm OK" cancel (docs/features/alert-cancel.md) or a
+ * caregiver's (docs/features/alert-routing.md), from `open` or `acknowledged`. Anything
+ * but `open` stops escalation. Only `open` and `acknowledged` alerts are on the open
+ * list (pattern 9); a cancel, like a resolve, takes the alert off it.
  */
 export type AlertStatus = 'open' | 'acknowledged' | 'cancelled' | 'resolved'
 
@@ -88,29 +89,43 @@ export interface ResidentAlert {
   /** ISO 8601 UTC of the triggering event */
   event_ts: string
   /**
-   * Display name of the staff member or linked caregiver, never a Cognito sub: the API
-   * looks it up on read, or returns "Former staff member" / "Former caregiver" once the
-   * account is deleted (docs/data-model.md, Actor names).
+   * ISO 8601 UTC: when the care centre nurse acknowledged. There is no acknowledger
+   * name: the nurse account is shared, so the portal shows "the care centre nurse"
+   * (docs/features/alert-routing.md). Kept when the alert is later cancelled.
    */
-  acknowledged_by?: string
-  /** ISO 8601 UTC */
   acknowledged_at?: string
-  /** Staff display name, looked up on read like `acknowledged_by`. */
+  /**
+   * The nurse's optional note at acknowledge, 1-500 characters, newlines allowed. Shown
+   * as plain text to everyone who can see the alert (docs/data-model.md, `ack_note`).
+   */
+  ack_note?: string
+  /**
+   * Staff display name, never a Cognito sub: the API looks it up on read, or returns
+   * "Former staff member" once the account is deleted (docs/data-model.md, Actor names).
+   */
   resolved_by?: string
   /** ISO 8601 UTC */
   resolved_at?: string
   /**
-   * ISO 8601 UTC: when the escalation check runs, about 60 s after the first
-   * notification. Computed by the API (not stored), only on an `open` alert with no
-   * `escalated_at` yet.
+   * ISO 8601 UTC: when the escalation check runs, about 300 s after the first
+   * notification. Computed by the API (not stored), only on an `open` warning from an
+   * assigned device with no `escalated_at` yet.
    */
   escalates_at?: string
-  /** ISO 8601 UTC: when nurses were emailed because nobody responded within 60 s. */
+  /**
+   * ISO 8601 UTC: when the care centre nurse was emailed: at once for a critical alert
+   * or one from an unassigned device, or for a warning still open after 5 minutes.
+   */
   escalated_at?: string
-  /** ISO 8601 UTC: when the cloud received the resident's "I'm OK" press. Cancelled only. */
+  /** ISO 8601 UTC: when the cancel was received. Cancelled only. */
   cancelled_at?: string
-  /** Who cancelled; `resident` (the wearable button) is the only value today. */
-  cancelled_by_role?: 'resident'
+  /** Who cancelled: the resident (the wearable's "I'm OK") or a caregiver (the portal). */
+  cancelled_by_role?: 'resident' | 'caregiver'
+  /**
+   * The cancelling caregiver's display name, looked up on read like `resolved_by`
+   * ("Former caregiver" once the account is deleted). Absent when the resident cancelled.
+   */
+  cancelled_by?: string
 }
 
 export interface DashboardData {

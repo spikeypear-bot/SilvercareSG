@@ -99,10 +99,7 @@ describe('roles', () => {
     expect(deviceFleetLoader).toHaveBeenCalledTimes(1)
   })
 
-  it.each([
-    ['caregiver', TEST_USERS.caregiver],
-    ['family', TEST_USERS.family],
-  ] as const)('a %s user gets the staff-only notice and nothing is loaded', async (_, user) => {
+  it.each([['caregiver', TEST_USERS.caregiver]] as const)('a %s user gets the staff-only notice and nothing is loaded', async (_, user) => {
     const { user: ue } = renderPage(user)
     expect(screen.getByRole('heading', { level: 1, name: 'Staff only' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 2, name: 'This page is for care staff.' })).toBeInTheDocument()
@@ -121,8 +118,11 @@ describe('roles', () => {
     expect(deviceFleetLoader).not.toHaveBeenCalled()
   })
 
-  it('a user with no group gets the no-access page and nothing is loaded', async () => {
-    renderPage(TEST_USERS.noGroup)
+  it.each([
+    ['no group', TEST_USERS.noGroup],
+    ['only the removed "family" group', TEST_USERS.family],
+  ] as const)('a user with %s gets the no-access page and nothing is loaded', async (_, user) => {
+    renderPage(user)
     expect(screen.getByRole('heading', { level: 1, name: "Your account isn't set up yet" })).toBeInTheDocument()
     expect(screen.queryByText('This page is for care staff.')).not.toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
@@ -593,7 +593,7 @@ describe('accessibility', { timeout: 30_000 }, () => {
   })
 
   it('has no axe violations on the staff-only notice', async () => {
-    const { container } = renderPage(TEST_USERS.family)
+    const { container } = renderPage(TEST_USERS.caregiver)
     await screen.findByRole('heading', { level: 2, name: 'This page is for care staff.' })
     expect(await axeViolations(container)).toEqual([])
   })

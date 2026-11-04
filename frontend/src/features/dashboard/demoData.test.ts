@@ -125,32 +125,42 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     })
   })
 
-  it('acknowledged alerts carry who and when; open ones carry neither', () => {
+  it('acknowledged alerts carry when (no name); open ones carry neither', () => {
     data.alerts.forEach((a) => {
+      expect(a).not.toHaveProperty('acknowledged_by')
       if (a.status === 'acknowledged') {
-        expect(a.acknowledged_by).toMatch(/^Test Nurse [A-Z]$/)
         expect(a.acknowledged_at).toBeDefined()
         expect(Date.parse(a.acknowledged_at as string)).toBeGreaterThanOrEqual(Date.parse(a.event_ts))
         expect(Date.parse(a.acknowledged_at as string)).toBeLessThanOrEqual(NOW.getTime())
       } else {
-        expect(a.acknowledged_by).toBeUndefined()
         expect(a.acknowledged_at).toBeUndefined()
+        expect(a.ack_note).toBeUndefined()
       }
     })
     const acked = data.alerts.filter((a) => a.status === 'acknowledged')
-    expect(acked.map((a) => [a.resident_id, a.alert_type, a.acknowledged_by])).toEqual(
+    expect(acked.map((a) => [a.resident_id, a.alert_type])).toEqual(
       expect.arrayContaining([
-        ['res-0007', 'hr_high', 'Test Nurse B'],
-        ['res-0015', 'device_offline', 'Test Nurse C'],
-        ['res-0013', 'low_battery', 'Test Nurse B'],
+        ['res-0007', 'hr_high'],
+        ['res-0015', 'device_offline'],
+        ['res-0013', 'low_battery'],
       ]),
     )
+  })
+
+  it('ack notes: res-0007 one line, res-0015 two lines, res-0013 none', () => {
+    const find = (id: string) => data.alerts.find((a) => a.resident_id === id && a.status === 'acknowledged')
+    expect(find('res-0007')?.ack_note).toBe('Synthetic note: ambulance on the way, 8 minutes.')
+    const twoLine = find('res-0015')?.ack_note
+    expect(twoLine?.split('\n')).toHaveLength(2)
+    expect(twoLine).toMatch(/^Synthetic note:/)
+    expect(find('res-0013')).toBeDefined()
+    expect(find('res-0013')?.ack_note).toBeUndefined()
   })
 
   it('staff names are display names, never a UUID or Cognito sub', () => {
     const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
     data.alerts.forEach((a) => {
-      for (const name of [a.acknowledged_by, a.resolved_by]) {
+      for (const name of [a.resolved_by, a.cancelled_by]) {
         if (name !== undefined) {
           expect(name).not.toMatch(uuid)
           expect(name).not.toMatch(/^[0-9a-f-]{20,}$/i)
@@ -159,11 +169,11 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     })
   })
 
-  it('every alert escalates 60 s after its first notification', () => {
-    expect(DEMO_ESCALATION_DELAY_MS).toBe(60_000)
+  it('a warning escalates 300 s after its first notification', () => {
+    expect(DEMO_ESCALATION_DELAY_MS).toBe(300_000)
   })
 
-  it('exactly one alert is mid-countdown, 30 s before it escalates', () => {
+  it('exactly one alert is mid-countdown: a warning 2.5 min old, 2.5 min before it escalates', () => {
     const future = data.alerts.filter((a) => a.escalates_at)
     expect(future).toHaveLength(1)
     const [pending] = future
@@ -174,17 +184,46 @@ describe('status and severity are provided by the data (criterion 19)', () => {
       status: 'open',
     })
     expect(pending.escalated_at).toBeUndefined()
-    expect(Date.parse(pending.escalates_at as string) - NOW.getTime()).toBe(30_000)
+    expect(NOW.getTime() - Date.parse(pending.event_ts)).toBe(150_000)
+    expect(Date.parse(pending.escalates_at as string) - NOW.getTime()).toBe(150_000)
+    expect(Date.parse(pending.escalates_at as string) - Date.parse(pending.event_ts)).toBe(300_000)
     expect(data.alerts[0]).toBe(pending) // newest
   })
 
-  it('every other alert, open or acknowledged after its 60 s, has escalated_at = event_ts + 60 s', () => {
+  it('critical alerts never have escalates_at and are sent to the nurse 1 s after event_ts', () => {
+    for (const now of [NOW, new Date('2026-11-03T08:00:00Z')]) {
+      const critical = createDemoData(now).alerts.filter((a) => a.severity === 'critical')
+      expect(critical.length).toBeGreaterThan(0)
+      critical.forEach((a) => {
+        expect(a.escalates_at).toBeUndefined()
+        expect(a.escalated_at).toBeDefined()
+        expect(Date.parse(a.escalated_at as string) - Date.parse(a.event_ts)).toBe(1_000)
+      })
+    }
+    // Including the critical one that was acknowledged 3 minutes in.
+    const res7 = data.alerts.find((a) => a.resident_id === 'res-0007')
+    expect(res7).toMatchObject({ severity: 'critical', status: 'acknowledged' })
+    expect(res7?.escalated_at).toBeDefined()
+  })
+
+  it('a warning\'s escalation time is 300 s after event_ts, as escalates_at or escalated_at', () => {
+    const warnings = data.alerts.filter((a) => a.severity === 'warning')
+    expect(warnings.length).toBeGreaterThan(0)
+    warnings.forEach((a) => {
+      const at = a.escalates_at ?? a.escalated_at
+      expect(at).toBeDefined()
+      expect(Date.parse(at as string) - Date.parse(a.event_ts)).toBe(DEMO_ESCALATION_DELAY_MS)
+    })
+  })
+
+  it('every other alert has escalated_at in the past: critical at once, warnings after 300 s', () => {
     const others = data.alerts.filter((a) => !(a.resident_id === 'res-0008' && a.alert_type === 'possible_fall'))
     expect(others).toHaveLength(11)
     others.forEach((a) => {
       expect(a.escalates_at).toBeUndefined()
       expect(a.escalated_at).toBeDefined()
-      expect(Date.parse(a.escalated_at as string) - Date.parse(a.event_ts)).toBe(DEMO_ESCALATION_DELAY_MS)
+      const delay = a.severity === 'critical' ? 1_000 : DEMO_ESCALATION_DELAY_MS
+      expect(Date.parse(a.escalated_at as string) - Date.parse(a.event_ts)).toBe(delay)
       expect(Date.parse(a.escalated_at as string)).toBeLessThanOrEqual(NOW.getTime())
     })
     const ackedEscalated = others.filter((a) => a.status === 'acknowledged').map((a) => a.resident_id)
@@ -194,7 +233,8 @@ describe('status and severity are provided by the data (criterion 19)', () => {
   it('follows the demo escalation rule for every alert, at several clock times', () => {
     /** The rule, written independently of demoData.ts. */
     function expected(a: ResidentAlert, now: Date): Pick<ResidentAlert, 'escalates_at' | 'escalated_at'> {
-      const at = Date.parse(a.event_ts) + 60_000
+      if (a.severity === 'critical') return { escalated_at: new Date(Date.parse(a.event_ts) + 1_000).toISOString() }
+      const at = Date.parse(a.event_ts) + 300_000
       if (a.acknowledged_at && Date.parse(a.acknowledged_at) <= at) return {}
       const iso = new Date(at).toISOString()
       return at <= now.getTime() ? { escalated_at: iso } : { escalates_at: iso }

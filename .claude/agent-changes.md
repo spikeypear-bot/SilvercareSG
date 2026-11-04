@@ -5,6 +5,37 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** renaming `FamilyView` to `CaregiverView`, Claude ran a Python edit script
+  and an `rm` of the originals on separate lines of one shell call; the script failed,
+  the `rm` still ran, and `FamilyView.test.tsx` (never read by the main session) was
+  lost and had to be recreated by the frontend-tester. **Changed:**
+  `.claude/skills/local-dev/SKILL.md` (`make lint` row): never put a delete after a
+  script in the same call; create, check, then delete separately.
+
+- **Problem:** while adapting the frontend to `alert-routing`, Claude exported a helper
+  (`sentToNurseAtOnce`) from `AlertRow.tsx` (lint `only-export-components`, found by
+  frontend-tester), and the resident page began showing `ack_note` and caregiver names
+  without its spec's Privacy section saying so (privacy-reviewer, low). **Changed:**
+  `.claude/skills/frontend/SKILL.md`: component files export only components; new
+  personal data on a screen updates that spec's Privacy section in the same change.
+
+- **Problem:** `alert-routing` raised the escalation delay from 60 s to 300 s but kept
+  the 15-minute stale cutoff, so a check failing on every try would be dropped as stale
+  and never reach the DLQ alarm (found by iac-reviewer). **Changed:**
+  `.claude/skills/lambda-python/SKILL.md`: the stale cutoff must sit above the last
+  retry and be rechecked when the delay changes; `.claude/skills/feature-spec/SKILL.md`:
+  checklist item to recheck changed timings against the others. (Fix: cutoff 20 min.)
+
+- **Problem:** the nurse's free-text note, emailed to caregivers, accepted bidi,
+  zero-width, and U+2028 characters and could imitate the email's own lines (found by
+  privacy-reviewer). **Changed:** `.claude/skills/lambda-python/SKILL.md`: rules for
+  free text in emails (reject category C except `\n` and U+2028/2029; quote it).
+
+- **Problem:** the spec's sender checks for Track B didn't say to validate the note
+  before sending (a bad note would sit in the DLQ, no error for the nurse) or to never
+  log request bodies. **Changed:** `.claude/skills/feature-spec/SKILL.md`: the
+  sender-checks item now includes both.
+
 - **Problem:** on two merges of `main` into `frontend-views`, Claude's proposed access
   patterns (21/22, then 24/25) clashed with numbers main's alerting branches had taken,
   and each merge meant renumbering docs, specs, and code comments. **Changed:**

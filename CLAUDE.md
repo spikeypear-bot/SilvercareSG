@@ -54,13 +54,19 @@ structure, not code that exists yet. Update this file as decisions land.
   A US$40/month AWS Budget (`infra/bootstrap/budget.tf`) emails alerts at 50/80/100% of
   actual and 100% of forecast spend, counted before credits.
 - **Auth:** one Cognito user pool (`silvercare-users`) with groups `doctor`, `nurse`,
-  `caregiver`, `family`. "Staff" in the docs means `doctor` or `nurse`: both see every
-  resident; nurses get the nurse dashboard (alert response: acknowledge and resolve) and
-  doctors the doctor dashboard (clinical review: trends, editing thresholds), and a user
-  in both groups gets the nurse view. `caregiver` and `family` get the family view
-  and see only linked residents. Sign-in is email + password, MFA (authenticator app)
-  optional. Groups decide what a user can see; the API enforces it, the UI only hides
-  things.
+  `caregiver` (team decision 2026-11-04: `family` is removed, family members get
+  caregiver accounts; Track B removes the group). "Staff" in the docs means `doctor` or
+  `nurse`: they get the staff dashboard and see every resident. Nurses are a care centre
+  (one or two nurses, one shared account, "care centre nurse" in emails and the UI) who
+  watch alerts and acknowledge them; doctors (individual accounts) read resident data
+  and set alert thresholds. The staff dashboard has two views: nurses get the nurse
+  dashboard (alert response: acknowledge and resolve) and doctors the doctor dashboard
+  (clinical review: trends, editing thresholds); a user in both groups gets the nurse
+  view. `caregiver` gets the family view, sees only linked residents (several caregivers
+  per resident), and can cancel their alerts; the frontend gives a user still in the
+  `family` group the no-access screen. Sign-in is email + password, MFA (authenticator
+  app) optional. Groups decide what a user can see; the API enforces it, the UI only
+  hides things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
   caregiver/family views and the nurse and doctor dashboards, chosen by Cognito group,
   plus staff-only pages: the resident page (`/residents/<resident_id>`) and the devices

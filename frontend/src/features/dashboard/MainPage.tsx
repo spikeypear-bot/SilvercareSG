@@ -1,6 +1,6 @@
 import { useAuth } from '../auth/useAuth'
 import { DoctorDashboard } from './DoctorDashboard'
-import { FamilyView } from './FamilyView'
+import { CaregiverView } from './CaregiverView'
 import { NoAccessPage } from './NoAccessPage'
 import { NurseDashboard } from './NurseDashboard'
 
@@ -9,6 +9,6 @@ export function MainPage() {
   const { view } = useAuth()
   if (view === 'nurse') return <NurseDashboard />
   if (view === 'doctor') return <DoctorDashboard />
-  if (view === 'family') return <FamilyView />
+  if (view === 'family') return <CaregiverView />
   return <NoAccessPage />
 }

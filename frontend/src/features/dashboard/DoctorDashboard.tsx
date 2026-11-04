@@ -44,7 +44,7 @@ function DoctorContent({ data }: { data: DashboardData }) {
   )
   const { message, announce } = useAlertAnnouncer(data.alerts, residentsById)
   useEscalationWatcher(data.alerts, (alert) =>
-    announce(`Escalated to nurses: ${describeAlert(alert, residentsById)}.`),
+    announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )
 
   return (

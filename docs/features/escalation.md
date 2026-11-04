@@ -56,6 +56,15 @@ variables, like the ops topic.
 | Stale checks (2026-11-03) | a check handled more than 15 minutes after the alert was stored (e.g. redriven from the DLQ) emails nobody: `not_escalated`, reason `stale` |
 | Fail-safe | a stored alert with no `status`, or no valid `alert_type`, still escalates (label `Alert`) |
 
+**Changed by alert-routing (2026-11-04)** (docs/features/alert-routing.md): only
+warnings from assigned devices still escalate, after **5 minutes** (`DelaySeconds =
+300`, escalation line `no response within 5 minutes`) instead of 60 s. Critical alerts
+and every alert from an unassigned device go to the nurses at once, with no escalation
+check; `escalated_at` now means "the nurses were emailed". Only nurses acknowledge
+(caregivers cancel instead); the `family` group is removed. The stale limit is now
+**20 minutes** (was 15), so all 5 tries of a failing check fit before it and a
+persistent failure still reaches the DLQ alarm.
+
 ## Acceptance criteria
 
 ### Escalation check message
@@ -132,7 +141,7 @@ variables, like the ops topic.
     `NURSES_TOPIC_ARN`. Its `UpdateItem` already covers the new attributes.
 14. No new queue, function, event source mapping, or alarm. The alerts queue's DLQ
     alarm covers failed checks. Its description says the DLQ can also hold `escalation_check`
-    messages, which are skipped as `stale` after 15 minutes, so redriving one later
+    messages, which are skipped as `stale` after 15 minutes (20 since alert-routing), so redriving one later
     sends nothing.
 14a. Both topic policies (`silvercare-nurses`, `silvercare-alerts`) add a Deny on
     `sns:Subscribe` for every principal whose `aws:PrincipalArn` is not the
@@ -141,7 +150,8 @@ variables, like the ops topic.
     affected. In-place policy updates.
 14b. Timing note (README): a check that fails is retried after the queue's 180 s
     visibility timeout, so a transient error delays the nurse email to about 4
-    minutes; 5 failures reach the DLQ after about 15 minutes.
+    minutes; 5 failures reach the DLQ after about 15 minutes (since alert-routing:
+    about 8 and 17 minutes, with the 300 s delay).
 
 ### CI (main session)
 

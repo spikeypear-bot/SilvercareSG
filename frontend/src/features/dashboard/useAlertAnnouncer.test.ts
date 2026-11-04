@@ -97,7 +97,7 @@ describe('useAlertAnnouncer', () => {
   it('announces a new acknowledged alert (it is on the open list)', () => {
     const { result, rerender } = setup([])
     rerender({
-      alerts: [alert('n1', { status: 'acknowledged', acknowledged_by: 'Test Nurse A', acknowledged_at: NOW.toISOString() })],
+      alerts: [alert('n1', { status: 'acknowledged', acknowledged_at: NOW.toISOString() })],
     })
     expect(msg(result)).toBe('New critical alert: Fall detected, Test Resident C.')
   })
@@ -129,7 +129,7 @@ describe('useAlertAnnouncer', () => {
     const { result, rerender } = setup(data.alerts)
     rerender({
       alerts: data.alerts.map((a, i) =>
-        i === 0 ? { ...a, status: 'acknowledged' as const, acknowledged_by: 'Test Nurse A', acknowledged_at: NOW.toISOString() } : a,
+        i === 0 ? { ...a, status: 'acknowledged' as const, acknowledged_at: NOW.toISOString() } : a,
       ),
     })
     expect(msg(result)).toBe('')
@@ -147,8 +147,8 @@ describe('useAlertAnnouncer', () => {
 
   it('announce() sets the message directly', () => {
     const { result } = setup(data.alerts)
-    act(() => result.current.announce('Escalated to nurses: Possible fall, Test Resident H.'))
-    expect(msg(result)).toBe('Escalated to nurses: Possible fall, Test Resident H.')
+    act(() => result.current.announce('Escalated to the care centre nurse: Possible fall, Test Resident H.'))
+    expect(msg(result)).toBe('Escalated to the care centre nurse: Possible fall, Test Resident H.')
   })
 
   it('announcing the same text twice still changes the message, so it is read again', () => {

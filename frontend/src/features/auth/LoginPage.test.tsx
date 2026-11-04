@@ -66,8 +66,8 @@ describe('valid credentials (criterion 10)', () => {
   it.each([
     ['doctor', 'Doctor dashboard'],
     ['nurse', 'Nurse dashboard'],
-    ['caregiver', 'My family'],
-    ['family', 'My family'],
+    ['caregiver', 'My residents'],
+    ['family', "Your account isn't set up yet"],
     ['noGroup', "Your account isn't set up yet"],
   ] as const)('signs in a %s user and shows "%s" at /', async (key, heading) => {
     const account = TEST_USERS[key]
@@ -327,12 +327,12 @@ describe('authenticator app code (criterion 13)', () => {
   it('a correct code signs the user in', async () => {
     const { user } = await reachCodeStep()
     authMock.confirmTotpCode.mockImplementation(async () => {
-      authMock.getCurrentUser.mockResolvedValue(TEST_USERS.family)
+      authMock.getCurrentUser.mockResolvedValue(TEST_USERS.caregiver)
       return 'done'
     })
     await user.type(codeInput(), '123456')
     await user.click(screen.getByRole('button', { name: 'Verify' }))
-    expect(await screen.findByRole('heading', { level: 1, name: 'My family' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'My residents' })).toBeInTheDocument()
     expect(authMock.confirmTotpCode).toHaveBeenCalledWith('123456')
   })
 

@@ -39,6 +39,11 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] A message or contract another component sends (e.g. a queue message from Track B's
       API carrying who did something) states the checks the **sender** must make
       (identity from the verified token, group, resident link): the receiver can't.
+      The sender also validates any user-typed field with the receiver's rules and
+      returns `400` (otherwise it fails later in a DLQ with no error for the user), and
+      never logs request bodies.
+- [ ] A changed delay, retry, or timeout is rechecked against the other timings it
+      interacts with (stale cutoffs, visibility timeout × receive count, DLQ alarms).
 - [ ] Live checks (smoke tests against AWS) don't rely on shared data teammates can
       change (e.g. thresholds: use values that fail any sensible limit), and space out
       messages whose order matters (sent together, they run in parallel).

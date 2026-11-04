@@ -19,17 +19,18 @@ from synthetic demo data, and actions change local state only.
 | nurse | every (demo) resident's page | acknowledge and resolve alerts in the alert history (local state only) |
 | doctor | every (demo) resident's page | edit the vitals thresholds (local state only); no alert actions |
 | caregiver | a "This page is for care staff." screen with a link back to their dashboard | nothing on this page |
-| family | same as caregiver | nothing on this page |
+| family | the no-access screen: the group is removed (docs/features/alert-routing.md, 2026-11-04; family members get caregiver accounts) | nothing |
 
 - A user in both `nurse` and `doctor` gets the nurse behaviour (same rule as
-  `sign-in.md`). A signed-in user with none of the four groups sees the existing
+  `sign-in.md`). A signed-in user with none of the three groups (`family` alone counts as none) sees the existing
   no-access screen ("Your account isn't set up yet").
-- Staff see every resident. Caregiver and family don't reach this page in this phase;
+- Staff see every resident. Caregivers don't reach this page in this phase;
   showing them a linked resident's page needs the link check (pattern 13), which is
   out of scope.
 - The UI only hides things. When the API exists it enforces the groups:
-  - acknowledge/resolve (pattern 16) is open to any staff member, because the
-    authorisation boundary is staff vs caregiver/family and "nurses handle alerts" is
+  - acknowledge (pattern 16) is `nurse` only, and cancel is a linked caregiver only
+    (docs/features/alert-routing.md, 2026-11-04);
+  - resolve (pattern 16) is open to any staff member: "nurses resolve alerts" is
     workflow, shown in the UI only (decided 2026-11-01);
   - changing thresholds (pattern 26) is doctor only.
 
@@ -40,9 +41,10 @@ from synthetic demo data, and actions change local state only.
 1. `/residents/:id` is behind sign-in and takes the opaque `resident_id`
    (`res-0001`); no name is ever in the URL. The page title (header and
    `document.title`) is "Resident details" and never the resident's name.
-2. Nurse and doctor see the page. Caregiver and family see the staff-only screen (title
+2. Nurse and doctor see the page. Caregivers see the staff-only screen (title
    "Staff only", "This page is for care staff.", "Back to my dashboard" link to `/`)
-   and no resident data is loaded. Users with no group see the no-access screen.
+   and no resident data is loaded. Users with no group, or only the removed `family`
+   group, see the no-access screen.
 3. Loading shows a skeleton with a "Loading resident" status; a failed load shows
    "We couldn't load this resident." with "Try again"; an unknown ID shows "Resident
    not found". A "Back to dashboard" link is always shown and takes focus when the page
@@ -71,16 +73,26 @@ from synthetic demo data, and actions change local state only.
    including resolved and cancelled ones (each kept 30 days), each with:
    - severity badge, type, and time
    - Open/Acknowledged/Cancelled/Resolved label
-   - "Acknowledged by …" and "Resolved by …" lines (names looked up by the API on
-     read; "Former staff member" / "Former caregiver" once the account is deleted)
-   - for a cancelled alert, "Cancelled by the resident ("I'm OK"), <time>"
-     (`cancelled_at`, docs/features/alert-cancel.md)
-   - for an open alert, "Escalated to nurses" once `escalated_at` is set, or before
-     that the countdown to the API's computed `escalates_at` (60 s,
-     `docs/features/escalation.md`)
+   - "Acknowledged by the care centre nurse, <time>" (no name: the nurse account is
+     shared, docs/features/alert-routing.md), kept after a later cancel, followed by the
+     nurse's note if there is one ("Message from the care centre:" and the note, as
+     plain text with its line breaks)
+   - "Resolved by …" (name looked up by the API on read; "Former staff member" once
+     the account is deleted)
+   - for a cancelled alert, "Cancelled by the resident ("I'm OK"), <time>", or
+     "Cancelled by <name> (caregiver), <time>" ("Former caregiver" once the account is
+     deleted) (`cancelled_at`, `cancelled_by_role`, `cancelled_by`;
+     docs/features/alert-cancel.md, alert-routing.md)
+   - for an open alert: "Sent to the care centre nurse at once" for a critical alert
+     or one from an unassigned device; for a warning, "Escalated to the care centre
+     nurse" once `escalated_at` is set, or before that the countdown "Escalates to the
+     care centre nurse in m:ss" to the API's computed `escalates_at` (300 s,
+     `docs/features/escalation.md`, alert-routing.md)
    Empty: "No alerts for this resident in the last 30 days."
 9. Nurses get Acknowledge (open alerts) and Resolve (open and acknowledged alerts)
-   buttons in the alert history; cancelled and resolved alerts have none. They record the signed-in user's display name and the time; resolving
+   buttons in the alert history; cancelled and resolved alerts have none. Acknowledge
+   records the time (shown as the care centre nurse); resolve records the signed-in
+   user's display name and the time; resolving
    moves focus to the section heading. Doctors see no alert buttons.
 10. **Vitals thresholds** (pattern 18): heart rate min/max, SpO2 min, skin temperature
     min/max, and "Last changed by <name>, <time>". Nurses see them read-only with "Only
@@ -158,7 +170,7 @@ None yet. The routes for patterns 10–12, 16, 18, 26, and 27 come with the API 
 - Actions: nurse acknowledges and resolves alerts; doctor edits thresholds.
 - Loading / empty / error states: criterion 3, plus the empty text of each section.
 
-### Staff only (`/residents/:id`, caregiver or family)
+### Staff only (`/residents/:id`, caregiver)
 
 - Shows: "This page is for care staff.", a sentence that their dashboard shows their
   linked residents, and "Back to my dashboard".
@@ -173,9 +185,18 @@ display only, as on the dashboards. Alert emails and escalation are backend feat
 
 - **Personal data touched:** synthetic residents' health readings, alerts, and
   thresholds, plus the signed-in staff member's display name (shown for actions they
-  take).
+  take). In the alert history: the care centre nurse's acknowledge note (`ack_note`,
+  free text that may hold health or logistics details) and the names of caregivers who
+  cancelled an alert (`cancelled_by`, looked up by the API; never a `sub`). Resolver
+  names are looked up the same way; the shared nurse account's Cognito `name` is "Care
+  centre nurse", so a nurse's resolve names no individual nurse (no special case in the
+  app). The same acknowledge line and note are also shown to the resident's caregivers
+  in the caregiver view (`docs/features/sign-in.md`).
 - **Retention:**
-  - resolved alerts: 30 days (TTL)
+  - resolved and cancelled alerts, with their `ack_note`: 30 days after the resolve or
+    cancel (TTL). An acknowledged alert that is never resolved keeps its note with no
+    expiry, so Track B's resolve must exist before real data arrives
+    (docs/data-model.md, Retention)
   - latest messages: 5 per type
   - change history: the resident's lifetime + 6 years, as for electronic patient health
     records (MOH Circular 85/2022, under the Healthcare Services Act 2020). Kept after
@@ -183,11 +204,14 @@ display only, as on the dashboards. Alert emails and escalation are backend feat
     recorded, and no expiry until then. Recording a date of death has no field or
     access pattern yet *(proposed gap, see `docs/data-model.md`)*.
 - **Must not be logged or shown:** no personal data in the URL, page title, browser
-  storage, or console. Names shown for who acted are display only and never sent.
+  storage, or console. Names shown for who acted are display only and never sent. The
+  note and caregiver names are never logged or put in announcements.
 
 ## Out of scope
 
-- The API and real data; caregiver/family access to a linked resident (pattern 13).
+- The API and real data; caregiver access to a linked resident (pattern 13).
+- The nurse's note box at acknowledge, and the caregiver Cancel button (Track B, with
+  the API; docs/features/alert-routing.md).
 - Writing change-history entries (server side, with the pattern 26 route).
 - History longer than the latest 5 readings (would come from the S3 history, not
   DynamoDB).
