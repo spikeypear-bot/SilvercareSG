@@ -3,6 +3,73 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-04
+
+- **Problem:** renaming `FamilyView` to `CaregiverView`, Claude ran a Python edit script
+  and an `rm` of the originals on separate lines of one shell call; the script failed,
+  the `rm` still ran, and `FamilyView.test.tsx` (never read by the main session) was
+  lost and had to be recreated by the frontend-tester. **Changed:**
+  `.claude/skills/local-dev/SKILL.md` (`make lint` row): never put a delete after a
+  script in the same call; create, check, then delete separately.
+
+- **Problem:** while adapting the frontend to `alert-routing`, Claude exported a helper
+  (`sentToNurseAtOnce`) from `AlertRow.tsx` (lint `only-export-components`, found by
+  frontend-tester), and the resident page began showing `ack_note` and caregiver names
+  without its spec's Privacy section saying so (privacy-reviewer, low). **Changed:**
+  `.claude/skills/frontend/SKILL.md`: component files export only components; new
+  personal data on a screen updates that spec's Privacy section in the same change.
+
+- **Problem:** in `possible-fall`, a back-in-bed resolve used the bedroom unit's data
+  without checking the unit was still the alert's resident's, and "I'm OK" used a
+  5-minute cached device → resident lookup, so after a reassignment one resident's data
+  could close (and email about) another's alert (found by privacy-reviewer).
+  **Changed:** `.claude/skills/feature-spec/SKILL.md`: checklist item on device
+  reassignment for anything acting on alerts with device data. (Fix: resident check in
+  the watchdog, uncached lookup for `alert_cancel`.)
+
+- **Problem:** for `watchdog`, Claude offered the user only "unencrypted ops topic" or
+  "paid KMS key"; privacy-reviewer pointed out the free option (a separate `aws/sns`
+  topic for Lambda emails, alarms on their own topic). **Changed:**
+  `.claude/skills/tf-change/SKILL.md`: the encryption rule names that option.
+
+- **Problem:** the `watchdog` Lambda had only an `Errors` alarm, which can't notice a
+  stopped schedule (found by iac-reviewer). **Changed:**
+  `.claude/skills/lambda-python/SKILL.md`: scheduled functions also get an
+  `Invocations < 1` alarm with missing data breaching.
+
+- **Problem:** the spec added an `ops` group without saying which existing read
+  patterns it may use or the API's check order, so Track B could have shown ops every
+  health alert or leaked an alert's existence through 409 vs 404 (found by
+  privacy-reviewer). **Changed:** `.claude/skills/feature-spec/SKILL.md`: the access
+  checklist item covers new groups and the check order.
+
+- **Problem:** backend-builder ran a repo-wide `ruff format` while lambda-tester was
+  writing tests in parallel. **Changed:** `.claude/agents/backend-builder.md`: format
+  only its own files when a tester may be running.
+
+- **Problem:** `alert-routing` raised the escalation delay from 60 s to 300 s but kept
+  the 15-minute stale cutoff, so a check failing on every try would be dropped as stale
+  and never reach the DLQ alarm (found by iac-reviewer). **Changed:**
+  `.claude/skills/lambda-python/SKILL.md`: the stale cutoff must sit above the last
+  retry and be rechecked when the delay changes; `.claude/skills/feature-spec/SKILL.md`:
+  checklist item to recheck changed timings against the others. (Fix: cutoff 20 min.)
+
+- **Problem:** the nurse's free-text note, emailed to caregivers, accepted bidi,
+  zero-width, and U+2028 characters and could imitate the email's own lines (found by
+  privacy-reviewer). **Changed:** `.claude/skills/lambda-python/SKILL.md`: rules for
+  free text in emails (reject category C except `\n` and U+2028/2029; quote it).
+
+- **Problem:** the spec's sender checks for Track B didn't say to validate the note
+  before sending (a bad note would sit in the DLQ, no error for the nurse) or to never
+  log request bodies. **Changed:** `.claude/skills/feature-spec/SKILL.md`: the
+  sender-checks item now includes both.
+
+- **Problem:** on two merges of `main` into `frontend-views`, Claude's proposed access
+  patterns (21/22, then 24/25) clashed with numbers main's alerting branches had taken,
+  and each merge meant renumbering docs, specs, and code comments. **Changed:**
+  `.claude/skills/data-model/SKILL.md` step 2: number after `origin/main`'s highest,
+  refer to unmerged patterns by name in code, and on a clash keep main's number.
+
 ## 2026-11-03
 
 - **Problem:** the live `seed-data` run stopped on 34 devices: it treated unassigned
@@ -11,7 +78,69 @@ a wasted step. Newest first. Review these in the diff before committing.
   "not owned" means holding someone else's data; check what other scripts on `main`
   already write.
 
+- **Problem:** the live `--alerts` check (spec by Claude) sent heart rates 125/128 at
+  once: a teammate's personal limit of 130 made them normal, and the two readings ran
+  in parallel, so no warning came. **Changed:** `.claude/skills/feature-spec/SKILL.md`:
+  live checks avoid shared mutable data and space out order-dependent messages.
+  (Fix: `scripts/iot-smoke-test.py` now sends 180/185/182 with a 3 s pause.)
+
+- **Problem:** in `alert-cancel` tests, `\u200b`/`\u202e` escapes were saved as raw
+  invisible characters, which ruff rejected, and took extra steps to repair.
+  **Changed:** `.claude/skills/lambda-test/SKILL.md`: keep such characters as escapes
+  and check the saved file.
+
+- **Problem:** the `alert-cancel` spec (written by Claude) told Track B its API "needs
+  only `sqs:SendMessage`" for `status_update`, without the identity, group, and link
+  checks it must make before sending (privacy-reviewer, low). **Changed:**
+  `.claude/skills/feature-spec/SKILL.md`: contracts other components send state the
+  sender's checks.
+
+- **Problem:** while resolving the merge, Claude edited 11 files with Python scripts on
+  the Windows host, and text-mode writes turned their LF line endings into CRLF, against
+  `.gitattributes`. **Changed:** `.claude/skills/local-dev/SKILL.md`: keep LF; on
+  Windows open files with `newline=''` or in binary, or use Edit/Write.
+
+- **Problem:** the `escalation` spec (written by Claude) let caregivers acknowledge
+  without saying what others see about who acknowledged (privacy-reviewer, medium), and
+  didn't say what a check redriven from the DLQ hours later does (iac-reviewer, low).
+  **Changed:** `.claude/skills/feature-spec/SKILL.md` (readiness check: what others see
+  about a new action) and `.claude/skills/lambda-python/SKILL.md` (decide late-message
+  behaviour for time-bound notifications).
+
+- **Problem:** Claude edited a test with a Python one-off script, which skips the format
+  hook, so the user's lint check failed. **Changed:** `.claude/skills/local-dev/SKILL.md`:
+  run `ruff format` after shell-script edits.
+
+- **Problem:** the fix for the flaky log tests only left out `timestamp`; history's
+  test still failed in the A2 PR checks because an S3 key's random UUID contained
+  `187` (and an ingest test could hit `999` in `message_id`). **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: drop timestamp/location **and** replace UUIDs.
+
+- **Problem:** two log-privacy tests (`test_fall_log_has_no_resident_or_fall_values`,
+  history's `test_logs_contain_no_bodies_ids_or_values`) checked the raw log text, so a
+  timestamp containing `33` or `187` failed them at random. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md`: check parsed records without `timestamp` and
+  `location`.
+
+- **Problem:** the `vitals-alerts` spec (written by Claude) bounded the suppression
+  Query at `ALERT#<event_ts>`, which excludes `ALERT#<event_ts>#<alert_id>`, so a
+  retried alert was suppressed by an earlier one and never emailed (lambda-tester
+  found it). **Changed:** `.claude/skills/data-model/SKILL.md`: end composite sort-key
+  ranges with `#~` when same-`ts` items belong in the result.
+
+- **Problem:** Claude told the user the `fall-alert` → `critical-alert` rename loses
+  alerts for "a few seconds"; iac-reviewer (low) showed it's up to about a minute
+  (destroy first, then IAM role propagation). **Changed:**
+  `.claude/skills/tf-change/SKILL.md`: state that window when summarising a replaced
+  Lambda on an alert path.
+
 ## 2026-11-02
+
+- **Problem:** the `vitals-alerts` spec (written by Claude) copied the routine heart-rate
+  range 20–250 into the device `vitals_alert`, so a no-pulse emergency (0) would be
+  rejected and never alert; the user caught it. **Changed:**
+  `.claude/skills/feature-spec/SKILL.md`: readiness check that alert validation ranges
+  accept the worst real reading.
 
 - **Problem:** the `alerts-core` deploy failed: both SNS topic policies used `sns:*` in
   a TLS-only Deny, which SNS rejects at apply ("action out of service scope"); tf-check
@@ -42,6 +171,46 @@ a wasted step. Newest first. Review these in the diff before committing.
   bulk checkout or reset while anything is uncommitted.
 
 ## 2026-11-01
+
+- **Problem:** twice the screen-reader text lost a space between JSX elements in a flex
+  row ("Wearable· id", "12%· Low"), and a charging state was shown only by a hidden
+  icon. The tester caught both. **Changed:** `.claude/skills/frontend/SKILL.md`: states
+  need text, not just colour or a hidden icon; one-phrase text goes in one inline element.
+
+- **Problem:** Claude added staff use of patterns 4, 5, and 8 for the devices view
+  without saying which fields the route returns, though the indexes project more
+  (`photo_key`, `worn`, ...). The privacy reviewer caught it. **Changed:**
+  `.claude/skills/data-model/SKILL.md` step 2: for a user-facing route, note the exact
+  fields returned and the projected attributes dropped.
+
+- **Problem:** twice a frontend test run gave wrong counts (21 worker errors; 25 of 26
+  files) because it overlapped another run: the tester's tests with its lint, and
+  Claude's run with the tester's. **Changed:** `.claude/skills/frontend/SKILL.md`: run
+  the checks one after another, never alongside another test run.
+
+- **Problem:** Claude's proposed pattern 21 (doctor edits thresholds) used `UpdateItem`
+  without `attribute_exists(pk)`, so it could create orphan items for mistyped or
+  offboarded residents; it also didn't reject unknown body keys or say the actor is
+  returned as a name. The privacy reviewer caught it. **Changed:**
+  `.claude/skills/data-model/SKILL.md` (updates to existing items use
+  `attribute_exists(pk)`) and `.claude/skills/api-route/SKILL.md` (accept only
+  documented body keys and build the item; return `*_by` as a name, never the `sub`).
+
+- **Problem:** four "live region is quiet" assertions used `toHaveTextContent('')`,
+  which passes for any text, so they tested nothing. **Changed:**
+  `.claude/agents/frontend-tester.md`: use `toBeEmptyDOMElement()` for emptiness.
+
+- **Problem:** escalation announcements ran inside alert rows, so they were lost while
+  the nurse viewed another panel. The tester caught it. **Changed:**
+  `.claude/skills/frontend/SKILL.md`: one live region per page, fed from the data, and
+  no ticking lists inside live regions.
+
+- **Problem:** the nurse dashboard's acknowledge/resolve hook took the staff name from
+  the client and was documented as the future API seam, inviting an API that trusts a
+  client-chosen actor. The privacy reviewer caught it. **Changed:**
+  `.claude/skills/api-route/SKILL.md` (handler takes `*_by` actors from the `sub` claim,
+  ignores the body) and `.claude/skills/frontend/SKILL.md` (never send who did an
+  action; a name shown early is display only).
 
 - **Problem:** the rebuilt `seed-data` script crashed with `ImportError` on the user's
   macOS `python3` (3.9) instead of explaining the version; the README said `python3`.

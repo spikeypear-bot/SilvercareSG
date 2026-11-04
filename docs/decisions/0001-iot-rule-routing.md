@@ -33,7 +33,7 @@ history queue that is written to S3 in batches (amended 2026-10-25, see
                     │
 device ── MQTT ──► IoT Core ─ rule: telemetry ─ silvercare/v1/+/{vitals,motion,bed} ─► telemetry λ ──► latest table
                     │                                                                       │ abnormal vitals
-                    └─ rule: alert ───── silvercare/v1/+/fall ────────────► fall-alert λ ───┤
+                    └─ rule: alert ── silvercare/v1/+/{fall,vitals_alert} ► critical-alert λ ┤
                                                                                              ▼
              EventBridge schedule (5 min) ──► watchdog λ ── offline / possible fall ──► alerts queue (SQS) ── max retries ──► DLQ
                                                                                              │
@@ -51,7 +51,7 @@ every rule, second action ──► history queue (SQS) ── batches of up to 
 |---|---|---|
 | `health` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/status'` | Lambda `device-health`; SQS `silvercare-history` |
 | `telemetry` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/+' WHERE topic(4) = 'vitals' OR topic(4) = 'motion' OR topic(4) = 'bed'` | Lambda `telemetry`; SQS `silvercare-history` |
-| `alert` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/fall'` | Lambda `fall-alert`; SQS `silvercare-history` |
+| `alert` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/+' WHERE topic(4) = 'fall' OR topic(4) = 'vitals_alert' OR topic(4) = 'alert_cancel'` (reserved fields undefined) | Lambda `critical-alert`; SQS `silvercare-history` |
 
 All rules use SQL version `2016-03-23`. A message that a Lambda rejects as invalid is
 logged (`device_id`, `message_id`, reason) and dropped. Lambdas invoked by IoT run
@@ -69,6 +69,41 @@ messages it can't hand to the Lambda. A CloudWatch alarm emails the team when th
 queue, or the alerts queue's DLQ, holds a message. `device-health` and `telemetry` are
 unchanged.
 
+Amended 2026-11-03 (`docs/features/vitals-alerts.md`): `fall-alert` was renamed
+`critical-alert` (and its DLQ `silvercare-critical-alert-dlq`), because it now raises
+every device-detected critical alert. `telemetry` sends vitals warnings to the alerts
+queue but still has no DLQ (a known gap, recorded in that spec).
+
+Amended 2026-11-03 (`docs/features/escalation.md`): escalation to nurses uses a
+delayed `escalation_check` message (`DelaySeconds = 60`) on the same alerts queue,
+handled by `alert-processor`, which emails the `silvercare-nurses` topic if the alert
+is still `open`. No new queue, function, or poller; failed checks reach the alerts DLQ
+and its alarm.
+
+Amended 2026-11-03 (`docs/features/alert-cancel.md`): the `alert` rule also matches the
+wearable's `alert_cancel` ("I'm OK" button). `critical-alert` turns it into a
+`status_update` message on the alerts queue, and `alert-processor` cancels the
+device's open alerts and sends follow-up emails. Track B's acknowledge API sends the
+same `status_update` message (`acknowledged`).
+
+Amended 2026-11-04 (`docs/features/alert-routing.md`): critical alerts and alerts from
+unassigned devices are emailed to `silvercare-nurses` at once by `alert-processor`, with
+no escalation check. Only warnings from assigned devices still use the delayed check,
+now `DelaySeconds = 300`. Nurses acknowledge and caregivers cancel, both through
+Track B's API sending a `status_update`.
+
+Amended 2026-11-04 (`docs/features/watchdog.md`): device problems (offline, low
+battery, not worn) are detected by a scheduled `watchdog` Lambda (EventBridge, every 5
+minutes), not by `device-health`. It sends alerts to the alerts queue like the other
+detectors, and resolves them with a `status_update` (`system` / `resolved`), so
+`alert-processor` stays the only writer of alert items. `device-health` only records
+`worn_false_since`.
+
+Amended 2026-11-04 (`docs/features/possible-fall.md`): the watchdog also raises the
+possible fall at night from the newest `bed` and `motion` entries (`by-message`
+index), as a critical alert on the same queue, and resolves it with a `system` /
+`resolved` status update (`reason = back_in_bed`) when the resident is back in bed.
+
 Responsibilities:
 
 - **`device-health`**: validate, add the `status` to the device's latest 5 (the newest
@@ -80,7 +115,7 @@ Responsibilities:
   compare vitals against the resident's thresholds. The newest `bed` and `motion`
   entries are the bedroom's current state. Sends an alert to the queue when vitals are
   abnormal.
-- **`fall-alert`**: validate, send a fall alert to the queue, add the fall to the device's latest 5. Kept separate so a telemetry backlog,
+- **`critical-alert`** (named `fall-alert` until 2026-11-03): validate, send a critical alert (fall or device `vitals_alert`) to the queue, add the message to the device's latest 5. Kept separate so a telemetry backlog,
   throttling, or bug can never delay a fall. Gets reserved concurrency if the account
   allows it: AWS keeps 10 concurrent executions unreserved, so an account whose limit is
   10 (common on new accounts) can't reserve any. Check Service Quotas → Lambda →
@@ -124,8 +159,15 @@ and write them to S3 in batches.
   twice; the cleaning step removes duplicates by `message_id`.
 - **Alerts** go to the same bucket under `alerts/`, written by `alert-processor`.
 - **Bucket:** all public access blocked, `BucketOwnerEnforced`, SSE-S3, TLS-only bucket
-  policy, in `ap-southeast-1`. How long history is kept is Open decision #4 (retention);
-  the lifecycle rule follows that decision.
+  policy, in `ap-southeast-1`.
+- **Retention** (decided 2026-11-01, Open decision #4):
+  - raw `telemetry/`: downsampled to daily summaries after 90 days and deleted at
+    365 days *(both proposed)*;
+  - alerts (`alerts/`) and daily summaries (`summaries/`): the resident's lifetime +
+    6 years (MOH Circular 85/2022, Licence Conditions on the Retention Periods of Patient Health Records, under the Healthcare Services Act 2020).
+  The bucket's lifecycle rule doesn't do this yet: `infra/history.tf` needs a
+  `telemetry/` expiry at 365 days, added once the daily summary job exists. See
+  Retention in `docs/data-model.md`.
 - **Cost** (US prices from memory, check `ap-southeast-1`): SQS ~1.3M sends plus
   Lambda polling, a little over the 1M free requests, about US$0.50/month; ~43,000 S3
   PUTs (5 types × one file per 5 min) about US$0.25/month; Lambda inside the free tier;

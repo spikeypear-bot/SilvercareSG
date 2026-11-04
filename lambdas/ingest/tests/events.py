@@ -37,6 +37,16 @@ PAYLOADS: dict[str, dict[str, Any]] = {
             "samples": FALL_SAMPLES,
         },
     },
+    # docs/metrics.md, vitals_alert (vitals-alerts criterion 13): synthetic high HR.
+    "vitals_alert": {
+        "metric": "hr_bpm",
+        "value": 140,
+        "limit": 130,
+        "direction": "above",
+        "held_s": 10,
+    },
+    # docs/metrics.md, alert_cancel (alert-cancel criterion 1): envelope only.
+    "alert_cancel": {},
     "wearable_status": {
         "battery_pct": 64,
         "worn": True,
@@ -52,7 +62,9 @@ PAYLOADS: dict[str, dict[str, Any]] = {
 STORED_FIELDS = {
     ("wearable", "vitals"): {"hr_bpm", "spo2_pct", "skin_temp_c", "activity_pct"},
     ("wearable", "fall"): {"confidence", "peak_g", "still_s"},
+    ("wearable", "vitals_alert"): {"metric", "value", "limit", "direction", "held_s"},
     ("wearable", "status"): {"battery_pct", "worn", "charging", "fw_version"},
+    ("wearable", "alert_cancel"): set(),
     ("bedroom", "motion"): {"motion"},
     ("bedroom", "bed"): {"occupied"},
     ("bedroom", "status"): {"battery_pct", "fw_version"},

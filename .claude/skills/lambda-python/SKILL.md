@@ -49,6 +49,16 @@ function from the same zip, each with its own role, log group, and failure handl
   - Async-invoked functions get an on-failure destination or DLQ in Terraform, unless
     the spec decides against it (the ingest functions have none). Anything that raises
     alerts should have one: a dropped message there is a lost alert.
+  - A message that sends a time-bound notification ("no response within 60 s") can be
+    redriven from a DLQ hours later: decide in the spec what a late one does (e.g.
+    skip it as stale) and say so in the DLQ alarm text. Set the stale cutoff above the
+    last automatic retry (delay + (maxReceiveCount − 1) × visibility timeout), and
+    recheck it whenever the delay changes: a check skipped as stale counts as success,
+    so a persistent failure would never reach the DLQ or its alarm.
+  - Free text that ends up in an email (a note, a name): reject Unicode category C
+    except `\n` (bidi overrides, zero-width characters) and U+2028/U+2029, and set it
+    apart in the body (e.g. quote each line with `> `) so it can't pass for the
+    system's own lines or links.
 - Use type hints. Keep functions small.
 
 ## API handlers
@@ -67,6 +77,9 @@ Follow `tf-change` and `iam-policy`. Each function gets:
 - its own IAM role with only the actions the code uses
 - `aws_cloudwatch_log_group` named `/aws/lambda/<function-name>` with a retention period
 - `aws_lambda_permission` for whatever invokes it (IoT, API Gateway, EventBridge)
+- for a scheduled function (EventBridge rate/cron): besides an `Errors` alarm, an
+  `Invocations < 1` alarm with `treat_missing_data = "breaching"`, because a stopped
+  schedule produces no errors and so never trips the `Errors` alarm
 - for an SQS trigger: the queue's visibility timeout is at least 6 × the function
   timeout **plus** `maximum_batching_window_in_seconds`, or messages are redelivered
   while still in flight and reach the DLQ without ever failing

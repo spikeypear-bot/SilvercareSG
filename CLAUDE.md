@@ -15,7 +15,6 @@ structure, not code that exists yet. Update this file as decisions land.
   workflow, say in a line which one and why.
 - Ask me before making product decisions: what data is collected, who can see what,
   alert thresholds, retention.
-- Never run `git commit` or `git push`. I commit and push myself.
 - After fixing a bug, a reviewer finding, or a mistake I corrected, run the
   `improve-agents` skill: fix the skill, agent, or workflow that let it happen, without
   asking me, within that skill's guardrails. Changes are logged in
@@ -54,13 +53,25 @@ structure, not code that exists yet. Update this file as decisions land.
   A US$40/month AWS Budget (`infra/bootstrap/budget.tf`) emails alerts at 50/80/100% of
   actual and 100% of forecast spend, counted before credits.
 - **Auth:** one Cognito user pool (`silvercare-users`) with groups `doctor`, `nurse`,
-  `caregiver`, `family`. "Staff" in the docs means `doctor` or `nurse`: they get the
-  staff dashboard and see every resident. `caregiver` and `family` get the family view
-  and see only linked residents. Sign-in is email + password, MFA (authenticator app)
-  optional. Groups decide what a user can see; the API enforces it, the UI only hides
-  things.
+  `caregiver` (team decision 2026-11-04: `family` is removed, family members get
+  caregiver accounts; Track B removes the group). "Staff" in the docs means `doctor` or
+  `nurse`: they get the staff dashboard and see every resident. Nurses are a care centre
+  (one or two nurses, one shared account, "care centre nurse" in emails and the UI) who
+  watch alerts and acknowledge them; doctors (individual accounts) read resident data
+  and set alert thresholds. The staff dashboard has two views: nurses get the nurse
+  dashboard (alert response: acknowledge and resolve) and doctors the doctor dashboard
+  (clinical review: trends, editing thresholds); a user in both groups gets the nurse
+  view. `caregiver` gets the family view, sees only linked residents (several caregivers
+  per resident), and can cancel their alerts; the frontend gives a user still in the
+  `family` group the no-access screen. A new `ops` group (team decision 2026-11-04, added
+  by Track B) gets an ops view of device problems (offline, low battery, not worn) for
+  every resident and can acknowledge them; caregivers can acknowledge their residents'
+  device problems too. Sign-in is email + password, MFA (authenticator app) optional.
+  Groups decide what a user can see; the API enforces it, the UI only hides things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
-  caregiver/family views and the staff dashboard, chosen by Cognito group. Static build
+  caregiver/family views and the nurse and doctor dashboards, chosen by Cognito group,
+  plus staff-only pages: the resident page (`/residents/<resident_id>`) and the devices
+  view (`/devices`), a tab in the staff area. Static build
   hosted on S3 behind CloudFront (no server-side rendering).
 
 ## Repo layout *(planned)*
@@ -179,7 +190,7 @@ under Singapore's PDPA. Treat it accordingly:
   - builders: `backend-builder`, `frontend-builder` (used by `build-feature`)
   - testers: `lambda-tester`, `frontend-tester`
   - reviewers (read-only): `iac-reviewer`, `privacy-reviewer`
-- `.claude/hooks/guard.sh` blocks `git commit`/`push`, the `aws` CLI, Terraform commands
+- `.claude/hooks/guard.sh` blocks, the `aws` CLI, Terraform commands
   that change infrastructure or state, anything touching `~/.aws`, and anything touching
   device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test`).
   `.claude/hooks/format.sh` formats edited files.
@@ -190,13 +201,20 @@ under Singapore's PDPA. Treat it accordingly:
 - Feature flow, one feature at a time:
   1. Write the spec with the `feature-spec` skill → `docs/features/<name>.md`, `status: ready`
   2. Ask Claude to run the `build-feature` workflow with the feature name
-  3. Review the diff and run it locally, then commit yourself
+  3. Review the diff and run it locally
 - Before a PR, ask Claude to run the `pre-pr-check` workflow.
 
 ## Open decisions
 
 Record the outcome here (and remove the item) once decided. Numbers stay fixed because
-other docs refer to them (#1, the metrics contract, was approved 2026-10-25).
+other docs refer to them (#1, the metrics contract, was approved 2026-10-25; #4, data
+retention, was decided 2026-11-01, see Retention in `docs/data-model.md`: patient
+health records, meaning the threshold change history and derived records that informed
+care (alerts, daily summaries), are kept for the patient's lifetime + 6 years, per MOH
+Circular 85/2022 under the Healthcare Services Act 2020; raw S3 telemetry is
+downsampled to daily summaries after 90 days and deleted at 365 days (both figures
+proposed); Cognito accounts are disabled at a user's offboarding and deleted 90 days
+later; DynamoDB keeps at most the latest 5 messages per device and type).
 
 2. **Alerting rules:** which conditions trigger alerts (e.g. fall, inactivity, abnormal
    vitals) and how alerts are delivered (push, SMS, email). (Decided: wearables also
@@ -204,8 +222,5 @@ other docs refer to them (#1, the metrics contract, was approved 2026-10-25).
    10 s, on top of the cloud's per-resident check; see `docs/metrics.md`.)
 3. **User onboarding:** how caregivers/family are linked to residents. (Decided: accounts
    are created by an admin only, no self sign-up.)
-4. **Data retention:** how long history in S3, resolved alerts in DynamoDB, and user
-   data are kept. (Decided: DynamoDB keeps at most the latest 5 messages per device and
-   type.)
 5. **Lambda packaging for third-party packages**, if a function ever needs more than
    the standard library, boto3, and Powertools.

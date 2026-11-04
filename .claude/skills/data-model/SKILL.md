@@ -17,6 +17,13 @@ design lives in `docs/data-model.md`; Terraform implements it. Update the doc fi
    |---|---|---|---|---|
    | 1 | Staff dashboard | Latest status of every resident at a site | pk = SITE#<id> | every 30s per open dashboard |
 
+   Pattern numbers are shared with other branches: number a new one after the highest on
+   `origin/main`, and while it is unmerged refer to it by name, not number, in code
+   comments and test titles. If main takes the same number first, keep main's and
+   renumber yours.
+   When a user-facing route reads a pattern (including a new caller of an existing one),
+   note the exact fields it returns and which stored or projected attributes it drops:
+   indexes shared with other callers often project more than that route should show.
 3. Design or extend the keys and GSIs so every listed pattern is a `GetItem` or `Query`.
 4. Update `docs/data-model.md`: tables, key schema, item types with example items, GSIs,
    TTL, and which access pattern each one serves.
@@ -34,6 +41,9 @@ design lives in `docs/data-model.md`; Terraform implements it. Update the doc fi
   an existing table without the user agreeing to a migration plan.
 - Every GSI must serve a listed access pattern. Project only the attributes it needs.
 - No `Scan` in application code.
+- Range queries on composite sort keys (`ALERT#<ts>#<id>`): an upper bound of
+  `ALERT#<ts>` excludes items at that exact `ts`. End it with `#~` (`ALERT#<ts>#~`) when
+  they should be included, and test an item at the boundary.
 - DynamoDB holds live state, not history. Device messages go in `silvercare-latest`,
   at most 5 per device and message type; history goes to S3. Don't add tables or items
   that grow without bound; anything that accumulates (like resolved alerts) needs a TTL
@@ -42,6 +52,9 @@ design lives in `docs/data-model.md`; Terraform implements it. Update the doc fi
   (`2026-10-17T09:30:00Z`), which sorts correctly as a string.
 - Every write path must be idempotent: IoT Core and Lambda retries deliver duplicates.
   Use a deterministic key (device + timestamp) or a condition expression.
+- A pattern that changes an existing item (acknowledge, edit thresholds, ...) has the
+  condition `attribute_exists(pk)` in its key condition column: `UpdateItem` creates a
+  missing item, which would leave an orphan that no TTL or offboarding step deletes.
 
 ## S3 rules
 

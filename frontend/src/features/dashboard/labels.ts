@@ -1,10 +1,15 @@
 import type { AlertType } from '../../types/dashboard'
 
+/** Vitals labels match the alert emails (docs/features/vitals-alerts.md). */
 export const ALERT_TYPE_LABELS: Record<AlertType, string> = {
   fall: 'Fall detected',
+  hr_high: 'High heart rate',
+  hr_low: 'Low heart rate',
+  spo2_low: 'Low blood oxygen',
+  skin_temp_high: 'High skin temperature',
+  skin_temp_low: 'Low skin temperature',
   possible_fall: 'Possible fall',
   inactivity: 'Inactivity',
-  vitals: 'Vitals need attention',
   device_offline: 'Device offline',
   low_battery: 'Low battery',
 }

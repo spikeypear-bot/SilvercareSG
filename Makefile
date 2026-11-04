@@ -15,6 +15,11 @@ ENDPOINT ?=
 JOB ?=
 INGEST ?=
 ARGS ?=
+ALERTS ?=
+CANCEL ?=
+LOW_BATTERY ?=
+POSSIBLE_FALL ?=
+BACK_IN_BED ?=
 # Local secrets (device keys and certs, the frontend .env), git-ignored. Share this one
 # folder privately with other developers (README.md, Sharing local secrets).
 SECRETS_DIR := secrets
@@ -71,5 +76,5 @@ device-keys: ## Create missing device keys + CSRs: make device-keys [DEVICE=<id>
 device-certs: ## Write secrets/device-keys/<id>.crt from secrets/device-keys/certificates.json
 	$(DEV) python scripts/device-certs.py --keys-dir $(KEYS_DIR)
 
-smoke-test: ## Test a device against AWS IoT: make smoke-test DEVICE=<id> ENDPOINT=<host> [JOB=1] [INGEST=1]
-	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) --keys-dir $(KEYS_DIR) $(if $(JOB),--job) $(if $(INGEST),--ingest)
+smoke-test: ## Test a device against AWS IoT: make smoke-test DEVICE=<id> ENDPOINT=<host> [JOB=1] [INGEST=1] [ALERTS=1] [CANCEL=1] [LOW_BATTERY=1] [POSSIBLE_FALL=1] [BACK_IN_BED=1]
+	$(DEV) python scripts/iot-smoke-test.py --device $(DEVICE) --endpoint $(ENDPOINT) --keys-dir $(KEYS_DIR) $(if $(JOB),--job) $(if $(INGEST),--ingest) $(if $(ALERTS),--alerts) $(if $(CANCEL),--cancel) $(if $(LOW_BATTERY),--low-battery) $(if $(POSSIBLE_FALL),--possible-fall) $(if $(BACK_IN_BED),--back-in-bed)

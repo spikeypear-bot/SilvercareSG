@@ -17,6 +17,10 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
   https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html.
 - Region: ap-southeast-1
 - Encrypt every data store at rest (KMS or AWS-managed keys) and enforce TLS in transit.
+  CloudWatch alarms can't publish to an SNS topic encrypted with `aws/sns`, but Lambdas
+  can: give alarms their own topic and send data-carrying emails through a separate
+  `aws/sns` topic (free) rather than leaving one shared topic unencrypted or paying for a
+  customer-managed key.
 - IAM: follow the `iam-policy` skill (one role per Lambda, no `*` actions or resources).
 - Tag every resource: `project = "silvercare"`, `managed_by = "terraform"`
 - Pin provider versions in `required_providers`, and set `required_version` for Terraform
@@ -35,7 +39,9 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
    dev container); fix any errors. Fix checkov findings or, if one doesn't apply, add a
    `#checkov:skip=<ID>:<reason>` comment on the resource and mention it in the summary.
 4. Summarise: resources added / changed / destroyed, and flag anything
-   destructive (replacements, deletions) or with ongoing cost.
+   destructive (replacements, deletions) or with ongoing cost. A replaced Lambda with a
+   new role is down for up to about a minute (destroy first, then IAM propagation),
+   not seconds: say so for anything on an alert path.
 
 ## Never
 - Run `terraform apply` or `terraform destroy`.

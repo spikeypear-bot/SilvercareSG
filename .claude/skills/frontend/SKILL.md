@@ -5,8 +5,8 @@ description: Conventions for the React + TypeScript + Tailwind frontend in front
 
 # Frontend
 
-One Vite app in `frontend/` that serves the caregiver/family views and the staff
-dashboard, chosen by Cognito group.
+One Vite app in `frontend/` that serves the caregiver/family views, the nurse and doctor
+dashboards, and the staff-only resident page, chosen by Cognito group.
 
 ## Structure
 
@@ -23,14 +23,17 @@ frontend/src/
 ## Rules
 
 - TypeScript `strict`. No `any`; type every API response.
-- Function components and hooks only.
+- Function components and hooks only. A `.tsx` component file exports only components;
+  put helpers it shares (predicates, formatters) in a plain `.ts` module, or lint warns
+  `only-export-components`.
 - **Tailwind v4:** use the `@tailwindcss/vite` plugin and `@import "tailwindcss";` in
   `src/index.css`. Style with utility classes. Pull repeated class sets into
   components, not `@apply`.
 - **Config** from `import.meta.env.VITE_*` (API URL, user pool ID, client ID). Everything
   in the bundle is public, so no secrets.
 - **API calls** only go through `lib/api.ts`, which attaches the access token and turns
-  error responses into typed errors.
+  error responses into typed errors. Never send who did an action (name, email, sub):
+  the server takes it from the token. A name shown before the response is display only.
 - **Role-based views:** route guards read the user's groups. This only decides what to
   show; the API enforces access.
 - Handle loading, empty, and error states on every data view.
@@ -40,11 +43,17 @@ frontend/src/
 Staff and family members watch elderly residents' alerts on these screens, so
 accessibility matters.
 
-- Alerts must never rely on colour alone. Use text and an icon too.
+- Alerts and states (offline, low battery, charging, ...) must never rely on colour or
+  an `aria-hidden` icon alone. Use text too.
+- Text that reads as one phrase ("12% · Low", "Wearable · wearable-0001") goes in one
+  inline element: JSX drops the space between elements on separate lines, and a flex
+  `gap` hides that on screen but not for screen readers.
 - Colour contrast meets WCAG AA. Text is at least 16px. Tap targets are at least 44px.
 - Semantic HTML (`button`, `nav`, headings in order), labelled form fields, and visible
   focus styles.
-- Use an `aria-live` region for new alerts.
+- Use an `aria-live` region for new alerts, rendered once per page and fed from the
+  data, not from list rows that a tab or filter can unmount. Don't put lists with
+  ticking times or countdowns inside a live region.
 
 ## Privacy
 
@@ -52,9 +61,14 @@ accessibility matters.
   IDs), page titles, or `console.log`.
 - No third-party analytics, fonts, or scripts that receive user data without the user
   deciding it.
+- When a screen starts showing new personal data (a note, another user's name), update
+  that feature spec's Privacy section in the same change: data touched, retention, and
+  what must not be logged.
 
 ## Checks
 
 From `frontend/`: `npm run lint`, `npm run test` (Vitest + React Testing Library), and
-`npm run build` must all pass before finishing. Summarise the screens and API calls
-changed.
+`npm run build` must all pass before finishing. Run them one after another, and never
+while another test run is going (e.g. a `frontend-tester` agent's): overlapping runs
+skip files or fail workers, and the counts can't be trusted. Summarise the screens and
+API calls changed.

@@ -1,5 +1,5 @@
 ---
-status: ready          # draft | ready | built
+status: built          # draft | ready | built
 ---
 
 # Alerts core (fall alerts end to end)
@@ -350,7 +350,7 @@ None. Track B's API will show `silvercare-alerts` on the staff dashboard.
   stored in plain text in the Terraform state, which developers can read: use team
   addresses, not real family members', until that is revisited.
 - Must not be logged or shown: `details`, vitals, email addresses, email bodies,
-  display names. Subscriber labels must not be people's names (e.g. `family-c1`, not
+  display names. Subscriber labels must not be people's names (e.g. `caregiver-c1`, not
   `alice`), because they appear in the public plan comment.
 
 ## Cost

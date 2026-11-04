@@ -1,4 +1,5 @@
-"""alert-processor Lambda (docs/features/alerts-core.md, criteria 13-20).
+"""alert-processor Lambda (docs/features/alerts-core.md, criteria 13-20;
+docs/features/vitals-alerts.md, criteria 17-22).
 
 Fed by an SQS event source mapping on silvercare-alerts (batch size 10, no batching
 window, ReportBatchItemFailures). Each record is handled on its own; a failed record
@@ -9,6 +10,13 @@ For each record:
 
 0. Parse and validate the alert message (message.py). An invalid body is logged with
    a reason code and reported as a failure, so it ends in the DLQ, never dropped.
+0b. Hold back repeats (every type except fall): Query the resident's alerts with
+   event_ts after (event_ts - 30 min) and up to this one's, same event_ts included
+   (pattern 7). If another alert with the
+   same alert_type and severity (and, for unassigned, the same device) is there, this
+   one is suppressed: not stored, archived, or emailed, logged as "suppressed", and the
+   SQS message is deleted. Times come from event_ts, so a retry decides the same way;
+   an alert that is already stored is never suppressed afterwards.
 1. Enrich (fall only): add details.latest_vitals (hr_bpm, spo2_pct, ts) from the
    device's newest vitals entry in silvercare-latest, if there is one.
 2. Store: conditional PutItem on silvercare-alerts (attribute_not_exists(pk)). If the
@@ -16,21 +24,96 @@ For each record:
    Unassigned alerts get notification = "skipped_unassigned" in the same PutItem.
 3. Archive: PutObject alerts/date=<event_ts UTC date>/<alert_id>.json in the history
    bucket (the same key on a retry, so one object per alert).
-4. Notify (resident assigned, item has no notified_at): SNS Publish with the
-   resident_id message attribute (subscriptions filter on it), log and emit the
+4. Notify caregivers (resident assigned, item has no notified_at): SNS Publish with
+   the resident_id message attribute (subscriptions filter on it), log and emit the
    dispatch latency, then set notified_at once. A crash between Publish and the update
    sends the email again on retry: a duplicate is accepted, a missing one isn't.
+5. Route to the nurses (docs/features/alert-routing.md, criteria 1-4), by the stored
+   item's severity (missing = critical, as old falls):
+   - assigned critical, or unassigned (any severity): if the item has no escalated_at,
+     Publish the at-once email to the nurses topic, then set escalated_at once. A
+     failed Publish fails the record; the retry doesn't email caregivers again
+     (notified_at is set). No escalation check.
+   - assigned warning (docs/features/escalation.md, criteria 2-4): if the item is open
+     and has no escalation_queued_at, SendMessage the check to this same queue with
+     DelaySeconds 300, then set escalation_queued_at once. A failed send fails the
+     record. A crash between the send and the update can queue a second check, which
+     the check handling below makes harmless.
+   The log line's `nurses` field says which: immediate, escalation_queued, or none
+   (suppressed).
+
+Escalation checks (docs/features/escalation.md, criteria 5-8), 300 s later, skip the
+repeat check: strongly consistent GetItem of the alert (pattern 23). No item: failure.
+A present status other than open (acknowledged, cancelled, resolved): not_escalated;
+a missing status escalates (fail-safe). escalated_at
+already set: duplicate. More than 20 minutes after created_at: not_escalated, reason
+stale (an invalid created_at is not stale). Otherwise Publish to the nurses topic, then set escalated_at
+once (a failed condition after the Publish is a duplicate). status stays open.
+
+Status updates (docs/features/alert-cancel.md, criteria 8-14; changed by
+docs/features/alert-routing.md, criteria 10-15) skip the repeat check. A resident
+cancel (wearable) has a device target and changed_at = when the IoT rule received the
+alert_cancel (server time); a caregiver cancel and a nurse acknowledge (Track B's API)
+have an alert target. Find the targets: for a device target, a strongly consistent
+Query of the resident's alerts up to changed_at (sk <= "ALERT#<changed_at>#~"),
+filtered to that device and to items open or acknowledged, or waiting for this update's
+follow-up (pattern 24), paginated; for an alert target, a strongly consistent GetItem
+(pattern 25). A cancel changes open and acknowledged alerts, an acknowledge only open
+ones. None: outcome no_open_alerts (device target) or not_open (alert target). For each
+target: UpdateItem conditional on the statuses it may change from. A cancel sets
+cancelled_at, cancelled_by_role, cancelled_by (caregiver sub), expires_at = changed_at +
+30 days, and REMOVEs open_pk and the acknowledge's status_notified_at (so the cancel's
+own follow-up is tracked); an acknowledge sets acknowledged_at, acknowledged_by, and
+ack_note if there is a note. A failed condition is skipped without email. Then the
+follow-up: caregivers through the alerts topic with the resident_id attribute (not for
+unassigned); for a cancel, nurses too if the item has escalated_at or acknowledged_at;
+then SET status_notified_at once (also for an unassigned acknowledge, which emails
+nobody). A target whose status already equals new_status (set by this same update: the
+same by_role, and for a caregiver or nurse the same sub) but has no
+status_notified_at is a retry after a crash: it gets its follow-up now (a duplicate is
+accepted, a missing one isn't).
+
+Device problems (docs/features/watchdog.md, criteria 11-14a): `device_offline`,
+`battery_low`, and `not_worn` alerts from the watchdog skip the repeat check, the fall
+enrichment, and the nurse routing. They are stored and archived as usual, then emailed
+with the same subject and body to the caregivers (alerts topic, resident_id attribute;
+not for unassigned) and SET notified_at once, then to the ops team (silvercare-ops-devices, unless
+details.grouped: the watchdog sent one summary email for them) and SET
+ops_notified_at once. A step whose timestamp is already set is skipped. Their log line
+has nurses = none and ops = emailed or grouped.
+
+Which role may change which type is checked after reading the target (watchdog
+criterion 14a): device problems take only an ops or caregiver acknowledge and the
+system resolve; health alerts only a nurse acknowledge and a resident or caregiver
+cancel. Anything else changes nothing and emails nobody: outcome not_allowed. A device
+problem acknowledge also sets acknowledged_by_role, and its follow-up goes to the
+caregivers and the ops team. The system resolve (the watchdog, when the problem
+cleared) is conditional on open or acknowledged, sets resolved_at, resolved_by_role,
+expires_at, REMOVEs open_pk, and sends no email. The resident's "I'm OK" Query skips
+the three device-problem types, so they stay open.
+
+Possible falls (docs/features/possible-fall.md, criteria 8-13) are critical health
+alerts from the watchdog: no repeat check, no fall enrichment, caregivers and nurses at
+once. Besides the health-alert changes they take the system resolve with reason
+back_in_bed (a system resolve with a reason is not_allowed on a device problem, and
+one without a reason is not_allowed on a possible fall), which sends a follow-up to
+the caregivers and, if the item has escalated_at, the nurses, then SET
+status_notified_at once (retried like a cancel's). A wearable's "I'm OK" also cancels
+the resident's open or acknowledged possible falls, whatever device raised them.
 
 Any AWS error fails only that record. Logs hold one line per record with alert_id,
-alert_type, device_id, resident_id, and the outcome (plus a reason or error code),
-never details, vitals, email addresses, or the email body.
+alert_type, severity, device_id, resident_id, and the outcome (plus a reason or error
+code; new alerts add nurses; checks add kind and escalation_delay_ms; status updates log
+one line per alert with kind, new_status, by_role, and, for an acknowledge, has_note),
+never details, vitals, limits, email addresses, the email body, or a status update's
+by, by_name, or note.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import cache
 from typing import Any
@@ -42,7 +125,38 @@ from aws_lambda_powertools.metrics import EphemeralMetrics, MetricUnit
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from message import UNASSIGNED, Alert, Rejection, log_ids, parse_alert
+from message import (
+    ALERT_TYPES,
+    BATTERY_LOW,
+    DEVICE_ID_RE,
+    DEVICE_OFFLINE,
+    DEVICE_PROBLEM_TYPES,
+    KIND_ESCALATION_CHECK,
+    KIND_STATUS_UPDATE,
+    NOT_WORN,
+    POSSIBLE_FALL,
+    REASON_BACK_IN_BED,
+    ROLE_CAREGIVER,
+    ROLE_NURSE,
+    ROLE_OPS,
+    ROLE_RESIDENT,
+    ROLE_SYSTEM,
+    SEVERITIES,
+    SEVERITY_CRITICAL,
+    STATUS_ACKNOWLEDGED,
+    STATUS_CANCELLED,
+    STATUS_RESOLVED,
+    UNASSIGNED,
+    UUID_RE,
+    Alert,
+    EscalationCheck,
+    Rejection,
+    StatusUpdate,
+    check_body,
+    log_ids,
+    parse_message,
+    parse_ts,
+)
 
 # The service name comes from POWERTOOLS_SERVICE_NAME, set by Terraform.
 logger = Logger()
@@ -52,12 +166,92 @@ ARCHIVE_PREFIX = "alerts"
 CONTENT_TYPE = "application/json"
 LATENCY_METRIC = "AlertDispatchLatency"
 
+# Repeat suppression (vitals-alerts criteria 17-19).
+REPEAT_WINDOW = timedelta(minutes=30)
+# Falls and possible falls (docs/features/possible-fall.md, criterion 10): each event
+# is a separate emergency.
+NEVER_SUPPRESSED = frozenset({"fall", POSSIBLE_FALL})
+
 STORED = "stored"
 DUPLICATE = "duplicate"
 NOTIFIED = "notified"
 SKIPPED_UNASSIGNED = "skipped_unassigned"
+SUPPRESSED = "suppressed"
 INVALID = "invalid"
 ERROR = "error"
+
+# Escalation (docs/features/escalation.md; 5 minutes since alert-routing).
+ESCALATION_DELAY_S = 300
+STATUS_OPEN = "open"
+# The new alert log line's `nurses` field (alert-routing criterion 5).
+NURSES_IMMEDIATE = "immediate"
+NURSES_ESCALATION_QUEUED = "escalation_queued"
+NURSES_NONE = "none"
+# Above the last retry of a failing check (300 s delay + 4 x 180 s visibility = 17
+# min), so a check that keeps failing reaches the DLQ and its alarm instead of being
+# dropped as stale. Only a late redrive is stale.
+STALE_AFTER = timedelta(minutes=20)
+STALE = "stale"
+ESCALATED = "escalated"
+NOT_ESCALATED = "not_escalated"
+# Status values logged as they are; anything else is logged as "other", so a free-text
+# value written by mistake never reaches the logs.
+KNOWN_STATUSES = frozenset({"open", "acknowledged", "cancelled", "resolved"})
+
+# Status updates (docs/features/alert-cancel.md, docs/features/alert-routing.md).
+CANCELLED_RETENTION = timedelta(days=30)
+UPDATED = "updated"
+SKIPPED = "skipped"
+NO_OPEN_ALERTS = "no_open_alerts"
+NOT_OPEN = "not_open"
+NOT_ALLOWED = "not_allowed"
+# The statuses each new_status may change (alert-routing criterion 10; watchdog
+# criterion 11 for resolved).
+CHANGEABLE_FROM = {
+    STATUS_CANCELLED: (STATUS_OPEN, STATUS_ACKNOWLEDGED),
+    STATUS_ACKNOWLEDGED: (STATUS_OPEN,),
+    STATUS_RESOLVED: (STATUS_OPEN, STATUS_ACKNOWLEDGED),
+}
+# Which (by_role, new_status) pairs may change which kind of alert (watchdog criterion
+# 14a). Checked after reading the target.
+DEVICE_PROBLEM_CHANGES = frozenset(
+    {
+        (ROLE_OPS, STATUS_ACKNOWLEDGED),
+        (ROLE_CAREGIVER, STATUS_ACKNOWLEDGED),
+        (ROLE_SYSTEM, STATUS_RESOLVED),
+    }
+)
+HEALTH_ALERT_CHANGES = frozenset(
+    {
+        (ROLE_NURSE, STATUS_ACKNOWLEDGED),
+        (ROLE_RESIDENT, STATUS_CANCELLED),
+        (ROLE_CAREGIVER, STATUS_CANCELLED),
+    }
+)
+# Resolved alerts expire like cancelled ones (watchdog criterion 11).
+RESOLVED_RETENTION = timedelta(days=30)
+
+# Device problems (docs/features/watchdog.md): the alert log line's `ops` field.
+OPS_EMAILED = "emailed"
+OPS_GROUPED = "grouped"
+# What the device-target Query reads: enough for the update, the follow-up email, the
+# retry rule, and the log line (never details or ack_note).
+TARGET_ATTRIBUTES = (
+    "pk",
+    "sk",
+    "alert_id",
+    "alert_type",
+    "severity",
+    "device_id",
+    "event_ts",
+    "#status",
+    "escalated_at",
+    "status_notified_at",
+    "acknowledged_at",
+    "acknowledged_by",
+    "cancelled_by",
+    "cancelled_by_role",
+)
 
 _serializer = TypeSerializer()
 _deserializer = TypeDeserializer()
@@ -85,6 +279,11 @@ def s3_client() -> Any:
 @cache
 def sns_client() -> Any:
     return boto3.client("sns")
+
+
+@cache
+def sqs_client() -> Any:
+    return boto3.client("sqs")
 
 
 # ---- pure helpers ----
@@ -122,6 +321,7 @@ def build_item(
         **alert_key(alert),
         "alert_id": alert.alert_id,
         "alert_type": alert.alert_type,
+        "severity": alert.severity,
         "device_id": alert.device_id,
         "event_ts": alert.event_ts,
         "received_at": alert.received_at,
@@ -134,6 +334,48 @@ def build_item(
     if alert.resident_id == UNASSIGNED:
         item["notification"] = SKIPPED_UNASSIGNED
     return item
+
+
+def repeat_window(alert: Alert) -> tuple[str, str]:
+    """The sort-key bounds of pattern 7: "ALERT#<event_ts - 30 min>" to
+    "ALERT#<event_ts>#~" (vitals-alerts criterion 17).
+
+    Keys are "ALERT#<event_ts>#<alert_id>", and "~" sorts after every alert_id
+    character, so items at the same event_ts are returned too, including this alert's
+    own item on a retry (which is_repeat needs to see). An item exactly 30 minutes
+    before is returned by the lower bound but not counted by is_repeat.
+    """
+    start = format_iso_ms(alert.event_dt - REPEAT_WINDOW)
+    return f"ALERT#{start}", f"ALERT#{alert.event_ts}#~"
+
+
+def is_repeat(alert: Alert, items: list[dict[str, Any]]) -> bool:
+    """True if another alert in the window (same event_ts included) holds this one
+    back.
+
+    Matches need the same alert_type and severity (a warning never holds back a
+    critical alert, or the other way round), a different alert_id, and, for an
+    unassigned device, the same device_id. An earlier alert at exactly 30 minutes
+    before is outside the window. If this alert itself is already stored (a retry
+    after it passed the check), it is never held back.
+    """
+    if alert.alert_type in NEVER_SUPPRESSED:
+        return False
+    window_start = alert.event_dt - REPEAT_WINDOW
+    if any(item.get("alert_id") == alert.alert_id for item in items):
+        return False
+    for item in items:
+        if item.get("alert_type") != alert.alert_type:
+            continue
+        if item.get("severity") != alert.severity:
+            continue
+        if alert.resident_id == UNASSIGNED and item.get("device_id") != alert.device_id:
+            continue
+        item_dt = parse_ts(item.get("event_ts"))
+        if item_dt is None or not window_start < item_dt <= alert.event_dt:
+            continue
+        return True
+    return False
 
 
 def archive_key(alert: Alert) -> str:
@@ -156,6 +398,66 @@ def archive_body(item: dict[str, Any]) -> bytes:
 
 def latency_ms(received_dt: datetime, published_dt: datetime) -> int:
     return round((published_dt - received_dt).total_seconds() * 1000)
+
+
+def needs_escalation_check(item: dict[str, Any]) -> bool:
+    """Criteria 3-4: queue a check only for an open item that has none queued yet."""
+    return item.get("status") == STATUS_OPEN and "escalation_queued_at" not in item
+
+
+def nurses_at_once(resident_id: str, item: dict[str, Any]) -> bool:
+    """Alert-routing criterion 1: nurses are emailed at once for every unassigned
+    alert and for critical ones; a stored item with no severity (falls stored before
+    vitals alerts) counts as critical. Warnings from assigned devices escalate."""
+    if resident_id == UNASSIGNED:
+        return True
+    return (item.get("severity") or SEVERITY_CRITICAL) == SEVERITY_CRITICAL
+
+
+def check_key(check: EscalationCheck) -> dict[str, str]:
+    return {
+        "pk": f"RESIDENT#{check.resident_id}",
+        "sk": f"ALERT#{check.event_ts}#{check.alert_id}",
+    }
+
+
+def status_reason(status: Any) -> str:
+    """Reason for the not_escalated log line: "status:<value>" for a known status,
+    "status:other" for any other present value (masked: it could be free text)."""
+    if isinstance(status, str) and status in KNOWN_STATUSES:
+        return f"status:{status}"
+    return "status:other"
+
+
+def escalation_decision(
+    item: dict[str, Any], now: datetime | None = None
+) -> tuple[str, str | None] | None:
+    """Criterion 5: (outcome, reason) when the check sends no email, None to escalate.
+
+    Order: status, then escalated_at, then staleness (`now` defaults to the current
+    time).
+    """
+    now = now or datetime.now(UTC)
+    status = item.get("status")
+    # Fail-safe: a missing status escalates. Only a present value other than "open"
+    # (acknowledged, cancelled, resolved, or anything else) stops it.
+    if status is not None and status != STATUS_OPEN:
+        return NOT_ESCALATED, status_reason(status)
+    if "escalated_at" in item:
+        return DUPLICATE, None
+    # A check handled long after the alert was stored (e.g. redriven from the DLQ)
+    # emails nobody. An invalid created_at is not treated as stale (fail-safe).
+    created_dt = parse_ts(item.get("created_at"))
+    if created_dt is not None and now - created_dt > STALE_AFTER:
+        return NOT_ESCALATED, STALE
+    return None
+
+
+def escalation_delay_ms(item: dict[str, Any], published_dt: datetime) -> int | None:
+    """Criterion 7: Publish time minus notified_at, or minus created_at when there is
+    no notified_at (unassigned alerts). None if neither is a valid timestamp."""
+    start = parse_ts(item.get("notified_at")) or parse_ts(item.get("created_at"))
+    return latency_ms(start, published_dt) if start else None
 
 
 def _serialize(item: dict[str, Any]) -> dict[str, Any]:
@@ -198,6 +500,33 @@ def read_latest_vitals(device_id: str) -> dict[str, Any] | None:
     item = _deserialize(response["Item"]) if "Item" in response else {}
     entries = item.get("entries") or []
     return latest_vitals(entries[0]) if entries else None
+
+
+def recent_alerts(alert: Alert) -> list[dict[str, Any]]:
+    """Step 0b (pattern 7): the resident's alerts with event_ts in the 30 minutes up to
+    this one. Strongly consistent, so an alert stored a moment ago is seen. Reads only
+    the attributes the repeat check compares."""
+    low, high = repeat_window(alert)
+    client = dynamodb_client()
+    items: list[dict[str, Any]] = []
+    request: dict[str, Any] = {
+        "TableName": os.environ["ALERTS_TABLE"],
+        "KeyConditionExpression": "pk = :pk AND sk BETWEEN :low AND :high",
+        "ExpressionAttributeValues": {
+            ":pk": {"S": f"RESIDENT#{alert.resident_id}"},
+            ":low": {"S": low},
+            ":high": {"S": high},
+        },
+        "ProjectionExpression": "alert_id, alert_type, severity, device_id, event_ts",
+        "ConsistentRead": True,
+    }
+    while True:
+        response = client.query(**request)
+        items.extend(_deserialize(item) for item in response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
+        request["ExclusiveStartKey"] = last_key
 
 
 def store_alert(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -258,7 +587,7 @@ def notify(alert: Alert, item: dict[str, Any]) -> int:
     """Step 4: publish the email, then set notified_at. Returns the dispatch latency."""
     sns_client().publish(
         TopicArn=os.environ["ALERTS_TOPIC_ARN"],
-        Subject=email_text.subject(alert.alert_type, alert.resident_id),
+        Subject=email_text.subject(alert.alert_type, alert.resident_id, alert.severity),
         Message=email_text.body(item, alert.resident_id, os.environ["PORTAL_URL"]),
         MessageAttributes={
             "resident_id": {"DataType": "String", "StringValue": alert.resident_id},
@@ -283,8 +612,76 @@ def notify(alert: Alert, item: dict[str, Any]) -> int:
     return latency
 
 
-def process(alert: Alert) -> tuple[str, int | None]:
-    """Steps 1-4 for one valid alert. Returns (outcome, dispatch latency or None)."""
+def queue_escalation_check(alert: Alert, item: dict[str, Any]) -> None:
+    """Step 5: send the delayed check, then set escalation_queued_at once.
+
+    Send first: if the send fails the record fails and is retried; if the update fails
+    after a successful send, the retry may queue a second check (harmless, criterion 6).
+    """
+    if not needs_escalation_check(item):
+        return
+    sqs_client().send_message(
+        QueueUrl=os.environ["ALERTS_QUEUE_URL"],
+        MessageBody=check_body(alert.alert_id, alert.resident_id, alert.event_ts),
+        DelaySeconds=ESCALATION_DELAY_S,
+    )
+    try:
+        dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression="SET escalation_queued_at = :now",
+            ConditionExpression="attribute_not_exists(escalation_queued_at)",
+            ExpressionAttributeValues={":now": {"S": format_iso_ms(datetime.now(UTC))}},
+        )
+    except ClientError as exc:
+        # Another delivery already queued a check and set it: nothing more to do.
+        if not _is_condition_failure(exc):
+            raise
+
+
+def notify_nurses(alert: Alert, item: dict[str, Any]) -> None:
+    """Step 5 (alert-routing criteria 2-3, 6): publish the at-once nurse email, then
+    set escalated_at once. Nothing if the nurses were already emailed (a retry), or
+    if a redelivery finds the alert already acknowledged, cancelled, or resolved (a
+    missing status counts as open, as for escalation checks).
+
+    A failed Publish raises and fails the record; a crash between the Publish and the
+    update emails the nurses again on retry (a duplicate is accepted).
+    """
+    if "escalated_at" in item:
+        return
+    if item.get("status", STATUS_OPEN) != STATUS_OPEN:
+        return
+    severity = item.get("severity") or SEVERITY_CRITICAL
+    sns_client().publish(
+        TopicArn=os.environ["NURSES_TOPIC_ARN"],
+        Subject=email_text.subject(alert.alert_type, alert.resident_id, severity),
+        Message=email_text.nurse_body(
+            item, alert.resident_id, os.environ["PORTAL_URL"]
+        ),
+    )
+    try:
+        dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression="SET escalated_at = :now",
+            ConditionExpression="attribute_not_exists(escalated_at)",
+            ExpressionAttributeValues={":now": {"S": format_iso_ms(datetime.now(UTC))}},
+        )
+    except ClientError as exc:
+        # Another delivery of the same message already set it: nothing more to do.
+        if not _is_condition_failure(exc):
+            raise
+
+
+def process(alert: Alert) -> tuple[str, int | None, str]:
+    """Steps 0b-5 for one valid alert. Returns (outcome, dispatch latency or None,
+    the nurses route for the log line)."""
+    if alert.alert_type not in NEVER_SUPPRESSED and is_repeat(
+        alert, recent_alerts(alert)
+    ):
+        return SUPPRESSED, None, NURSES_NONE
+
     details = dict(alert.details)
     if alert.alert_type == "fall":
         vitals = read_latest_vitals(alert.device_id)
@@ -294,32 +691,696 @@ def process(alert: Alert) -> tuple[str, int | None]:
     outcome, item = store_alert(build_item(alert, details, datetime.now(UTC)))
     archive_alert(alert, item)
 
+    latency = None
     if alert.resident_id == UNASSIGNED:
-        return (SKIPPED_UNASSIGNED if outcome == STORED else DUPLICATE), None
-    if "notified_at" in item:
-        return outcome, None
-    return NOTIFIED, notify(alert, item)
+        outcome = SKIPPED_UNASSIGNED if outcome == STORED else DUPLICATE
+    elif "notified_at" not in item:
+        latency = notify(alert, item)
+        outcome = NOTIFIED
+    # else: a retry after the caregiver email went out (e.g. the nurse Publish or the
+    # check's send failed last time); only the nurse step runs.
+
+    if nurses_at_once(alert.resident_id, item):
+        notify_nurses(alert, item)
+        return outcome, latency, NURSES_IMMEDIATE
+    queue_escalation_check(alert, item)
+    return outcome, latency, NURSES_ESCALATION_QUEUED
+
+
+# ---- device problems (docs/features/watchdog.md, criteria 12-14) ----
+
+
+def _set_once(item: dict[str, Any], attribute: str, value: str) -> None:
+    """SET <attribute> = value with attribute_not_exists(<attribute>). A failed
+    condition means another delivery already set it: nothing more to do."""
+    try:
+        dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression="SET #attr = :now",
+            ConditionExpression="attribute_not_exists(#attr)",
+            ExpressionAttributeNames={"#attr": attribute},
+            ExpressionAttributeValues={":now": {"S": value}},
+        )
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+
+
+def is_grouped(item: dict[str, Any]) -> bool:
+    """Criterion 8a: the watchdog emailed ops one summary for this offline alert."""
+    details = item.get("details")
+    return isinstance(details, dict) and details.get("grouped") is True
+
+
+def notify_device_problem_caregivers(alert: Alert, item: dict[str, Any]) -> int:
+    """Criterion 13: Publish to the alerts topic with the resident_id attribute, then
+    SET notified_at once. Returns the dispatch latency (logged only: no
+    AlertDispatchLatency metric for device problems, so no new custom metrics)."""
+    sns_client().publish(
+        TopicArn=os.environ["ALERTS_TOPIC_ARN"],
+        Subject=email_text.device_problem_subject(
+            alert.alert_type, alert.device_id, alert.resident_id
+        ),
+        Message=email_text.device_problem_body(
+            item, alert.resident_id, os.environ["PORTAL_URL"]
+        ),
+        MessageAttributes={
+            "resident_id": {"DataType": "String", "StringValue": alert.resident_id},
+        },
+    )
+    published_dt = datetime.now(UTC)
+    _set_once(item, "notified_at", format_iso_ms(published_dt))
+    return latency_ms(alert.received_dt, published_dt)
+
+
+def notify_ops(alert: Alert, item: dict[str, Any]) -> None:
+    """Criterion 13: Publish the same email to the ops topic (silvercare-ops-devices), then SET
+    ops_notified_at once."""
+    sns_client().publish(
+        TopicArn=os.environ["OPS_TOPIC_ARN"],
+        Subject=email_text.device_problem_subject(
+            alert.alert_type, alert.device_id, alert.resident_id
+        ),
+        Message=email_text.device_problem_body(
+            item, alert.resident_id, os.environ["PORTAL_URL"]
+        ),
+    )
+    _set_once(item, "ops_notified_at", format_iso_ms(datetime.now(UTC)))
+
+
+def process_device_problem(alert: Alert) -> tuple[str, int | None, str]:
+    """Criteria 13-14 for one valid device-problem alert. Returns (outcome, dispatch
+    latency or None, the ops field for the log line).
+
+    No repeat check (the watchdog keeps one open alert per device and type), no fall
+    enrichment, no nurse email, no escalation check. Order: store, archive, caregiver
+    Publish, notified_at, ops Publish, ops_notified_at, so a redelivery after a failed
+    ops Publish doesn't email the caregivers again.
+    """
+    outcome, item = store_alert(
+        build_item(alert, dict(alert.details), datetime.now(UTC))
+    )
+    archive_alert(alert, item)
+
+    latency = None
+    if alert.resident_id == UNASSIGNED:
+        # Only assigned devices are checked; stored and emailed to ops only if one
+        # arrives anyway (criterion 13).
+        outcome = SKIPPED_UNASSIGNED if outcome == STORED else DUPLICATE
+    elif "notified_at" not in item:
+        latency = notify_device_problem_caregivers(alert, item)
+        outcome = NOTIFIED
+
+    if is_grouped(item):
+        return outcome, latency, OPS_GROUPED
+    if "ops_notified_at" not in item:
+        notify_ops(alert, item)
+    return outcome, latency, OPS_EMAILED
+
+
+# ---- escalation checks ----
+
+
+def read_alert(check: EscalationCheck) -> dict[str, Any]:
+    """The alert item the check points to (pattern 23), strongly consistent, so a
+    status change made just before is seen. A missing item fails the record."""
+    key = check_key(check)
+    response = dynamodb_client().get_item(
+        TableName=os.environ["ALERTS_TABLE"],
+        Key={"pk": {"S": key["pk"]}, "sk": {"S": key["sk"]}},
+        ConsistentRead=True,
+    )
+    if "Item" not in response:
+        raise RuntimeError("alert item missing for escalation check")
+    return _deserialize(response["Item"])
+
+
+def escalate(check: EscalationCheck, item: dict[str, Any]) -> tuple[str, int | None]:
+    """Publish the nurse email, then set escalated_at once. Returns (outcome, delay)."""
+    sns_client().publish(
+        TopicArn=os.environ["NURSES_TOPIC_ARN"],
+        Subject=email_text.escalation_subject(
+            item.get("alert_type"), check.resident_id
+        ),
+        Message=email_text.escalation_body(
+            item, check.resident_id, os.environ["PORTAL_URL"]
+        ),
+    )
+    published_dt = datetime.now(UTC)
+    delay = escalation_delay_ms(item, published_dt)
+
+    try:
+        dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression="SET escalated_at = :now",
+            ConditionExpression="attribute_not_exists(escalated_at)",
+            ExpressionAttributeValues={":now": {"S": format_iso_ms(published_dt)}},
+        )
+    except ClientError as exc:
+        # Another delivery of a check for this alert escalated it first.
+        if not _is_condition_failure(exc):
+            raise
+        return DUPLICATE, delay
+    return ESCALATED, delay
+
+
+def _safe_item_fields(item: dict[str, Any]) -> dict[str, str]:
+    """alert_type, severity, and device_id from a stored item for a log line, each
+    only if it has its expected format (else "invalid"), so a hand-edited item can't
+    put free text in the logs."""
+    alert_type = item.get("alert_type")
+    severity = item.get("severity") or email_text.DEFAULT_SEVERITY
+    device_id = item.get("device_id")
+    return {
+        "alert_type": alert_type if alert_type in ALERT_TYPES else "invalid",
+        "severity": severity if severity in SEVERITIES else "invalid",
+        "device_id": (
+            device_id
+            if isinstance(device_id, str) and DEVICE_ID_RE.match(device_id)
+            else "invalid"
+        ),
+    }
+
+
+def _item_log_ids(check: EscalationCheck, item: dict[str, Any]) -> dict[str, Any]:
+    """IDs for a check's log line: alert_id and resident_id from the validated check,
+    type, severity, and device from the stored item (_safe_item_fields)."""
+    return {
+        "alert_id": check.alert_id,
+        **_safe_item_fields(item),
+        "resident_id": check.resident_id,
+        "kind": KIND_ESCALATION_CHECK,
+    }
+
+
+def handle_check(check: EscalationCheck) -> bool:
+    """Handle one escalation check. Returns False if it must be reported as failed."""
+    ids: dict[str, Any] = {
+        "alert_id": check.alert_id,
+        "resident_id": check.resident_id,
+        "kind": KIND_ESCALATION_CHECK,
+    }
+    try:
+        item = read_alert(check)
+        ids = _item_log_ids(check, item)
+        decision = escalation_decision(item, datetime.now(UTC))
+        if decision is not None:
+            outcome, reason = decision
+            delay = None
+        else:
+            reason = None
+            outcome, delay = escalate(check, item)
+    except Exception as exc:  # noqa: BLE001 - any failure: retry only this record
+        logger.error(
+            LOG_MESSAGE, extra={**ids, "outcome": ERROR, "error": _error_code(exc)}
+        )
+        return False
+
+    extra: dict[str, Any] = {**ids, "outcome": outcome}
+    if reason is not None:
+        extra["reason"] = reason
+    if delay is not None:
+        extra["escalation_delay_ms"] = delay
+    logger.info(LOG_MESSAGE, extra=extra)
+    return True
+
+
+# ---- status updates (docs/features/alert-cancel.md) ----
+
+
+def device_target_upper_bound(update: StatusUpdate) -> str:
+    """Criterion 8: "ALERT#<changed_at>#~", so alerts at exactly changed_at are
+    included ("~" sorts after every alert_id character) and later ones are not."""
+    return f"ALERT#{update.changed_at}#~"
+
+
+def cancel_expires_at(changed_dt: datetime) -> int:
+    """Criterion 9: changed_at + 30 days, epoch seconds (the TTL attribute)."""
+    return int((changed_dt + CANCELLED_RETENTION).timestamp())
+
+
+def resolve_expires_at(changed_dt: datetime) -> int:
+    """Watchdog criterion 11: changed_at + 30 days, epoch seconds."""
+    return int((changed_dt + RESOLVED_RETENTION).timestamp())
+
+
+def is_device_problem(item: dict[str, Any]) -> bool:
+    return item.get("alert_type") in DEVICE_PROBLEM_TYPES
+
+
+def is_possible_fall(item: dict[str, Any]) -> bool:
+    return item.get("alert_type") == POSSIBLE_FALL
+
+
+def is_back_in_bed(update: StatusUpdate) -> bool:
+    """Possible-fall criterion 7: the watchdog's resolve when the resident is back in
+    bed."""
+    return (
+        update.by_role == ROLE_SYSTEM
+        and update.new_status == STATUS_RESOLVED
+        and update.reason == REASON_BACK_IN_BED
+    )
+
+
+def is_allowed(item: dict[str, Any], update: StatusUpdate) -> bool:
+    """Watchdog criterion 14a, possible-fall criterion 12: device problems take only
+    an ops or caregiver acknowledge and the system resolve without a reason; a
+    possible fall takes what health alerts take plus the system resolve with reason
+    back_in_bed; every other alert (health alerts, or an item without a known type)
+    only a nurse acknowledge and a resident or caregiver cancel."""
+    change = (update.by_role, update.new_status)
+    if is_device_problem(item):
+        return change in DEVICE_PROBLEM_CHANGES and update.reason is None
+    if is_possible_fall(item) and is_back_in_bed(update):
+        return True
+    return change in HEALTH_ALERT_CHANGES
+
+
+def is_follow_up_retry(item: dict[str, Any], update: StatusUpdate) -> bool:
+    """Alert-routing criterion 11: the item already has this update's status but no
+    status_notified_at (a crash after the update, before the follow-up was recorded),
+    set by the same kind of update: an acknowledge by the same sub (and, for a device
+    problem, the same role), a caregiver cancel by the same sub, a resident cancel by
+    the resident. A device-problem system resolve sends no follow-up, so it never has
+    a retry; a back-in-bed resolve (possible-fall criterion 8) does, when the item
+    was resolved by the system."""
+    if update.new_status == STATUS_RESOLVED and not is_back_in_bed(update):
+        return False
+    if item.get("status") != update.new_status or "status_notified_at" in item:
+        return False
+    if update.new_status == STATUS_RESOLVED:
+        return item.get("resolved_by_role") == ROLE_SYSTEM and is_possible_fall(item)
+    if update.new_status == STATUS_ACKNOWLEDGED:
+        role = item.get("acknowledged_by_role")
+        if role is not None and role != update.by_role:
+            return False
+        return item.get("acknowledged_by") == update.by
+    if item.get("cancelled_by_role") != update.by_role:
+        return False
+    return update.by_role == ROLE_RESIDENT or item.get("cancelled_by") == update.by
+
+
+def is_changeable(item: dict[str, Any], update: StatusUpdate) -> bool:
+    """Criterion 10: a cancel changes open and acknowledged alerts, an acknowledge
+    only open ones."""
+    return item.get("status") in CHANGEABLE_FROM[update.new_status]
+
+
+def cancels_possible_falls(update: StatusUpdate) -> bool:
+    """Possible-fall criterion 13: a wearable's "I'm OK" (device target) also cancels
+    the resident's possible falls, whatever device raised them."""
+    return update.device_id is not None and update.device_id.startswith("wearable-")
+
+
+def is_target(item: dict[str, Any], update: StatusUpdate) -> bool:
+    """An item this update changes or owes a follow-up (a retry)."""
+    other_device = (
+        update.device_id is not None and item.get("device_id") != update.device_id
+    )
+    if other_device and not (cancels_possible_falls(update) and is_possible_fall(item)):
+        return False
+    return is_changeable(item, update) or is_follow_up_retry(item, update)
+
+
+def query_device_targets(update: StatusUpdate) -> list[dict[str, Any]]:
+    """Pattern 24: the resident's alerts up to changed_at from this device that are
+    open or acknowledged, or already have this status but no status_notified_at
+    (retry). Strongly consistent, paginated. Only resident cancels have a device
+    target. Device problems are left out (watchdog criterion 14a): "I'm OK" cancels
+    health alerts only. A wearable's "I'm OK" also finds the resident's possible
+    falls from any device (possible-fall criterion 13)."""
+    client = dynamodb_client()
+    items: list[dict[str, Any]] = []
+    device_filter = (
+        "device_id = :device AND NOT alert_type IN (:offline, :battery, :not_worn)"
+    )
+    values: dict[str, Any] = {
+        ":pk": {"S": f"RESIDENT#{update.resident_id}"},
+        ":high": {"S": device_target_upper_bound(update)},
+        ":device": {"S": update.device_id or ""},
+        ":open": {"S": STATUS_OPEN},
+        ":acknowledged": {"S": STATUS_ACKNOWLEDGED},
+        ":new": {"S": update.new_status},
+        ":offline": {"S": DEVICE_OFFLINE},
+        ":battery": {"S": BATTERY_LOW},
+        ":not_worn": {"S": NOT_WORN},
+    }
+    if cancels_possible_falls(update):
+        device_filter = f"({device_filter}) OR alert_type = :possible_fall"
+        values[":possible_fall"] = {"S": POSSIBLE_FALL}
+    request: dict[str, Any] = {
+        "TableName": os.environ["ALERTS_TABLE"],
+        "KeyConditionExpression": "pk = :pk AND sk <= :high",
+        "FilterExpression": (
+            f"({device_filter}) AND (#status IN (:open, :acknowledged) OR "
+            "(#status = :new AND attribute_not_exists(status_notified_at)))"
+        ),
+        "ExpressionAttributeNames": {"#status": "status"},
+        "ExpressionAttributeValues": values,
+        "ProjectionExpression": ", ".join(TARGET_ATTRIBUTES),
+        "ConsistentRead": True,
+    }
+    while True:
+        response = client.query(**request)
+        items.extend(_deserialize(item) for item in response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
+        request["ExclusiveStartKey"] = last_key
+
+
+def read_alert_target(update: StatusUpdate) -> dict[str, Any] | None:
+    """Pattern 25: the one alert a caregiver cancel or nurse acknowledge names,
+    strongly consistent."""
+    response = dynamodb_client().get_item(
+        TableName=os.environ["ALERTS_TABLE"],
+        Key={
+            "pk": {"S": f"RESIDENT#{update.resident_id}"},
+            "sk": {"S": f"ALERT#{update.event_ts}#{update.alert_id}"},
+        },
+        ConsistentRead=True,
+    )
+    return _deserialize(response["Item"]) if "Item" in response else None
+
+
+def find_targets(update: StatusUpdate) -> list[dict[str, Any]]:
+    """Criterion 8: the items to change (or to send a missing follow-up for). Items
+    this role may not change (watchdog criterion 14a) are left out."""
+    if update.device_id is not None:
+        items = query_device_targets(update)
+    else:
+        item = read_alert_target(update)
+        items = [item] if item is not None else []
+    return [
+        item for item in items if is_allowed(item, update) and is_target(item, update)
+    ]
+
+
+def apply_status(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any] | None:
+    """Alert-routing criterion 11: UpdateItem conditional on the statuses it may change
+    from. Returns the item after the update, or None if the condition failed (it
+    changed meanwhile).
+
+    A cancel keeps the acknowledge's fields (acknowledged_at/_by, ack_note) and REMOVEs
+    the acknowledge's status_notified_at, so the cancel's follow-up is tracked on its
+    own (else a crash before it would leave it unsent)."""
+    names = {"#status": "status"}
+    values: dict[str, Any] = {
+        ":new": {"S": update.new_status},
+        ":at": {"S": update.changed_at},
+        ":open": {"S": STATUS_OPEN},
+    }
+    if update.new_status == STATUS_CANCELLED:
+        sets = [
+            "#status = :new",
+            "cancelled_at = :at",
+            "cancelled_by_role = :role",
+            "expires_at = :expires",
+        ]
+        values[":role"] = {"S": update.by_role}
+        values[":expires"] = {"N": str(cancel_expires_at(update.changed_dt))}
+        if update.by is not None:
+            sets.append("cancelled_by = :by")
+            values[":by"] = {"S": update.by}
+        expression = f"SET {', '.join(sets)} REMOVE open_pk, status_notified_at"
+        condition = "#status IN (:open, :acknowledged)"
+        values[":acknowledged"] = {"S": STATUS_ACKNOWLEDGED}
+    elif update.new_status == STATUS_RESOLVED:
+        # Watchdog criterion 11: keeps acknowledged_at / _by / _by_role if present.
+        sets = [
+            "#status = :new",
+            "resolved_at = :at",
+            "resolved_by_role = :role",
+            "expires_at = :expires",
+        ]
+        values[":role"] = {"S": update.by_role}
+        values[":expires"] = {"N": str(resolve_expires_at(update.changed_dt))}
+        expression = f"SET {', '.join(sets)} REMOVE open_pk"
+        condition = "#status IN (:open, :acknowledged)"
+        values[":acknowledged"] = {"S": STATUS_ACKNOWLEDGED}
+    else:
+        sets = ["#status = :new", "acknowledged_at = :at", "acknowledged_by = :by"]
+        values[":by"] = {"S": update.by or ""}
+        if is_device_problem(item):
+            # Watchdog criterion 14a: ops or caregiver.
+            sets.append("acknowledged_by_role = :role")
+            values[":role"] = {"S": update.by_role}
+        if update.note is not None:
+            sets.append("ack_note = :note")
+            values[":note"] = {"S": update.note}
+        expression = f"SET {', '.join(sets)}"
+        condition = "#status = :open"
+    try:
+        response = dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression=expression,
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        if not _is_condition_failure(exc):
+            raise
+        return None
+    # ALL_NEW: an escalated_at set just before this update is seen by the follow-up.
+    attributes = response.get("Attributes")
+    if attributes:
+        return _deserialize(attributes)
+    return {**item, "status": update.new_status}
+
+
+def follow_up_to_nurses(update: StatusUpdate, item: dict[str, Any]) -> bool:
+    """Alert-routing criterion 13: a cancel goes to the nurses if they were emailed
+    about the alert (escalated_at) or had acknowledged it (acknowledged_at, which only
+    an acknowledge sets and a cancel keeps); a back-in-bed resolve goes to them if they
+    were emailed (escalated_at, possible-fall criterion 8); an acknowledge never does."""
+    if update.new_status == STATUS_RESOLVED:
+        return "escalated_at" in item
+    if update.new_status != STATUS_CANCELLED:
+        return False
+    return "escalated_at" in item or "acknowledged_at" in item
+
+
+def send_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
+    """Alert-routing criteria 13-15: email caregivers (resident_id filter; not for
+    unassigned) and, for a cancel the nurses were involved in, the nurses; then SET
+    status_notified_at once (also when nobody was emailed: an unassigned
+    acknowledge)."""
+    subject = email_text.follow_up_subject(
+        item.get("alert_type"), update.resident_id, update.new_status
+    )
+    body = email_text.follow_up_body(
+        item,
+        update.resident_id,
+        os.environ["PORTAL_URL"],
+        new_status=update.new_status,
+        changed_at=update.changed_dt,
+        by_role=update.by_role,
+        by_name=update.by_name,
+        note=update.note,
+        reason=update.reason,
+    )
+    if update.resident_id != UNASSIGNED:
+        sns_client().publish(
+            TopicArn=os.environ["ALERTS_TOPIC_ARN"],
+            Subject=subject,
+            Message=body,
+            MessageAttributes={
+                "resident_id": {
+                    "DataType": "String",
+                    "StringValue": update.resident_id,
+                },
+            },
+        )
+    if follow_up_to_nurses(update, item):
+        sns_client().publish(
+            TopicArn=os.environ["NURSES_TOPIC_ARN"], Subject=subject, Message=body
+        )
+    try:
+        dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression="SET status_notified_at = :now",
+            ConditionExpression="attribute_not_exists(status_notified_at)",
+            ExpressionAttributeValues={":now": {"S": format_iso_ms(datetime.now(UTC))}},
+        )
+    except ClientError as exc:
+        # Another delivery of the same update already set it: nothing more to do.
+        if not _is_condition_failure(exc):
+            raise
+
+
+def send_device_problem_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
+    """Watchdog criterion 14a: the acknowledge follow-up of a device problem to the
+    caregivers (alerts topic, resident_id attribute; not for unassigned) and the ops
+    team (silvercare-ops-devices), then SET status_notified_at once. No nurse email. A failed ops
+    Publish fails the record; the retry emails the caregivers again (a duplicate is
+    accepted, a missing one isn't)."""
+    subject = email_text.device_problem_follow_up_subject(
+        item.get("alert_type"), item.get("device_id"), update.resident_id
+    )
+    body = email_text.device_problem_follow_up_body(
+        item,
+        update.resident_id,
+        os.environ["PORTAL_URL"],
+        changed_at=update.changed_dt,
+        by_role=update.by_role,
+        by_name=update.by_name,
+    )
+    if update.resident_id != UNASSIGNED:
+        sns_client().publish(
+            TopicArn=os.environ["ALERTS_TOPIC_ARN"],
+            Subject=subject,
+            Message=body,
+            MessageAttributes={
+                "resident_id": {
+                    "DataType": "String",
+                    "StringValue": update.resident_id,
+                },
+            },
+        )
+    sns_client().publish(
+        TopicArn=os.environ["OPS_TOPIC_ARN"], Subject=subject, Message=body
+    )
+    _set_once(item, "status_notified_at", format_iso_ms(datetime.now(UTC)))
+
+
+def apply_to_target(update: StatusUpdate, item: dict[str, Any]) -> str:
+    """One target: update it and send the follow-up (updated), skip it if it changed
+    meanwhile (skipped), or send the missing follow-up of a retry (updated). A
+    device-problem system resolve sends no follow-up (watchdog criterion 11); a
+    back-in-bed resolve does (possible-fall criterion 8)."""
+    if is_changeable(item, update):
+        updated = apply_status(update, item)
+        if updated is None:
+            return SKIPPED
+        item = updated
+    if update.new_status == STATUS_RESOLVED and not is_back_in_bed(update):
+        return UPDATED
+    if is_device_problem(item):
+        send_device_problem_follow_up(update, item)
+    else:
+        send_follow_up(update, item)
+    return UPDATED
+
+
+def _status_update_ids(update: StatusUpdate) -> dict[str, Any]:
+    """IDs every status update log line has, plus has_note for an acknowledge
+    (alert-routing criterion 12). Never by, by_name, or note."""
+    target = (
+        {"device_id": update.device_id}
+        if update.device_id is not None
+        else {"alert_id": update.alert_id}
+    )
+    ids: dict[str, Any] = {
+        **target,
+        "resident_id": update.resident_id,
+        "kind": KIND_STATUS_UPDATE,
+        "new_status": update.new_status,
+        "by_role": update.by_role,
+    }
+    if update.new_status == STATUS_ACKNOWLEDGED:
+        ids["has_note"] = update.note is not None
+    return ids
+
+
+def _status_item_log_ids(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any]:
+    """Criterion 11: alert_id, alert_type, severity, device_id, resident_id, kind,
+    new_status, by_role; item values only if they have their expected format."""
+    alert_id = item.get("alert_id")
+    return {
+        **_status_update_ids(update),
+        "alert_id": (
+            alert_id
+            if isinstance(alert_id, str) and UUID_RE.match(alert_id)
+            else "invalid"
+        ),
+        **_safe_item_fields(item),
+    }
+
+
+def handle_status_update(update: StatusUpdate) -> bool:
+    """Handle one status update. Returns False if it must be reported as failed.
+
+    One log line per target alert, or one line with no_open_alerts / not_open when
+    there is none. The first failure stops and fails the record; the retry skips the
+    alerts already done (their status changed and status_notified_at is set).
+    """
+    base = _status_update_ids(update)
+    try:
+        if update.device_id is not None:
+            targets = find_targets(update)
+        else:
+            # Alert target: read it once, then the role/type rule (watchdog criterion
+            # 14a), then whether it can still change.
+            item = read_alert_target(update)
+            if item is not None and not is_allowed(item, update):
+                logger.info(
+                    LOG_MESSAGE,
+                    extra={
+                        **_status_item_log_ids(update, item),
+                        "outcome": NOT_ALLOWED,
+                    },
+                )
+                return True
+            targets = [item] if item is not None and is_target(item, update) else []
+    except Exception as exc:  # noqa: BLE001 - any failure: retry only this record
+        logger.error(
+            LOG_MESSAGE, extra={**base, "outcome": ERROR, "error": _error_code(exc)}
+        )
+        return False
+    if not targets:
+        none = NO_OPEN_ALERTS if update.device_id is not None else NOT_OPEN
+        logger.info(LOG_MESSAGE, extra={**base, "outcome": none})
+        return True
+    for item in targets:
+        ids = _status_item_log_ids(update, item)
+        try:
+            outcome = apply_to_target(update, item)
+        except Exception as exc:  # noqa: BLE001 - any failure: retry only this record
+            logger.error(
+                LOG_MESSAGE, extra={**ids, "outcome": ERROR, "error": _error_code(exc)}
+            )
+            return False
+        logger.info(LOG_MESSAGE, extra={**ids, "outcome": outcome})
+    return True
 
 
 def handle_record(record: Any) -> bool:
     """Process one SQS record. Returns False if it must be reported as failed."""
     body = record.get("body") if isinstance(record, dict) else None
-    result = parse_alert(body)
+    result = parse_message(body)
     if isinstance(result, Rejection):
         logger.warning(
             LOG_MESSAGE,
             extra={**log_ids(body), "outcome": INVALID, "reason": result.reason},
         )
         return False
+    if isinstance(result, EscalationCheck):
+        return handle_check(result)
+    if isinstance(result, StatusUpdate):
+        return handle_status_update(result)
 
     ids = {
         "alert_id": result.alert_id,
         "alert_type": result.alert_type,
+        "severity": result.severity,
         "device_id": result.device_id,
         "resident_id": result.resident_id,
     }
+    routing: dict[str, str] = {}
     try:
-        outcome, latency = process(result)
+        if result.alert_type in DEVICE_PROBLEM_TYPES:
+            # Watchdog criterion 14a: no nurse routing; the ops email instead.
+            outcome, latency, ops = process_device_problem(result)
+            routing = {"nurses": NURSES_NONE, "ops": ops}
+        else:
+            outcome, latency, nurses = process(result)
+            routing = {"nurses": nurses}
     except Exception as exc:  # noqa: BLE001 - any failure: retry only this record
         # Only the error code is logged; exception text could quote the request.
         logger.error(
@@ -327,7 +1388,7 @@ def handle_record(record: Any) -> bool:
         )
         return False
 
-    extra: dict[str, Any] = {**ids, "outcome": outcome}
+    extra: dict[str, Any] = {**ids, "outcome": outcome, **routing}
     if latency is not None:
         extra["dispatch_latency_ms"] = latency
     logger.info(LOG_MESSAGE, extra=extra)
