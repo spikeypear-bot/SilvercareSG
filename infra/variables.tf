@@ -53,7 +53,7 @@ variable "alert_subscribers" {
 }
 
 variable "ops_subscribers" {
-  description = "Labels of the team members emailed by the DLQ alarms. Every label needs an entry in subscriber_emails."
+  description = "Labels of the ops team members emailed by the alarms and about device problems (every resident). Every label needs an entry in subscriber_emails."
   type        = list(string)
   default     = []
 

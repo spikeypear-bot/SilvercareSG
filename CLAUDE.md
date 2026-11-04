@@ -64,9 +64,11 @@ structure, not code that exists yet. Update this file as decisions land.
   (clinical review: trends, editing thresholds); a user in both groups gets the nurse
   view. `caregiver` gets the family view, sees only linked residents (several caregivers
   per resident), and can cancel their alerts; the frontend gives a user still in the
-  `family` group the no-access screen. Sign-in is email + password, MFA (authenticator
-  app) optional. Groups decide what a user can see; the API enforces it, the UI only
-  hides things.
+  `family` group the no-access screen. A new `ops` group (team decision 2026-11-04, added
+  by Track B) gets an ops view of device problems (offline, low battery, not worn) for
+  every resident and can acknowledge them; caregivers can acknowledge their residents'
+  device problems too. Sign-in is email + password, MFA (authenticator app) optional.
+  Groups decide what a user can see; the API enforces it, the UI only hides things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
   caregiver/family views and the nurse and doctor dashboards, chosen by Cognito group,
   plus staff-only pages: the resident page (`/residents/<resident_id>`) and the devices

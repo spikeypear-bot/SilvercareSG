@@ -92,6 +92,13 @@ no escalation check. Only warnings from assigned devices still use the delayed c
 now `DelaySeconds = 300`. Nurses acknowledge and caregivers cancel, both through
 Track B's API sending a `status_update`.
 
+Amended 2026-11-04 (`docs/features/watchdog.md`): device problems (offline, low
+battery, not worn) are detected by a scheduled `watchdog` Lambda (EventBridge, every 5
+minutes), not by `device-health`. It sends alerts to the alerts queue like the other
+detectors, and resolves them with a `status_update` (`system` / `resolved`), so
+`alert-processor` stays the only writer of alert items. `device-health` only records
+`worn_false_since`.
+
 Responsibilities:
 
 - **`device-health`**: validate, add the `status` to the device's latest 5 (the newest

@@ -79,6 +79,29 @@ of an acknowledged alert adds `It had been acknowledged by the care centre nurse
 missing or unknown alert_type gets the label `Alert`. An unassigned alert's follow-up
 (nurses only) adds `Device: <device_id>` after `Resident: unassigned`, or
 `Device: invalid`, as in the nurse emails.
+
+Device-problem emails (docs/features/watchdog.md, criteria 14 and 14a), the same for
+the caregivers and the ops team, with no health readings:
+
+    Subject: SilverCare device problem: Low battery - wearable-0001 (res-0001)
+
+    SilverCare device problem
+
+    Type: Low battery
+    Device: wearable-0001
+    Resident: res-0001
+    Battery: 15 %
+
+    Open the SilverCare portal: https://<cloudfront domain>/
+
+    This is an automated message. Do not reply.
+
+The detail line is `Last heartbeat: <time>` (device_offline), `Battery: 15 %`
+(battery_low), or `Not worn since: <time>` (not_worn). Their acknowledge follow-up has
+the subject `SilverCare update: <label> - <device_id> (<resident_id>) acknowledged`,
+the heading `SilverCare update`, the first line `The device problem below was
+acknowledged by the ops team at <time>.` (or `by Ta* Me* Li** (caregiver)`), then the
+same lines from Type on.
 """
 
 from __future__ import annotations
@@ -134,6 +157,15 @@ UNKNOWN_SEVERITY_LABEL = "Unknown"
 CARE_CENTRE_NURSE = "the care centre nurse"
 NOTE_HEADING = "Message from the care centre:"
 NOTE_QUOTE = "> "
+
+# Device problems (docs/features/watchdog.md, criteria 14 and 14a).
+DEVICE_PROBLEM_LABELS = {
+    "device_offline": "Device offline",
+    "battery_low": "Low battery",
+    "not_worn": "Wearable not worn",
+}
+DEVICE_PROBLEM_HEADING = "SilverCare device problem"
+OPS_TEAM = "the ops team"
 
 
 def _type_label(alert_type: str) -> str:
@@ -410,5 +442,127 @@ def follow_up_body(
         f"Open the SilverCare portal: {portal_url.rstrip('/')}/",
         "",
         "This is an automated message. Do not reply.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# ---- device problems (docs/features/watchdog.md) ----
+
+
+def _device_problem_label(alert_type: Any) -> str:
+    """The device-problem label, or "Alert" for anything else (a hand-edited item)."""
+    if isinstance(alert_type, str) and alert_type in DEVICE_PROBLEM_LABELS:
+        return DEVICE_PROBLEM_LABELS[alert_type]
+    return UNKNOWN_TYPE_LABEL
+
+
+def _device_id_text(device_id: Any) -> str:
+    """The device ID if it has the device ID format, else "invalid"."""
+    ok = isinstance(device_id, str) and DEVICE_ID_RE.match(device_id)
+    return device_id if ok else "invalid"
+
+
+def device_problem_subject(alert_type: Any, device_id: Any, resident_id: str) -> str:
+    """`SilverCare device problem: <label> - <device_id> (<resident_id>)`, at most 100
+    characters (criterion 14)."""
+    label = _device_problem_label(alert_type)
+    device = _device_id_text(device_id)
+    return f"SilverCare device problem: {label} - {device} ({resident_id})"[
+        :SUBJECT_MAX_LEN
+    ]
+
+
+def _device_problem_detail_line(alert_type: Any, details: dict[str, Any]) -> str:
+    """The one detail line of criterion 14; times in SGT."""
+    if alert_type == "battery_low":
+        # int from the message, Decimal when read back from DynamoDB (a redelivery).
+        value = details.get("battery_pct")
+        number = type(value) is int or isinstance(value, Decimal)
+        shown = format_number(value) if number else "unknown"
+        return f"Battery: {shown} %"
+    name, label = (
+        ("since", "Not worn since")
+        if alert_type == "not_worn"
+        else ("last_seen", "Last heartbeat")
+    )
+    when_dt = _parse_ts(details.get(name))
+    return f"{label}: {format_when(when_dt) if when_dt else 'unknown time'}"
+
+
+def _device_problem_lines(item: dict[str, Any], resident_id: str) -> list[str]:
+    """Type, Device, Resident, and the detail line (criterion 14)."""
+    details = item.get("details")
+    details = details if isinstance(details, dict) else {}
+    alert_type = item.get("alert_type")
+    return [
+        f"Type: {_device_problem_label(alert_type)}",
+        f"Device: {_device_id_text(item.get('device_id'))}",
+        f"Resident: {resident_id}",
+        _device_problem_detail_line(alert_type, details),
+    ]
+
+
+def _footer(portal_url: str) -> list[str]:
+    return [
+        "",
+        f"Open the SilverCare portal: {portal_url.rstrip('/')}/",
+        "",
+        "This is an automated message. Do not reply.",
+    ]
+
+
+def device_problem_body(item: dict[str, Any], resident_id: str, portal_url: str) -> str:
+    """The device-problem email body, the same for caregivers and ops (criterion 14)."""
+    lines = [
+        DEVICE_PROBLEM_HEADING,
+        "",
+        *_device_problem_lines(item, resident_id),
+        *_footer(portal_url),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def device_problem_follow_up_subject(
+    alert_type: Any, device_id: Any, resident_id: str
+) -> str:
+    """`SilverCare update: <label> - <device_id> (<resident_id>) acknowledged`, at most
+    100 characters (criterion 14a)."""
+    label = _device_problem_label(alert_type)
+    device = _device_id_text(device_id)
+    return f"SilverCare update: {label} - {device} ({resident_id}) acknowledged"[
+        :SUBJECT_MAX_LEN
+    ]
+
+
+def _acknowledged_by(by_role: str, by_name: str | None) -> str:
+    """ "the ops team" (no person's name) or a caregiver's masked name."""
+    if by_role == "caregiver" and by_name is not None:
+        return f"{mask_name(by_name)} (caregiver)"
+    return OPS_TEAM
+
+
+def device_problem_follow_up_body(
+    item: dict[str, Any],
+    resident_id: str,
+    portal_url: str,
+    *,
+    changed_at: datetime,
+    by_role: str,
+    by_name: str | None,
+) -> str:
+    """The acknowledge follow-up of a device problem (criterion 14a), to the
+    caregivers and the ops team."""
+    who = _acknowledged_by(by_role, by_name)
+    first = (
+        f"The device problem below was acknowledged by {who} at "
+        f"{format_when(changed_at)}."
+    )
+    lines = [
+        "SilverCare update",
+        "",
+        first,
+        "",
+        *_device_problem_lines(item, resident_id),
+        *_footer(portal_url),
     ]
     return "\n".join(lines) + "\n"

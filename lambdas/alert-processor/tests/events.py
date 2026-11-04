@@ -266,3 +266,79 @@ def caregiver_cancel_body(**overrides: Any) -> str:
 
 def nurse_ack_body(note: Any = DELETE, **overrides: Any) -> str:
     return _compact(nurse_ack_message(note, **overrides))
+
+
+# ---- device problems (docs/features/watchdog.md, criteria 8, 8a, 10, 14a) ----
+
+OPS_SUB = "a1b2c3d4-0000-4000-8000-0000000000ee"
+# The watchdog's run that saw the problem, and its last-heartbeat / since times.
+DP_EVENT_TS = "2026-11-04T01:40:00.000Z"
+DP_RECEIVED_AT = "2026-11-04T02:00:00.000Z"
+DP_CHANGED_AT = "2026-11-04T02:05:00.000Z"
+
+DEVICE_PROBLEM_DETAILS: dict[str, dict[str, Any]] = {
+    "device_offline": {"last_seen": DP_EVENT_TS},
+    "battery_low": {"battery_pct": 15},
+    "not_worn": {"since": DP_EVENT_TS},
+}
+DEVICE_PROBLEM_TYPES = tuple(DEVICE_PROBLEM_DETAILS)
+
+
+def device_problem_message(
+    alert_type: str = "battery_low", **overrides: Any
+) -> dict[str, Any]:
+    """A valid watchdog alert message (A1 format, severity warning). `details` may be
+    overridden; pass a field as DELETE to remove it."""
+    fields: dict[str, Any] = {
+        "alert_type": alert_type,
+        "severity": "warning",
+        "event_ts": DP_EVENT_TS,
+        "received_at": DP_RECEIVED_AT,
+        "details": dict(DEVICE_PROBLEM_DETAILS[alert_type]),
+    }
+    fields.update(overrides)
+    return alert_message(**fields)
+
+
+def device_problem_body(alert_type: str = "battery_low", **overrides: Any) -> str:
+    return _compact(device_problem_message(alert_type, **overrides))
+
+
+def ops_ack_message(**overrides: Any) -> dict[str, Any]:
+    """A valid ops acknowledge (alert target, sub, by_name null, no note key) of the
+    default alert at DP_EVENT_TS."""
+    body = cancel_message(
+        new_status="acknowledged",
+        changed_at=DP_CHANGED_AT,
+        by_role="ops",
+        by=OPS_SUB,
+        by_name=None,
+        target={"alert_id": ALERT_ID, "event_ts": DP_EVENT_TS},
+    )
+    return _apply(body, overrides)
+
+
+def caregiver_ack_message(**overrides: Any) -> dict[str, Any]:
+    """A valid caregiver acknowledge (alert target, sub, name claim, no note key)."""
+    body = ops_ack_message(
+        by_role="caregiver", by=CAREGIVER_SUB, by_name=CAREGIVER_NAME
+    )
+    return _apply(body, overrides)
+
+
+def resolve_message(**overrides: Any) -> dict[str, Any]:
+    """The watchdog's system resolve (alert target, by and by_name null, no note)."""
+    body = ops_ack_message(new_status="resolved", by_role="system", by=None)
+    return _apply(body, overrides)
+
+
+def ops_ack_body(**overrides: Any) -> str:
+    return _compact(ops_ack_message(**overrides))
+
+
+def caregiver_ack_body(**overrides: Any) -> str:
+    return _compact(caregiver_ack_message(**overrides))
+
+
+def resolve_body(**overrides: Any) -> str:
+    return _compact(resolve_message(**overrides))
