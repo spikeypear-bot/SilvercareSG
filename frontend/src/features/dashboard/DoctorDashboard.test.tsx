@@ -222,6 +222,36 @@ describe('open alerts summary', () => {
     expect(tileValue('Open alerts')).toBe('1')
   })
 
+  it('leaves out cancelled alerts from the summary, its counts, and the tiles', async () => {
+    const data = demoDataFor('staff')
+    const cancelled = { status: 'cancelled' as const, cancelled_at: new Date().toISOString(), cancelled_by_role: 'resident' as const }
+    const alerts = [
+      alertFor(1, { alert_type: 'fall', severity: 'critical', ...cancelled }),
+      alertFor(2, { alert_type: 'inactivity', severity: 'warning' }),
+      alertFor(3, { alert_type: 'hr_high', severity: 'warning', ...cancelled }),
+    ]
+    await renderLoaded({ ...data, alerts })
+    expect(summaryRows()).toHaveLength(1)
+    expect(summaryRows()[0]).toHaveTextContent('Test Resident B')
+    expect(summary()).not.toHaveTextContent('Cancelled')
+    expect(summary()).not.toHaveTextContent('Test Resident A')
+    expect(summary()).not.toHaveTextContent('Test Resident C')
+    expect(summary()).toHaveTextContent('0 critical · 0 acknowledged. Nurses respond to alerts; the most urgent is shown here.')
+    expect(screen.getByRole('heading', { level: 2, name: 'Open alerts (1)' })).toBeInTheDocument()
+    expect(tileValue('Open alerts')).toBe('1')
+    expect(within(statsSection()).getByText('0 critical')).toBeInTheDocument()
+  })
+
+  it('shows "No open alerts." when every alert is cancelled', async () => {
+    const data = demoDataFor('staff')
+    const alerts = [
+      alertFor(1, { alert_type: 'fall', severity: 'critical', status: 'cancelled', cancelled_at: new Date().toISOString(), cancelled_by_role: 'resident' }),
+    ]
+    await renderLoaded({ ...data, alerts })
+    expect(within(summary()).getByText('No open alerts.')).toBeInTheDocument()
+    expect(tileValue('Open alerts')).toBe('0')
+  })
+
   it('shows "No open alerts." when there are none', async () => {
     await renderLoaded({ ...demoDataFor('staff'), alerts: [] })
     expect(within(summary()).getByText('No open alerts.')).toBeInTheDocument()

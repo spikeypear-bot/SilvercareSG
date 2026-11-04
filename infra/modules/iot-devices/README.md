@@ -13,8 +13,8 @@ The AWS IoT Core device registry from `docs/features/iot-core.md`:
 - IoT policies `silvercare-device-wearable` and `silvercare-device-bedroom`: connect
   only with client ID = own thing name and an attached certificate, publish only to
   `silvercare/v1/<own thing name>/<message>` for the type's own messages (wearable
-  `vitals`, `vitals_alert`, `fall`, `status`; bedroom `motion`, `bed`, `status`). No subscribe,
-  receive, shadow, or wildcard actions.
+  `vitals`, `vitals_alert`, `fall`, `status`, `alert_cancel`; bedroom `motion`, `bed`,
+  `status`). No subscribe, receive, shadow, or wildcard actions.
 
 The device list is validated: an ID that doesn't match `^(wearable|bedroom)-[0-9]{4}$`,
 an ID prefix that doesn't match the type, or a duplicate ID fails the plan with an

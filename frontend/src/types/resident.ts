@@ -94,7 +94,7 @@ export interface ResidentThresholds extends VitalsThresholds {
   updated_by?: string
 }
 
-/** One threshold value, as named in the change history (docs/data-model.md pattern 25). */
+/** One threshold value, as named in the change history (docs/data-model.md, Threshold change history). */
 export type ThresholdKey = 'hr_bpm.min' | 'hr_bpm.max' | 'spo2_pct.min' | 'skin_temp_c.min' | 'skin_temp_c.max'
 
 export interface ThresholdValueChange {
@@ -123,6 +123,6 @@ export interface ResidentDetail {
   /** Every alert still stored for this resident, newest first, including resolved ones. */
   alerts: ResidentAlert[]
   thresholds: ResidentThresholds
-  /** Earlier threshold changes, newest first (pattern 25). */
+  /** Earlier threshold changes, newest first (Threshold change history). */
   threshold_history: ThresholdChangeEntry[]
 }

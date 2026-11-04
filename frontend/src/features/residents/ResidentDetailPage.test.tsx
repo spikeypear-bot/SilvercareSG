@@ -597,27 +597,71 @@ describe('nurse alert actions', () => {
     expect(within(first).getByRole('button', { name: 'Resolve: High heart rate, Test Resident G' })).toBeInTheDocument()
   })
 
-  it('a cancelled alert shows "Cancelled", has Resolve only for the nurse, and resolving it works', async () => {
-    const detail = demoDetail('res-0003')
-    const [first, ...rest] = detail.alerts
-    const cancelled = { ...first, status: 'cancelled' as const }
-    const { user } = await renderLoaded('res-0003', NURSE_D, { ...detail, alerts: [cancelled, ...rest] })
-    const row = () => historyRows()[0]
-    expect(within(row()).getByText('Cancelled')).toBeInTheDocument()
-    expect(row()).not.toHaveTextContent(/Escalat/)
-    expect(within(row()).queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
-    await user.click(within(row()).getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
-    expect(within(row()).getByText('Resolved')).toBeInTheDocument()
-    expect(row()).toHaveTextContent('Resolved by Test Nurse D, just now')
-    expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
+  it.each([
+    ['nurse', NURSE_D],
+    ['doctor', TEST_USERS.doctor],
+  ] as const)(
+    'a cancelled alert shows "Cancelled" and the cancelled line, with no buttons (%s)',
+    async (_, user) => {
+      const detail = demoDetail('res-0003')
+      const [first, ...rest] = detail.alerts
+      const cancelledAt = new Date(Date.parse(first.event_ts) + 30_000).toISOString()
+      const cancelled: ResidentAlert = {
+        ...first,
+        status: 'cancelled',
+        cancelled_at: cancelledAt,
+        cancelled_by_role: 'resident',
+      }
+      await renderLoaded('res-0003', user, { ...detail, alerts: [cancelled, ...rest] })
+      const row = historyRows()[0]
+      expect(within(row).getByText('Cancelled')).toBeInTheDocument()
+      expect(within(row).getByText('Cancelled').querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+      const line = within(row).getByText(/^Cancelled by the resident/)
+      expect(line).toHaveTextContent(/^Cancelled by the resident \("I'm OK"\), \d+ min ago/)
+      expect(line.querySelector('time')).toHaveAttribute('datetime', cancelledAt)
+      expect(row).not.toHaveTextContent(/Escalat/)
+      expect(row).not.toHaveTextContent('Resolved by')
+      expect(within(row).queryAllByRole('button')).toEqual([])
+      expect(screen.queryAllByRole('button', { name: /^(Acknowledge|Resolve)/ })).toEqual([])
+      // The page is still in the history count.
+      expect(screen.getByRole('heading', { level: 2, name: `Alert history (${detail.alerts.length})` })).toBeInTheDocument()
+    },
+  )
+
+  it.each([
+    ['nurse', NURSE_D],
+    ['doctor', TEST_USERS.doctor],
+  ] as const)('res-0002: the demo cancelled history alert shows its line and no buttons (%s)', async (role, user) => {
+    const detail = demoDetail('res-0002')
+    const index = detail.alerts.findIndex((a) => a.status === 'cancelled')
+    expect(index).toBeGreaterThanOrEqual(0)
+    const cancelled = detail.alerts[index]
+    expect(cancelled).toMatchObject({ alert_type: 'hr_high', cancelled_by_role: 'resident' })
+    await renderLoaded('res-0002', user, detail)
+    const row = historyRows()[index]
+    expect(row).toHaveTextContent('High heart rate')
+    expect(within(row).getByText('Cancelled')).toBeInTheDocument()
+    const line = within(row).getByText(/^Cancelled by the resident/)
+    // Raised 95 h ago (i = 1, k = 0) and cancelled 30 s later.
+    expect(line).toHaveTextContent(/^Cancelled by the resident \("I'm OK"\), 3 days ago/)
+    expect(line.querySelector('time')).toHaveAttribute('datetime', cancelled.cancelled_at)
+    expect(row).not.toHaveTextContent('Acknowledged by')
+    expect(row).not.toHaveTextContent('Resolved by')
+    expect(within(row).queryAllByRole('button')).toEqual([])
+    // Only open-list alerts get buttons, and only for the nurse.
+    const openList = detail.alerts.filter((a) => a.status === 'open' || a.status === 'acknowledged')
+    const resolveButtons = screen.queryAllByRole('button', { name: /^Resolve/ })
+    expect(resolveButtons).toHaveLength(role === 'nurse' ? openList.length : 0)
   })
 
-  it('the doctor sees a cancelled alert without buttons', async () => {
-    const detail = demoDetail('res-0003')
-    const [first, ...rest] = detail.alerts
-    await renderLoaded('res-0003', TEST_USERS.doctor, { ...detail, alerts: [{ ...first, status: 'cancelled' }, ...rest] })
-    expect(within(historyRows()[0]).getByText('Cancelled')).toBeInTheDocument()
-    expect(screen.queryAllByRole('button', { name: /Acknowledge|Resolve/ })).toEqual([])
+  it('res-0006: a history alert handled by a deleted account reads "Former staff member"', async () => {
+    const detail = demoDetail('res-0006')
+    const former = detail.alerts.filter((a) => a.resolved_by === 'Former staff member')
+    expect(former).toHaveLength(1)
+    await renderLoaded('res-0006', TEST_USERS.doctor, detail)
+    const row = historyRows()[detail.alerts.indexOf(former[0])]
+    expect(row).toHaveTextContent('Acknowledged by Former staff member,')
+    expect(row).toHaveTextContent('Resolved by Former staff member,')
   })
 
   it('acknowledge, then resolve: by-lines, label, focus, and announcements', async () => {
@@ -870,13 +914,13 @@ describe('thresholds (pattern 18)', () => {
   })
 })
 
-// --- threshold change history (pattern 25) ----------------------------------
+// --- threshold change history ----------------------------------------------
 
 const entryLines = (entry: HTMLElement) =>
   Array.from(entry.querySelectorAll('ul > li')).map((li) => li.textContent)
 const entryByLine = (entry: HTMLElement) => entry.querySelector('p') as HTMLElement
 
-describe('threshold change history (pattern 25)', () => {
+describe('threshold change history', () => {
   it('comes right after Vitals thresholds', async () => {
     await renderLoaded('res-0001')
     const h2s = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
@@ -1051,6 +1095,12 @@ describe('accessibility', () => {
     ['doctor', TEST_USERS.doctor],
   ] as const)('has no axe violations for the %s', async (_, user) => {
     const { container } = await renderLoaded('res-0003', user)
+    expect(await axeViolations(container)).toEqual([])
+  })
+
+  it('has no axe violations for the nurse with a cancelled alert in the history (res-0002)', async () => {
+    const { container } = await renderLoaded('res-0002', TEST_USERS.nurse)
+    expect(within(history()).getByText(/^Cancelled by the resident/)).toBeInTheDocument()
     expect(await axeViolations(container)).toEqual([])
   })
 

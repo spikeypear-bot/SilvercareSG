@@ -245,26 +245,56 @@ describe('open alerts inbox', () => {
     expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(12)
   })
 
-  it('a cancelled alert stays in the inbox with "Cancelled", no Acknowledge, and Resolve', async () => {
-    const F = 'Fall detected, Test Resident C'
-    const { user } = await renderLoaded(
-      oneAlert({ status: 'cancelled', escalated_at: new Date(Date.now() - 60_000).toISOString() }),
+  it('a cancelled alert is not in the inbox or the counts, and has no buttons', async () => {
+    await renderLoaded(
+      oneAlert({
+        status: 'cancelled',
+        escalated_at: new Date(Date.now() - 60_000).toISOString(),
+        cancelled_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+        cancelled_by_role: 'resident',
+      }),
     )
-    expect(openRows()).toHaveLength(1)
-    expect(tileValue('Open alerts')).toBe('1')
-    const row = rowFor(F)
-    expect(within(row).getByText('Cancelled')).toBeInTheDocument()
-    expect(within(row).getByText('Cancelled').querySelector('svg[aria-hidden="true"]')).not.toBeNull()
-    expect(within(row).queryByText('Open')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^Acknowledge: / })).not.toBeInTheDocument()
-    expect(row).not.toHaveTextContent(/Escalat/)
-
-    await user.click(resolveButton(F))
+    expect(openRows()).toEqual([])
     expect(within(inbox()).getByText('No open alerts.')).toBeInTheDocument()
+    expect(inboxHeading()).toHaveTextContent('Open alerts (0)')
     expect(tileValue('Open alerts')).toBe('0')
-    const details = screen.getByText('Resolved since this page opened (1)').closest('details') as HTMLElement
-    expect(details).toHaveTextContent(F)
-    await waitFor(() => expect(announcer()).toHaveTextContent(`Resolved: ${F}.`))
+    expect(within(tile('Open alerts')).getByText('0 critical')).toBeInTheDocument()
+    expect(inbox()).not.toHaveTextContent('Test Resident C')
+    expect(inbox()).not.toHaveTextContent('Cancelled')
+    expect(screen.queryAllByRole('button', { name: /^(Acknowledge|Resolve): / })).toEqual([])
+    // Not resolved by anyone on this page, so not in the resolved list either.
+    expect(screen.queryByText(/Resolved since this page opened/)).not.toBeInTheDocument()
+    expect(announcer()).toBeEmptyDOMElement()
+  })
+
+  it('cancelled alerts in a mixed list are left out of the rows, the heading, and the tiles', async () => {
+    const data = demoDataFor('staff')
+    // Cancel the two open falls (C and Q): the wearable "I'm OK" press.
+    const cancelledAt = new Date(Date.now() - 60_000).toISOString()
+    const alerts = data.alerts.map((a) =>
+      a.alert_type === 'fall' && a.status === 'open'
+        ? { ...a, status: 'cancelled' as const, cancelled_at: cancelledAt, cancelled_by_role: 'resident' as const }
+        : a,
+    )
+    expect(alerts.filter((a) => a.status === 'cancelled')).toHaveLength(2)
+    await renderLoaded({ ...data, alerts })
+
+    const expected = DEMO_INBOX_ORDER.filter(([type]) => type !== 'Fall detected')
+    expect(openRows()).toHaveLength(10)
+    openRows().forEach((row, i) => {
+      expect(row).toHaveTextContent(expected[i][0])
+      expect(row).toHaveTextContent(expected[i][1])
+    })
+    expect(inbox()).not.toHaveTextContent('Fall detected')
+    expect(inbox()).not.toHaveTextContent('Cancelled')
+    expect(inboxHeading()).toHaveTextContent('Open alerts (10)')
+    expect(tileValue('Open alerts')).toBe('10')
+    // Only the acknowledged High heart rate (G) is still critical.
+    expect(within(tile('Open alerts')).getByText('1 critical')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /: Fall detected, Test Resident (C|Q)$/ })).not.toBeInTheDocument()
+    // 7 open + 3 acknowledged left.
+    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(7)
+    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(10)
   })
 
   it('shows "No open alerts." when there are none, and the tile reads 0', async () => {
@@ -611,16 +641,24 @@ describe('escalation countdown (fake clock)', () => {
     expect(announcer().textContent).toBe(announced)
   })
 
-  it('a cancelled alert with a future escalates_at shows no countdown and is never announced', async () => {
+  it('a cancelled alert with a future escalates_at is not listed, shows no countdown, and is never announced', async () => {
     const data = demoDataFor('staff', NOW)
-    const alerts = data.alerts.map((a) => (a.resident_id === 'res-0008' ? { ...a, status: 'cancelled' as const } : a))
+    const target = data.alerts.find((a) => a.resident_id === 'res-0008') as ResidentAlert
+    expect(Date.parse(target.escalates_at ?? '')).toBeGreaterThan(NOW.getTime())
+    const alerts = data.alerts.map((a) =>
+      a === target
+        ? { ...a, status: 'cancelled' as const, cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' as const }
+        : a,
+    )
     await renderAtNow({ ...data, alerts })
-    expect(within(rowFor(H)).getByText('Cancelled')).toBeInTheDocument()
-    expect(within(rowFor(H)).queryByRole('timer')).not.toBeInTheDocument()
+    expect(inboxHeading()).toHaveTextContent('Open alerts (11)')
+    expect(inbox()).not.toHaveTextContent('Test Resident H')
     expect(screen.queryByRole('button', { name: `Acknowledge: ${H}` })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: `Resolve: ${H}` })).not.toBeInTheDocument()
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument()
     tick(5 * 60_000)
     expect(announcer()).toBeEmptyDOMElement()
-    expect(rowFor(H)).not.toHaveTextContent(/Escalat/)
+    expect(inbox()).not.toHaveTextContent('Test Resident H')
   })
 
   it('acknowledging a different alert does not reset or repeat the countdown announcement', async () => {

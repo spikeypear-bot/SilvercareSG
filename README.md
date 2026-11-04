@@ -219,7 +219,9 @@ It sends two high heart-rate `vitals` (one **warning**, "High heart rate"), a de
 high `vitals` that is suppressed (no email). Expect three emails, three new items under
 `RESIDENT#res-0001`, and the suppressed one only as `suppressed` in the
 `/aws/lambda/silvercare-alert-processor` log. Running it again within 30 minutes
-suppresses the warning and both critical alerts.
+suppresses the warning and both critical alerts. No warning email? The resident may
+have a personal limit (`THRESHOLDS#<resident>` in `silvercare-registry`) above the
+test readings (180–185 bpm): then they are normal and no warning is correct.
 
 Escalation: after any alert email, wait about a minute. Each nurse subscriber gets
 "SilverCare ESCALATED alert: …" for every alert that is still `open` (the
@@ -234,3 +236,16 @@ emails nobody (`not_escalated`, reason `stale`).
 
 Subscriptions to `silvercare-alerts` and `silvercare-nurses` can only be added by the
 deploy (Terraform); adding one in the console is denied on purpose.
+
+Cancel ("I'm OK" on the wearable, `docs/features/alert-cancel.md`):
+
+```sh
+make smoke-test DEVICE=wearable-0001 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) CANCEL=1
+```
+
+It sends a `fall`, then an `alert_cancel` 5 s later. Expect the fall email, then
+"SilverCare update: Fall - res-0001 cancelled", and **no** nurse email (the cancel
+lands before the 60 s escalation). The alert item shows `status` `cancelled`, has no
+`open_pk`, and has an `expires_at` 30 days out. A press cancels every open alert from
+that wearable, so earlier test alerts that are still open get cancelled (and emailed)
+too.

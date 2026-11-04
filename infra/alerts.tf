@@ -16,6 +16,13 @@
 # resident). No extra queue, function, mapping, or alarm: failed checks reach
 # silvercare-alerts-dlq and its alarm like failed alerts.
 #
+# Cancel and follow-ups (docs/features/alert-cancel.md): critical-alert sends a
+# `status_update` for the wearable "I'm OK" button (Track B's acknowledge API will send
+# one too). alert-processor sets the matching open alerts to cancelled (or
+# acknowledged) and emails a short follow-up through the same two topics: caregivers
+# always (resident_id filter), nurses only if they were already escalated to. No new
+# resources: failed updates reach silvercare-alerts-dlq like failed alerts.
+#
 # No critical alert may be lost on the way: critical-alert's failed async invocations
 # and the silvercare_alert rule's failed actions go to silvercare-critical-alert-dlq,
 # and alert messages that fail 5 receives go to silvercare-alerts-dlq. A CloudWatch
@@ -23,8 +30,9 @@
 # DLQ: see the Known gap in docs/features/vitals-alerts.md.)
 #
 # The queues and DLQs hold alert messages (falls with the fall details, vitals alerts
-# with the reading and limit, linked to a resident ID); critical-alert-dlq can hold raw
-# fall and vitals_alert payloads. Retention: alerts queue 4 days, DLQs 14 days, S3
+# with the reading and limit, linked to a resident ID; status updates with the changed
+# alert's target and, for a Track B acknowledge, the user's sub and full name);
+# critical-alert-dlq can hold raw fall, vitals_alert, and alert_cancel payloads. Retention: alerts queue 4 days, DLQs 14 days, S3
 # alerts/ no expiry until Open decision #4 (retention).
 #
 # Cost: pay per use only, no fixed fees. SNS (1,000 emails/month free, shared by the
@@ -51,8 +59,8 @@ locals {
   # Per-DLQ alarm text. silvercare-critical-alert-dlq holds Lambda on-failure records
   # and IoT rule error payloads, which have no source queue to redrive to.
   dlq_alarm_descriptions = {
-    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed, or an escalation_check may not have emailed the nurses. Inspect it, fix the cause, and redrive it to silvercare-alerts. escalation_check messages are skipped as stale once 15 minutes have passed since the alert was stored, so redriving one later sends no nurse email."
-    critical_alert_dlq = "silvercare-critical-alert-dlq has at least one message: a fall or device vitals_alert may not have become an alert. Inspect it, then replay the original payload manually (it cannot be redriven)."
+    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed, an escalation_check may not have emailed the nurses, or a status_update (cancel or acknowledge) may not have been applied or followed up. Inspect it, fix the cause, and redrive it to silvercare-alerts. escalation_check messages are skipped as stale once 15 minutes have passed since the alert was stored, so redriving one later sends no nurse email. A redriven status_update still changes only alerts that are open (cancel: those up to when the press was received)."
+    critical_alert_dlq = "silvercare-critical-alert-dlq has at least one message: a fall or device vitals_alert may not have become an alert, or an alert_cancel may not have cancelled the open alerts. Inspect it, then replay the original payload manually (it cannot be redriven)."
   }
 }
 
@@ -556,13 +564,15 @@ data "archive_file" "alert_processor" {
 # What the function does with AWS: the event source mapping polls silvercare-alerts with
 # the function's role (receive, delete, read attributes); the code sends the delayed
 # escalation check back to silvercare-alerts (SendMessage, escalation criterion 13);
-# it does a Query of the resident's recent alerts (repeat suppression, pattern 7;
-# vitals-alerts criterion 24), a conditional PutItem, a GetItem on a retry or for an
-# escalation check (pattern 23), and conditional UpdateItems (notified_at,
-# escalation_queued_at, escalated_at) on its alert in silvercare-alerts (base table,
-# RESIDENT# partitions only); a GetItem on the device's vitals item in
-# silvercare-latest; a PutObject under alerts/; and an SNS Publish to the alerts and
-# nurses topics. Nothing else: no indexes, no Scan/DeleteItem, no other prefixes or
+# it does Queries of the resident's alerts (repeat suppression, pattern 7;
+# vitals-alerts criterion 24; a cancel's device-and-status Query, pattern 24,
+# alert-cancel criterion 15), a conditional PutItem, a GetItem on a retry, for an
+# escalation check (pattern 23), or for an acknowledge (pattern 25), and conditional
+# UpdateItems (notified_at, escalation_queued_at, escalated_at, the status change,
+# status_notified_at) on its alert in silvercare-alerts (base table, RESIDENT#
+# partitions only); a GetItem on the device's vitals item in silvercare-latest; a
+# PutObject under alerts/; and an SNS Publish to the alerts and nurses topics (alerts,
+# escalations, and status follow-ups). The status updates need no new permission. Nothing else: no indexes, no Scan/DeleteItem, no other prefixes or
 # reads in S3. No KMS permissions: both topics use the AWS managed key aws/sns, whose
 # key policy already lets SNS use it for principals in this account (the iam-policy
 # skill asks for KMS grants only for customer-managed keys). The module adds the log
@@ -634,7 +644,7 @@ module "alert_processor" {
   source = "./modules/python-lambda"
 
   function_name = local.alert_processor_function_name
-  description   = "Stores alerts from the silvercare-alerts queue in DynamoDB and S3, emails subscribers through SNS, and escalates unanswered alerts to nurses."
+  description   = "Stores alerts from the silvercare-alerts queue in DynamoDB and S3, emails subscribers through SNS, escalates unanswered alerts to nurses, and applies cancels and acknowledges with follow-up emails."
   handler       = "handler.lambda_handler"
   zip_path      = data.archive_file.alert_processor.output_path
   zip_hash      = data.archive_file.alert_processor.output_base64sha256

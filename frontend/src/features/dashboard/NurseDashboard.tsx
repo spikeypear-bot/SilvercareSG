@@ -20,8 +20,8 @@ import {
   dashboardStats,
   lowBatteryResidents,
   offlineDevices,
+  openListAlerts,
   sortAlertsForInbox,
-  unresolvedAlerts,
 } from './stats'
 import { describeAlert, useAlertAnnouncer } from './useAlertAnnouncer'
 import { useDashboardData } from './useDashboardData'
@@ -97,7 +97,7 @@ interface AlertInboxProps {
 
 function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve }: AlertInboxProps) {
   const headingRef = useRef<HTMLHeadingElement>(null)
-  const open = useMemo(() => sortAlertsForInbox(unresolvedAlerts(alerts)), [alerts])
+  const open = useMemo(() => sortAlertsForInbox(openListAlerts(alerts)), [alerts])
   const resolved = useMemo(
     () =>
       alerts

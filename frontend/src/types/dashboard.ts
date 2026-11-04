@@ -71,8 +71,10 @@ export interface Resident {
 }
 
 /**
- * Alert lifecycle (docs/data-model.md): `cancelled` is the wearable "I'm OK" cancel.
- * Anything but `open` stops escalation; every status but `resolved` stays listed.
+ * Alert lifecycle (docs/data-model.md): `cancelled` is the wearable "I'm OK" cancel
+ * (docs/features/alert-cancel.md). Anything but `open` stops escalation. Only `open` and
+ * `acknowledged` alerts are on the open list (pattern 9); a cancel, like a resolve, takes
+ * the alert off it.
  */
 export type AlertStatus = 'open' | 'acknowledged' | 'cancelled' | 'resolved'
 
@@ -86,13 +88,14 @@ export interface ResidentAlert {
   /** ISO 8601 UTC of the triggering event */
   event_ts: string
   /**
-   * Display name of the staff member or linked caregiver, never a Cognito sub (the API
-   * returns the name stored at write time).
+   * Display name of the staff member or linked caregiver, never a Cognito sub: the API
+   * looks it up on read, or returns "Former staff member" / "Former caregiver" once the
+   * account is deleted (docs/data-model.md, Actor names).
    */
   acknowledged_by?: string
   /** ISO 8601 UTC */
   acknowledged_at?: string
-  /** Staff display name, never a Cognito sub. */
+  /** Staff display name, looked up on read like `acknowledged_by`. */
   resolved_by?: string
   /** ISO 8601 UTC */
   resolved_at?: string
@@ -104,6 +107,10 @@ export interface ResidentAlert {
   escalates_at?: string
   /** ISO 8601 UTC: when nurses were emailed because nobody responded within 60 s. */
   escalated_at?: string
+  /** ISO 8601 UTC: when the cloud received the resident's "I'm OK" press. Cancelled only. */
+  cancelled_at?: string
+  /** Who cancelled; `resident` (the wearable button) is the only value today. */
+  cancelled_by_role?: 'resident'
 }
 
 export interface DashboardData {

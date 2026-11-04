@@ -2,10 +2,11 @@ import { demoDataFor } from '../../test/dashboardMock'
 import type { ResidentAlert } from '../../types/dashboard'
 import {
   dashboardStats,
+  isOnOpenList,
   lowBatteryResidents,
   offlineDevices,
+  openListAlerts,
   sortAlertsForInbox,
-  unresolvedAlerts,
 } from './stats'
 
 const NOW = new Date('2026-10-18T02:30:00Z')
@@ -23,15 +24,49 @@ function alert(id: string, severity: ResidentAlert['severity'], minutesAgo: numb
   }
 }
 
-describe('unresolvedAlerts', () => {
-  it('keeps open, acknowledged and cancelled alerts, drops resolved ones', () => {
+describe('isOnOpenList', () => {
+  it.each([
+    ['open', true],
+    ['acknowledged', true],
+    ['cancelled', false],
+    ['resolved', false],
+  ] as const)('%s -> %s', (status, expected) => {
+    expect(isOnOpenList(alert('a', 'warning', 1, status))).toBe(expected)
+  })
+
+  it('looks only at the status, not at by/at fields left on the alert', () => {
+    const cancelled: ResidentAlert = {
+      ...alert('a', 'critical', 1, 'cancelled'),
+      cancelled_at: NOW.toISOString(),
+      cancelled_by_role: 'resident',
+    }
+    expect(isOnOpenList(cancelled)).toBe(false)
+    const ackedWithoutBy = alert('b', 'warning', 1, 'acknowledged')
+    expect(isOnOpenList(ackedWithoutBy)).toBe(true)
+  })
+})
+
+describe('openListAlerts', () => {
+  it('keeps open and acknowledged alerts, drops cancelled and resolved ones, in order', () => {
     const alerts = [
       alert('a', 'warning', 1),
       alert('b', 'warning', 2, 'acknowledged'),
       alert('c', 'warning', 3, 'resolved'),
       alert('d', 'critical', 4, 'cancelled'),
+      alert('e', 'critical', 5),
     ]
-    expect(unresolvedAlerts(alerts).map((a) => a.alert_id)).toEqual(['a', 'b', 'd'])
+    expect(openListAlerts(alerts).map((a) => a.alert_id)).toEqual(['a', 'b', 'e'])
+  })
+
+  it('returns an empty list when every alert is cancelled or resolved', () => {
+    expect(openListAlerts([alert('c', 'warning', 3, 'resolved'), alert('d', 'critical', 4, 'cancelled')])).toEqual([])
+    expect(openListAlerts([])).toEqual([])
+  })
+
+  it('does not change the input array', () => {
+    const alerts = [alert('a', 'warning', 1), alert('d', 'critical', 4, 'cancelled')]
+    openListAlerts(alerts)
+    expect(alerts.map((a) => a.alert_id)).toEqual(['a', 'd'])
   })
 })
 
@@ -97,5 +132,19 @@ describe('dashboardStats', () => {
   it('leaves resolved alerts out of the open and critical counts', () => {
     const alerts = data.alerts.map((a) => (a.severity === 'critical' ? { ...a, status: 'resolved' as const } : a))
     expect(dashboardStats({ ...data, alerts })).toMatchObject({ openAlerts: 9, criticalAlerts: 0 })
+  })
+
+  it('leaves cancelled alerts out of the open and critical counts', () => {
+    const alerts = data.alerts.map((a) =>
+      a.severity === 'critical'
+        ? { ...a, status: 'cancelled' as const, cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' as const }
+        : a,
+    )
+    expect(dashboardStats({ ...data, alerts })).toMatchObject({ openAlerts: 9, criticalAlerts: 0 })
+  })
+
+  it('counts acknowledged alerts as open', () => {
+    const alerts = [alert('a', 'critical', 1, 'acknowledged'), alert('b', 'warning', 2, 'cancelled')]
+    expect(dashboardStats({ ...data, alerts })).toMatchObject({ openAlerts: 1, criticalAlerts: 1 })
   })
 })

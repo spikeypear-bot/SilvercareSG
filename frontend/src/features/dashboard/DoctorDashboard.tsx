@@ -10,7 +10,7 @@ import { MainLayout } from './MainLayout'
 import { ResidentsPanel } from './ResidentsPanel'
 import { StaffNav } from './StaffNav'
 import { StatTiles, StatTilesSkeleton } from './StatTile'
-import { dashboardStats, sortAlertsForInbox, unresolvedAlerts } from './stats'
+import { dashboardStats, openListAlerts, sortAlertsForInbox } from './stats'
 import { describeAlert, useAlertAnnouncer } from './useAlertAnnouncer'
 import { useDashboardData } from './useDashboardData'
 import { useEscalationWatcher } from './useEscalationWatcher'
@@ -65,7 +65,7 @@ function AlertSummary({
   residentsById: Map<string, Resident>
 }) {
   const headingId = useId()
-  const open = useMemo(() => sortAlertsForInbox(unresolvedAlerts(alerts)), [alerts])
+  const open = useMemo(() => sortAlertsForInbox(openListAlerts(alerts)), [alerts])
   const top = open.slice(0, SUMMARY_ALERTS)
   const critical = open.filter((a) => a.severity === 'critical').length
   const acknowledged = open.filter((a) => a.status === 'acknowledged').length

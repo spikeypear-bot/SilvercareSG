@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Resident, ResidentAlert } from '../../types/dashboard'
 import { ALERT_TYPE_LABELS } from './labels'
+import { isOnOpenList } from './stats'
 import { useAnnouncer } from './useAnnouncer'
 
 /** "Fall detected, Test Resident C" */
@@ -35,7 +36,7 @@ export function useAlertAnnouncer(
   // Compare with the previous render's alerts (React's "adjust state on prop change").
   if (alerts !== previous) {
     const seen = new Set(previous.map((a) => a.alert_id))
-    const fresh = alerts.filter((a) => !seen.has(a.alert_id) && a.status !== 'resolved')
+    const fresh = alerts.filter((a) => !seen.has(a.alert_id) && isOnOpenList(a))
     setPrevious(alerts)
     if (fresh.length > 0) announce(newAlertsMessage(fresh, residentsById))
   }

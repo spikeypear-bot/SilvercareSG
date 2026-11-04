@@ -3,7 +3,32 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-04
+
+- **Problem:** on two merges of `main` into `frontend-views`, Claude's proposed access
+  patterns (21/22, then 24/25) clashed with numbers main's alerting branches had taken,
+  and each merge meant renumbering docs, specs, and code comments. **Changed:**
+  `.claude/skills/data-model/SKILL.md` step 2: number after `origin/main`'s highest,
+  refer to unmerged patterns by name in code, and on a clash keep main's number.
+
 ## 2026-11-03
+
+- **Problem:** the live `--alerts` check (spec by Claude) sent heart rates 125/128 at
+  once: a teammate's personal limit of 130 made them normal, and the two readings ran
+  in parallel, so no warning came. **Changed:** `.claude/skills/feature-spec/SKILL.md`:
+  live checks avoid shared mutable data and space out order-dependent messages.
+  (Fix: `scripts/iot-smoke-test.py` now sends 180/185/182 with a 3 s pause.)
+
+- **Problem:** in `alert-cancel` tests, `\u200b`/`\u202e` escapes were saved as raw
+  invisible characters, which ruff rejected, and took extra steps to repair.
+  **Changed:** `.claude/skills/lambda-test/SKILL.md`: keep such characters as escapes
+  and check the saved file.
+
+- **Problem:** the `alert-cancel` spec (written by Claude) told Track B its API "needs
+  only `sqs:SendMessage`" for `status_update`, without the identity, group, and link
+  checks it must make before sending (privacy-reviewer, low). **Changed:**
+  `.claude/skills/feature-spec/SKILL.md`: contracts other components send state the
+  sender's checks.
 
 - **Problem:** while resolving the merge, Claude edited 11 files with Python scripts on
   the Windows host, and text-mode writes turned their LF line endings into CRLF, against

@@ -8,6 +8,7 @@ import { useNow } from '../../lib/useNow'
 import type { Resident, ResidentAlert } from '../../types/dashboard'
 import { ALERT_TYPE_LABELS } from './labels'
 import { ResidentLine } from './ResidentLine'
+import { isOnOpenList } from './stats'
 
 export interface AlertActions {
   onAcknowledge: () => void
@@ -73,12 +74,17 @@ export function AlertRow({
           <RelativeTime iso={alert.acknowledged_at} now={now} />
         </p>
       )}
+      {alert.status === 'cancelled' && alert.cancelled_at && (
+        <p className="text-base text-slate-700">
+          Cancelled by the resident ("I'm OK"), <RelativeTime iso={alert.cancelled_at} now={now} />
+        </p>
+      )}
       {alert.status === 'resolved' && alert.resolved_by && alert.resolved_at && (
         <p className="text-base text-slate-700">
           Resolved by {alert.resolved_by}, <RelativeTime iso={alert.resolved_at} now={now} />
         </p>
       )}
-      {actions && (
+      {actions && isOnOpenList(alert) && (
         <div className="flex flex-wrap gap-2 pt-1">
           {alert.status === 'open' && (
             <Button variant="secondary" onClick={acknowledge}>

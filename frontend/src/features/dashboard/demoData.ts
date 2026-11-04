@@ -348,8 +348,11 @@ const demoUuid = (group: string, n: number) =>
   `0d3e0000-0000-4000-8${group.padStart(3, '0')}-${String(n).padStart(12, '0')}`
 
 /**
- * Resolved alerts from the last 30 days (resolved alerts expire 30 days after
- * `resolved_at`, docs/data-model.md Retention). Some were acknowledged first.
+ * Closed alerts from the last 30 days: resolved or cancelled ones expire 30 days later
+ * (docs/data-model.md Retention). Some were acknowledged first. A few wearable alerts
+ * were cancelled by the resident's "I'm OK" press (docs/features/alert-cancel.md), and a
+ * few were handled by someone whose account has since been deleted, so the API shows
+ * "Former staff member" (Actor names).
  */
 function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[] {
   if (i + 1 === NO_HISTORY_RESIDENT) return []
@@ -359,19 +362,32 @@ function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[
     const minutesAgo = ((k + 1) * (3 + (i % 5)) * 24 - (i % 7)) * 60
     const staff = DEMO_STAFF[(i + k) % DEMO_STAFF.length]
     const acknowledgedFirst = (i + k) % 3 !== 0
-    return {
+    const base = {
       alert_id: `6f1c2e0a-5b3d-5e8f-9a47-1${String(i + 1).padStart(3, '0')}${String(k + 1).padStart(8, '0')}`,
       resident_id: resident.resident_id,
       device_id: kind.device === 'wearable' ? resident.wearable.device_id : resident.bedroom.device_id,
       alert_type: kind.type,
       severity: kind.severity,
-      status: 'resolved',
       event_ts: minutesBefore(now, minutesAgo),
+    }
+    if (kind.device === 'wearable' && (i + k) % 4 === 1) {
+      // "I'm OK" pressed 30 s after the alert: cancelled before it escalated.
+      return {
+        ...base,
+        status: 'cancelled',
+        cancelled_at: minutesBefore(now, minutesAgo - 0.5),
+        cancelled_by_role: 'resident',
+      }
+    }
+    const by = (i + k) % 7 === 5 ? 'Former staff member' : staff
+    return {
+      ...base,
+      status: 'resolved',
       ...(acknowledgedFirst && {
-        acknowledged_by: staff,
+        acknowledged_by: by,
         acknowledged_at: minutesBefore(now, minutesAgo - 3),
       }),
-      resolved_by: staff,
+      resolved_by: by,
       resolved_at: minutesBefore(now, minutesAgo - 25),
     }
   })

@@ -81,11 +81,17 @@ def test_alert_messages_are_five_in_the_spec_order(smoke):
     ]
 
 
-def test_vitals_heart_rates_are_125_then_128_then_126(smoke):
+def test_vitals_heart_rates_are_180_then_185_then_182(smoke):
     messages = alert_messages(smoke)
 
     hrs = [p["hr_bpm"] for _, m, p in messages if m == "vitals"]
-    assert hrs == [125, 128, 126]
+    assert hrs == [180, 185, 182]
+
+
+def test_vitals_heart_rates_are_above_a_personal_limit_of_130(smoke):
+    hrs = [p["hr_bpm"] for _, m, p in alert_messages(smoke) if m == "vitals"]
+
+    assert min(hrs) > 130
 
 
 def test_device_alerts_are_140_above_130_then_no_pulse_below_45(smoke):
@@ -217,7 +223,7 @@ def test_report_alerts_prints_ids_and_expectations_but_no_values(smoke):
     assert "suppressed" in text
     assert "SilverCare CRITICAL alert" in text
     stripped = UUID_ANY_RE.sub("<id>", text)
-    for value in ("125", "128", "126", "140", "hr_bpm", "{", "33.4"):
+    for value in ("180", "185", "182", "140", "hr_bpm", "{", "33.4"):
         assert value not in stripped, value
 
 
@@ -323,6 +329,14 @@ def test_main_alerts_pauses_once_before_the_repeat(smoke, fake_conn, device_file
     assert fake_conn.sleeps.count(smoke.ALERTS_REPEAT_PAUSE_S) == 1
 
 
+def test_main_alerts_pauses_once_between_the_vitals_pair(
+    smoke, fake_conn, device_files
+):
+    smoke.main(args(device_files, WEARABLE, "--alerts"))
+
+    assert fake_conn.sleeps.count(smoke.ALERTS_PAIR_PAUSE_S) == 1
+
+
 def test_main_alerts_refuses_a_bedroom(smoke, fake_conn, device_files, capsys):
     code = smoke.main(args(device_files, BEDROOM, "--alerts"))
 
@@ -383,7 +397,7 @@ def test_main_alerts_output_has_no_payload_values_or_keys(
 
     captured = capsys.readouterr()
     text = UUID_ANY_RE.sub("<id>", captured.out + captured.err)
-    for value in ("125", "128", "126", "140", "hr_bpm", "{", PRIVATE_KEY_TEXT):
+    for value in ("180", "185", "182", "140", "hr_bpm", "{", PRIVATE_KEY_TEXT):
         assert value not in text, value
 
 

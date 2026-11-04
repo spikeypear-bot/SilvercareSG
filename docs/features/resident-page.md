@@ -9,7 +9,7 @@ status: built          # draft | ready | built
 A staff-only page per resident at `/residents/:id`, opened from the resident cards on the
 nurse and doctor dashboards. It shows the resident's devices, the latest 5 messages of
 each type, every stored alert, and their vitals thresholds, from `docs/data-model.md`
-patterns 10, 11, 12, 18, and 25 *(proposed)*. There is no API yet: everything comes
+patterns 10, 11, 12, 18, and 27 *(proposed)*. There is no API yet: everything comes
 from synthetic demo data, and actions change local state only.
 
 ## Users and access
@@ -31,7 +31,7 @@ from synthetic demo data, and actions change local state only.
   - acknowledge/resolve (pattern 16) is open to any staff member, because the
     authorisation boundary is staff vs caregiver/family and "nurses handle alerts" is
     workflow, shown in the UI only (decided 2026-11-01);
-  - changing thresholds (pattern 24) is doctor only.
+  - changing thresholds (pattern 26) is doctor only.
 
 ## Acceptance criteria
 
@@ -68,16 +68,19 @@ from synthetic demo data, and actions change local state only.
    `Sparkline`, no charting library) with the values as screen-reader text. Each table
    has its own empty text. Only the latest 5 are shown, matching what DynamoDB keeps.
 8. **Alert history** (pattern 12): every stored alert for the resident, newest first,
-   including resolved ones (kept 30 days), each with:
+   including resolved and cancelled ones (each kept 30 days), each with:
    - severity badge, type, and time
    - Open/Acknowledged/Cancelled/Resolved label
-   - "Acknowledged by …" and "Resolved by …" lines
+   - "Acknowledged by …" and "Resolved by …" lines (names looked up by the API on
+     read; "Former staff member" / "Former caregiver" once the account is deleted)
+   - for a cancelled alert, "Cancelled by the resident ("I'm OK"), <time>"
+     (`cancelled_at`, docs/features/alert-cancel.md)
    - for an open alert, "Escalated to nurses" once `escalated_at` is set, or before
      that the countdown to the API's computed `escalates_at` (60 s,
      `docs/features/escalation.md`)
    Empty: "No alerts for this resident in the last 30 days."
-9. Nurses get Acknowledge (open alerts) and Resolve (unresolved alerts) buttons in the
-   alert history. They record the signed-in user's display name and the time; resolving
+9. Nurses get Acknowledge (open alerts) and Resolve (open and acknowledged alerts)
+   buttons in the alert history; cancelled and resolved alerts have none. They record the signed-in user's display name and the time; resolving
    moves focus to the section heading. Doctors see no alert buttons.
 10. **Vitals thresholds** (pattern 18): heart rate min/max, SpO2 min, skin temperature
     min/max, and "Last changed by <name>, <time>". Nurses see them read-only with "Only
@@ -91,12 +94,12 @@ from synthetic demo data, and actions change local state only.
       field
     Save updates the values and "Last changed by", announces "Thresholds saved.", and
     returns focus to the Edit button; Cancel changes nothing.
-12. **Change history** (pattern 25, proposed), under thresholds: earlier changes, newest
+12. **Change history** (pattern 27, proposed), under thresholds: earlier changes, newest
     first, each with "Changed by <name>, <relative time>" and one line per changed value
     ("Heart rate, upper limit: from 110 bpm to 120 bpm"). Read-only for every role.
     Empty: "No changes to these thresholds have been recorded."
 13. Saving thresholds in the UI does **not** add a change-history entry: the server
-    writes it with the pattern 24 route.
+    writes it with the pattern 26 route.
 
 ### Accessibility and checks
 
@@ -114,14 +117,14 @@ from synthetic demo data, and actions change local state only.
   `useResidentDetail` in `useDashboardData.ts` (the one place real API calls will go).
   The future API maps them to:
   - patterns 10, 11, 12, and 18
-  - pattern 25 for the change history
+  - pattern 27 for the change history
 - **Writes:** none outside the browser. `acknowledgeAlert`, `resolveAlert`, and
   `updateThresholds` change local state. Names shown for who acted are display only: the
   API will take the actor from the token's `sub`, and the browser never sends it.
 - **New access patterns,** both *(proposed)*, in `docs/data-model.md`:
-  - 24: doctor changes thresholds; `attribute_exists(pk)`; exact body keys; the
+  - 26: doctor changes thresholds; `attribute_exists(pk)`; exact body keys; the
     token's group claim, with up to 60 minutes' delay after removal accepted
-  - 25: threshold change history
+  - 27: threshold change history
   Pattern 16 now has `attribute_exists(pk)`.
 - **Demo data:**
   - Latest 5 per device and message type, built from the dashboard data so the two
@@ -142,7 +145,7 @@ messages in `docs/metrics.md`.
 
 ## API contract
 
-None yet. The routes for patterns 10–12, 16, 18, 24, and 25 come with the API feature
+None yet. The routes for patterns 10–12, 16, 18, 26, and 27 come with the API feature
 (see the `api-route` skill).
 
 ## Screens
@@ -185,7 +188,7 @@ display only, as on the dashboards. Alert emails and escalation are backend feat
 ## Out of scope
 
 - The API and real data; caregiver/family access to a linked resident (pattern 13).
-- Writing change-history entries (server side, with the pattern 24 route).
+- Writing change-history entries (server side, with the pattern 26 route).
 - History longer than the latest 5 readings (would come from the S3 history, not
   DynamoDB).
 - Resident profile fields beyond name and home ID, photos (patterns 19, 20), and

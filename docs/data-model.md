@@ -10,8 +10,8 @@ with the resident pages feature:
   [Access patterns](#access-patterns))
 - `escalates_at` on alerts: computed by the API (not stored) from escalation's 60 s
   check, for the portal's countdown
-- who edits thresholds: [Resident thresholds](#resident-thresholds) and pattern 24
-- [Threshold change history](#threshold-change-history) (pattern 25)
+- who edits thresholds: [Resident thresholds](#resident-thresholds) and pattern 26
+- [Threshold change history](#threshold-change-history) (pattern 27)
 - the staff devices view reading patterns 4, 5, and 8
 - recording a resident's date of death: a gap, with no field or access pattern yet
   (see [Threshold change history](#threshold-change-history))
@@ -29,8 +29,8 @@ doc first, then the Terraform.
 ## Decisions so far
 
 - **Latest 5 of every message type.** For each device, DynamoDB keeps at most the 5
-  newest messages of each type (`vitals`, `vitals_alert`, `fall`, `status`, `motion`,
-  `bed`). Storage
+  newest messages of each type (`vitals`, `vitals_alert`, `fall`, `alert_cancel`,
+  `status`, `motion`, `bed`). Storage
   stays bounded no matter how long the system runs.
 - **Provisioned capacity inside the AWS always-free tier.** The always-free tier covers
   25 GB of storage and 25 read + 25 write capacity units of *provisioned* capacity per
@@ -59,14 +59,19 @@ Cognito `sub`), never names or other personal data.
 are linked to, including raw vitals, alert `details`, and who acknowledged or resolved
 an alert.
 
-**Actor names** (decided 2026-11-01): every `*_by` actor field stores the user's `sub`
-(from the token, for audit) **and** their name, copied from their Cognito `name` when
-the record is written (`acknowledged_by_name`, `resolved_by_name`, `updated_by_name`,
-`changed_by_name`). `acknowledged_by` may be a staff or caregiver `sub` (pattern 16;
-docs/features/escalation.md); the other actors are staff. The API returns the stored
-name, never the `sub`. Records outlive Cognito accounts (deleted 90 days after a user's
-offboarding), so resolving the name from the `sub` on read would lose who acted. The
-name is as it was at the time; a later rename doesn't change past records.
+**Actor names:**
+
+- **Alerts** (docs/features/alert-cancel.md): `acknowledged_by` (a staff or caregiver
+  `sub`, pattern 16) and `resolved_by` (staff) store only the `sub`; the user's name is
+  never stored on the alert. The API looks the name up in Cognito when it returns the
+  alert and never returns the `sub`. Once the account is deleted (90 days after the
+  user's offboarding), it returns "Former staff member" or "Former caregiver" instead
+  (decided 2026-11-04).
+- **Threshold changes** (patterns 26, 27; decided 2026-11-01): `updated_by` and
+  `changed_by` store the staff `sub` (for audit) **and** the name, copied from Cognito
+  when the change is written (`updated_by_name`, `changed_by_name`), so the change
+  history keeps the name after the account is deleted. The name is as it was at the
+  time; a later rename doesn't change past records. The `sub` is never returned.
 
 Caller groups (Cognito): **staff** means the `doctor` and `nurse` groups and can read every resident. **caregiver/family** can read a
 resident only after the link check (pattern 13) passes, and the API also checks the
@@ -75,7 +80,7 @@ go stale. Lambdas without a caller are marked *backend*.
 
 | # | Who / what | Query | Table / index | Key condition | Frequency |
 |---|---|---|---|---|---|
-| 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container). `device-health` reads no registry |
+| 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container). `device-health` reads no registry |
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | as pattern 1 for `vitals`, assigned devices only (cached 5 min, including "no item") |
 | 3 | `telemetry`, `device-health`, `critical-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
 | 4 | backend: `watchdog`; *(proposed)* staff only: devices view | Every device, assigned or not | registry `by-type` | Query `entity_type = DEVICE` | every 5 min; per devices-view load |
@@ -90,7 +95,7 @@ go stale. Lambdas without a caller are marked *backend*.
 | 13 | API, caregiver/family | Is this user linked to this resident? | registry | GetItem `pk = USER#<sub>`, `sk = RESIDENT#<resident_id>` | every caregiver/family request for a resident |
 | 14 | API, caregiver/family | Which residents can this user see? | registry | Query `pk = USER#<sub>`, `begins_with(sk, "RESIDENT#")` | caregiver/family home page |
 | 15 | *(not used yet)* backend: `alert-processor` | Who is linked to this resident (to notify) | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "USER#")` | per new alert. Not used by alerts-core: it notifies through SNS email subscriptions whose filter policy matches `resident_id`, set in Terraform variables (docs/features/alerts-core.md, criteria 21 and 24), because SNS can only email confirmed subscribers |
-| 16 | Acknowledge: staff, or caregiver after 13 (docs/features/escalation.md; family can't). Resolve: staff only | Acknowledge or resolve an alert | alerts | UpdateItem `pk`, `sk`, condition `attribute_exists(pk)` | per action |
+| 16 | Acknowledge: staff, or caregiver after 13 (docs/features/escalation.md; family can't). Resolve: staff only | Acknowledge or resolve an alert | alerts | Acknowledge: the API sends a `status_update` to the alerts queue and `alert-processor` applies it (pattern 25; see [Status updates](#status-updates)). Resolve: UpdateItem `pk`, `sk`, condition `attribute_exists(pk)` | per action |
 | 17 | Staff only, seed script | Add or edit a resident, assign a device, link a user | registry | PutItem / UpdateItem / DeleteItem | rare |
 | 18 | Resident page: staff, or caregiver/family after 13 | This resident's profile and thresholds | registry | BatchGetItem `RESIDENT#<resident_id>` / `PROFILE` and `THRESHOLDS#<resident_id>` / `THRESHOLDS` | per page view |
 | 19 | Resident page: staff, or caregiver/family after 13 | This resident's photo | S3 `silvercare-photos-<account_id>` | API returns a presigned GET URL for `photo_key`, valid 5 min | per page view |
@@ -98,8 +103,10 @@ go stale. Lambdas without a caller are marked *backend*.
 | 21 | backend: `alert-processor` | A wearable's newest vitals, to add to a fall alert | latest | GetItem `pk = DEVICE#<device_id>`, `sk = MSG#vitals` (uses `entries[0]`) | per fall alert |
 | 22 | backend: `alert-processor` | Re-read an alert that already exists (a redelivered message) | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent | per redelivered alert message |
 | 23 | backend: `alert-processor` | Escalation: mark the check queued; 60 s later read the alert's `status` and mark it escalated (docs/features/escalation.md) | alerts | UpdateItem `SET escalation_queued_at` with `attribute_not_exists(escalation_queued_at)`; GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; UpdateItem `SET escalated_at` with `attribute_not_exists(escalated_at)` | per stored alert (one GetItem, up to two UpdateItems) |
-| 24 | *(proposed)* Doctor only: resident page | Change this resident's thresholds, and record the change (25) | registry | TransactWriteItems: UpdateItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS`, condition `attribute_exists(pk)` and `updated_at` unchanged since the read; PutItem of the change | rare |
-| 25 | *(proposed)* Resident page: staff only | This resident's threshold changes, newest first | registry | Query `pk = THRESHOLD_LOG#<resident_id>`, descending | per page view |
+| 24 | backend: `alert-processor` | Cancel: this resident's alerts from one device that are still `open` (or already `cancelled` but without `status_notified_at`, a retry), up to the press (docs/features/alert-cancel.md, criterion 8) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk <= "ALERT#<changed_at>#~"` (alerts at exactly `changed_at` included, later ones not), strongly consistent, `FilterExpression` `device_id = :device AND (#status = :open OR (#status = :new AND attribute_not_exists(status_notified_at)))`, paginated; then per target a conditional UpdateItem (`#status = :open`) and `SET status_notified_at` with `attribute_not_exists(status_notified_at)` | per `alert_cancel` (rare) |
+| 25 | backend: `alert-processor` | Acknowledge one alert (a `status_update` from Track B's API) | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; conditional UpdateItem (`#status = :open`); `SET status_notified_at` with `attribute_not_exists(status_notified_at)` | per acknowledge |
+| 26 | *(proposed)* Doctor only: resident page | Change this resident's thresholds, and record the change (27) | registry | TransactWriteItems: UpdateItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS`, condition `attribute_exists(pk)` and `updated_at` unchanged since the read; PutItem of the change | rare |
+| 27 | *(proposed)* Resident page: staff only | This resident's threshold changes, newest first | registry | Query `pk = THRESHOLD_LOG#<resident_id>`, descending | per page view |
 
 No pattern uses `Scan`.
 
@@ -107,8 +114,9 @@ Within staff, pattern 16 is open to doctors and nurses alike (decided 2026-11-01
 may call it is set by its row: staff, plus a linked caregiver for acknowledge
 (docs/features/escalation.md). That nurses handle alerts is workflow, shown only in the
 UI (the doctor dashboard and the resident page show doctors no acknowledge or resolve
-buttons). `attribute_exists(pk)` stops an acknowledge or resolve for a mistyped or
-expired alert from creating an item.
+buttons). `attribute_exists(pk)` stops a resolve for a mistyped or expired alert from
+creating an item; an acknowledge goes through `alert-processor`, which only updates an
+`open` alert (pattern 25).
 
 *(proposed)* **Devices view** (patterns 4, 5, and 8, staff only): the route returns
 exactly, per device, `device_id`, `device_type`, `online`, `last_seen` (the newest
@@ -190,7 +198,7 @@ Every attribute and limit is optional (docs/features/vitals-alerts.md, criteria 
 
 *(proposed)* The resident page uses this shape: `hr_bpm` has `min` and `max`, `spo2_pct`
 only `min`, `skin_temp_c` `min` and `max`, so a reading below a `min` or above a `max`
-is outside the limits (strictly, as above). Only doctors change them (pattern 24). The API:
+is outside the limits (strictly, as above). Only doctors change them (pattern 26). The API:
 
 - checks that the `cognito:groups` claim of the caller's access token includes
   `doctor`, so a doctor removed from the group can still change thresholds until the
@@ -212,14 +220,15 @@ is outside the limits (strictly, as above). Only doctors change them (pattern 24
   [Threshold change history](#threshold-change-history)).
 
 On read (pattern 18) the API returns each limit as resolved above (the item's value or
-the default) and `updated_by_name`, as for alert actors; the `sub` itself is not
+the default) and the stored `updated_by_name` (alert actors, by contrast, are looked up
+on read; see Actor names); the `sub` itself is not
 returned. Nurses see the thresholds read-only. The frontend demo uses the defaults
 above, and `spo2_pct {"min": 88}` for `res-0002`, as the seed script creates.
 
 ### Threshold change history
 
 *(proposed)* Who changed which resident's thresholds, when, and the old and new values
-(pattern 25). One item per save. Its own partition, so the `telemetry` role (limited to
+(pattern 27). One item per save. Its own partition, so the `telemetry` role (limited to
 `DEVICE#` and `THRESHOLDS#` partitions) can't read who changed what.
 
 | Attribute | Example | Notes |
@@ -232,7 +241,7 @@ above, and `spo2_pct {"min": 88}` for `res-0002`, as the seed script creates.
 | `changed_by_name` | `Test Doctor A` | copied from Cognito at write time, so the history keeps the name after the account is deleted (see Actor names) |
 | `changes` | `[{"field": "hr_bpm.max", "old_value": 110, "new_value": 120}]` | only the values that changed; `field` is one of `hr_bpm.min`, `hr_bpm.max`, `spo2_pct.min`, `skin_temp_c.min`, `skin_temp_c.max` |
 
-- **Write path: not implemented.** It lands with the pattern 24 route. The route reads
+- **Write path: not implemented.** It lands with the pattern 26 route. The route reads
   the thresholds, then writes the new values and this item in one `TransactWriteItems`,
   with the condition that `updated_at` hasn't changed since the read, so two doctors
   saving at once can't record the wrong old values. A save that changes nothing writes
@@ -336,8 +345,8 @@ Resident photos are images, so they go in S3 rather than DynamoDB.
 
 ## `silvercare-latest`
 
-One item per device and message type: 20 wearables × 4 types + 20 bedroom sensors × 3
-types = 140 items, each with at most 5 entries. This is the busiest table.
+One item per device and message type: 20 wearables × 5 types + 20 bedroom sensors × 3
+types = 160 items, each with at most 5 entries. This is the busiest table.
 
 | Attribute | Example | Notes |
 |---|---|---|
@@ -348,7 +357,7 @@ types = 140 items, each with at most 5 entries. This is the busiest table.
 | `latest` | copy of `entries[0]` | top-level so the `by-message` index can project it |
 | `latest_ts` | `2026-10-18T03:12:00.000Z` | `ts` of `entries[0]` |
 | `version` | `412` | optimistic lock, +1 on every write |
-| `watch_type` | `vitals` | on `vitals`, `status`, `bed`, and `motion` items; not on `fall` or `vitals_alert`, which makes `by-message` sparse |
+| `watch_type` | `vitals` | on `vitals`, `status`, `bed`, and `motion` items; not on `fall`, `vitals_alert`, or `alert_cancel`, which makes `by-message` sparse |
 
 Example `vitals` item (2 of 5 entries shown):
 
@@ -379,6 +388,7 @@ added here with a purpose):
 | `vitals` | `hr_bpm`, `spo2_pct`, `skin_temp_c`, `activity_pct` | recent vitals and activity on the resident page; threshold checks |
 | `fall` | `confidence`, `peak_g`, `still_s` | fall details on the resident page |
 | `vitals_alert` | `metric`, `value`, `limit`, `direction`, `held_s` | the device's critical readings on the resident page |
+| `alert_cancel` | none (envelope only: `message_id`, `ts`, `received_at`, `clock_skew`) | when the resident pressed "I'm OK" (docs/features/alert-cancel.md). Item `MSG#alert_cancel`, no `watch_type` |
 | `status` | `battery_pct`, `worn`, `charging`, `fw_version` | device state, offline / low battery / not worn |
 | `motion` | `motion` | bedroom state, possible-fall detection |
 | `bed` | `occupied` | bedroom state, possible-fall detection |
@@ -411,8 +421,9 @@ separate state item is needed.
 | `by-message` | `watch_type` | `pk` | INCLUDE `device_type`, `latest`, `latest_ts` | 5 |
 
 The nurse and doctor dashboards poll this index every 30 s for every device's newest
-vitals and state. `fall` and `vitals_alert` items have no `watch_type`: they reach the
-dashboards as alerts.
+vitals and state. `fall`, `vitals_alert`, and `alert_cancel` items have no
+`watch_type`: they reach the dashboards as alerts (or, for a cancel, as cancelled
+alerts).
 
 A write that changes an index entry also needs write capacity on the index. If the
 index runs out, DynamoDB throttles writes to the **base table** too, so `by-message`
@@ -431,20 +442,21 @@ gets enough write capacity for every vitals write.
 | `event_ts` | `2026-10-18T03:14:07.360Z` | see below |
 | `received_at` | `2026-10-18T03:14:07.410Z` | when the IoT rule received the triggering message (from the alert message) |
 | `created_at` | `2026-10-18T03:14:07.900Z` | when `alert-processor` stored the item |
-| `status` | `open` | `open`, `acknowledged`, `cancelled` (the wearable "I'm OK" cancel, set by A3b; listed now so escalation handles it), `resolved`. Anything but `open` stops escalation |
+| `status` | `open` | `open`, `acknowledged`, `cancelled` (the wearable "I'm OK" cancel, docs/features/alert-cancel.md), `resolved`. Anything but `open` stops escalation. Only `alert-processor` changes `open` to `cancelled` or `acknowledged`, through a [status update](#status-updates) |
 | `source_message_id` | `c2a1d4f0-8b6e-4f0a-a3c9-7e15d2b9f804` | for message-triggered alerts |
 | `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals). Vitals warning: `metric`, `value`, `limit`, `direction`, `previous_value`, e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above", "previous_value": 125}`. Vitals critical: `metric`, `value`, `limit`, `direction`, `held_s` (`hr_low` `value` 0 = no pulse) |
 | `notified_at` | `2026-10-18T03:14:08.300Z` | set once, after the SNS email was published; guards against a second email on redelivery. Absent for unassigned alerts |
 | `notification` | `skipped_unassigned` | only on unassigned alerts (`pk = RESIDENT#unassigned`): nobody is emailed |
 | `escalation_queued_at` | `2026-10-18T03:14:08.350Z` | set once, after the delayed escalation check was sent to the alerts queue (docs/features/escalation.md, criterion 3); guards against queuing a second check on redelivery. Absent on suppressed alerts and on alerts stored before escalation |
 | `escalated_at` | `2026-10-18T03:15:08.700Z` | set once, after the nurse email was published (criterion 5); guards against a second nurse email. `status` stays `open` |
-| `acknowledged_by`, `acknowledged_at` | staff or caregiver `sub`, timestamp | a caregiver may acknowledge alerts of residents they are linked to (pattern 13; docs/features/escalation.md). The `sub` is never returned |
-| `acknowledged_by_name` | `Test Nurse B` | copied from Cognito at write time (see Actor names) |
-| `resolved_by`, `resolved_at` | staff `sub`, timestamp | the `sub` is never returned |
-| `resolved_by_name` | `Test Nurse B` | copied from Cognito at write time |
+| `acknowledged_by`, `acknowledged_at` | staff or caregiver `sub`, timestamp | a caregiver may acknowledge alerts of residents they are linked to (pattern 13; docs/features/escalation.md). Set by `alert-processor` from a `status_update`: `by` and `changed_at`. The user's name (`by_name`) is never stored |
+| `cancelled_at` | `2026-11-03T02:00:05.000Z` | when the cloud received the resident's "I'm OK" press: the `alert_cancel`'s `received_at` (the update's `changed_at`, server time, not the device's `ts`). Only on cancelled alerts |
+| `cancelled_by_role` | `resident` | who cancelled; `resident` is the only value today (the wearable button). Only on cancelled alerts |
+| `status_notified_at` | `2026-11-03T02:00:06.100Z` | set once, after the cancelled / acknowledged follow-up email(s) were published (docs/features/alert-cancel.md, criterion 10); an item with the new `status` but without it gets its follow-up on a retry |
+| `resolved_by`, `resolved_at` | staff `sub`, timestamp | the `sub` is never returned (see Actor names) |
 | `escalates_at` | `2026-10-18T03:15:08.300Z` | *(proposed)* **not stored**: the API adds it to an `open` alert that has no `escalated_at` yet, as `notified_at` (or `created_at` for an unassigned alert) + 60 s, so the portal can show a countdown to the escalation check in docs/features/escalation.md (decided 2026-11-03). Approximate: the check runs about 60 s after `escalation_queued_at` |
-| `open_pk` | `OPEN` | present until resolved; removing it takes the alert out of the `open` index |
-| `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days. See [Retention](#retention) |
+| `open_pk` | `OPEN` | present until resolved or cancelled; removing it takes the alert out of the `open` index |
+| `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days, or `cancelled_at` + 30 days for a cancelled alert. See [Retention](#retention) |
 
 An alert from a device with no assignment (no `DEVICE#<id>` / `ASSIGNMENT` item in the
 registry, or one without `resident_id`) is still stored, with
@@ -501,6 +513,90 @@ from the DLQ) → nothing, reason `stale`; otherwise it emails the
 nurses (SNS `silvercare-nurses`) and `SET escalated_at` with
 `attribute_not_exists(escalated_at)`. A crash between a send and its update can send a
 second check or nurse email; a duplicate is accepted, a missing one isn't.
+
+### Status updates
+
+docs/features/alert-cancel.md, criteria 6-14. A third message kind on the
+`silvercare-alerts` queue (with alert messages and escalation checks), sent without
+delay. `critical-alert` sends one for every wearable `alert_cancel`; **Track B's
+acknowledge API** sends one when a staff member or caregiver presses acknowledge. This
+is the contract that API uses; it needs only `sqs:SendMessage` on `silvercare-alerts`
+in its role, and it doesn't update the alert item itself (so the follow-up email rules
+live in one place).
+
+`alert-processor` trusts every `status_update` it receives, so **the API must check
+before sending**:
+
+- take `by` (`sub`) and `by_name` (`name` claim) only from the verified Cognito token,
+  never from the request body;
+- map the caller's current group to `by_role`: `doctor` or `nurse` → `staff`,
+  `caregiver` → `caregiver`; `family` is refused (`403`);
+- for a caregiver, check the link to the resident (pattern 13), else `404`;
+- take `resident_id`, `alert_id`, and `event_ts` from the stored alert's key (read it
+  first), not from the client.
+
+```json
+{
+  "kind": "status_update",
+  "schema_version": 1,
+  "resident_id": "res-0001",
+  "new_status": "cancelled",
+  "changed_at": "2026-11-03T02:00:05.000Z",
+  "by_role": "resident",
+  "by": null,
+  "by_name": null,
+  "target": { "device_id": "wearable-0001" }
+}
+```
+
+An acknowledge from Track B (synthetic values):
+
+```json
+{
+  "kind": "status_update",
+  "schema_version": 1,
+  "resident_id": "res-0001",
+  "new_status": "acknowledged",
+  "changed_at": "2026-11-03T02:00:40.000Z",
+  "by_role": "staff",
+  "by": "3f2b8c1e-0000-4000-8000-000000000001",
+  "by_name": "Test Nurse A",
+  "target": { "alert_id": "6f1c2e0a-5b3d-5e8f-9a47-000000000001", "event_ts": "2026-11-03T02:00:00.000Z" }
+}
+```
+
+| Field | Rules |
+|---|---|
+| `kind` | `status_update` |
+| `schema_version` | `1` |
+| `resident_id` | `res-NNNN`, or `unassigned` (a cancel from an unassigned wearable) |
+| `new_status` | `cancelled` or `acknowledged` |
+| `changed_at` | ISO 8601 UTC with ms and `Z`: for a cancel, when the IoT rule received the `alert_cancel` (`received_at`, server time, so a wrong device clock can't move the Query bound or the expiry); the API's time for an acknowledge |
+| `by_role` | `resident` (wearable cancel), `staff`, or `caregiver` (Track B) |
+| `by` | `null` for `resident`; the caller's Cognito `sub` (a lowercase UUID) for `staff` / `caregiver`, from the verified token |
+| `by_name` | `null` for `resident`; for `staff` / `caregiver`, the `name` claim of the verified token: 1-100 characters, not only spaces, no control characters. Used only to build the masked name in the email; never stored, logged, or emailed in full |
+| `target` | `{"device_id"}` (every open alert from that device up to `changed_at`) or `{"alert_id", "event_ts"}` (one alert) |
+
+- A `resident` update must be `cancelled` with a device target and `by` / `by_name`
+  `null`; a `staff` / `caregiver` update must be `acknowledged` with an alert target, a
+  `sub` as `by`, and a `by_name`. Unknown fields are rejected. Anything invalid fails the
+  record and ends in `silvercare-alerts-dlq` (where `by_name` can stay up to 14 days).
+- `alert-processor` (no repeat check) finds the targets (pattern 24 for a device target,
+  pattern 25 for an alert target; none: outcome `no_open_alerts` or `not_open`, not a
+  failure). For each, an UpdateItem conditional on `#status = :open`: a cancel sets
+  `status = cancelled`, `cancelled_at`, `cancelled_by_role`, `expires_at = changed_at +
+  30 days`, and REMOVEs `open_pk` (off the dashboard's open list); an acknowledge sets
+  `status = acknowledged`, `acknowledged_at`, `acknowledged_by` and keeps `open_pk` until
+  resolved. A failed condition skips that alert without an email.
+- Then the follow-up (one email per alert): caregivers/family through
+  `silvercare-alerts` with the `resident_id` attribute (not for `unassigned`), and
+  nurses through `silvercare-nurses` only if the item has `escalated_at` (an unassigned
+  alert's follow-up adds `Device: <device_id>`, or `Device: invalid`); then `SET status_notified_at` with
+  `attribute_not_exists(status_notified_at)`. An item that already has the new `status`
+  (for an acknowledge, by the same `sub`) but no `status_notified_at` gets its follow-up
+  on a retry; a duplicate is accepted, a missing one isn't.
+- A cancelled alert's escalation check ends `not_escalated` (`status:cancelled`).
+- The S3 `alerts/` copy is not updated: it stays as stored (open).
 
 ### Index
 
@@ -579,7 +675,7 @@ read of up to 4 KB per second, or two eventually consistent ones.
 | latest reads (write rule step 1) | ~0.5/s × 1 RCU ≈ **0.5 RCU** |
 | `by-message` index writes | vitals 0.33/s + status/bed/motion 0.15/s, 1 WCU each ≈ **0.5 WCU** |
 | registry reads | cached in Lambdas; dashboards ≈ **< 1 RCU** |
-| alerts | rare writes (plus up to two escalation UpdateItems per alert); one strongly consistent Query per non-fall alert (repeat check) and one strongly consistent GetItem per escalation check; dashboard polling ≈ **< 1 RCU** |
+| alerts | rare writes (plus up to two escalation UpdateItems per alert, and two per alert a status update changes); one strongly consistent Query per non-fall alert (repeat check) and per `alert_cancel` (pattern 24, rare), one strongly consistent GetItem per escalation check and per acknowledge; dashboard polling ≈ **< 1 RCU** |
 
 Provisioned (fixed, no auto scaling):
 
@@ -636,12 +732,15 @@ critical-alert and `silvercare-iot-rules`.
 | Latest messages | 5 per device and type | write rule |
 | Open and acknowledged alerts | until resolved | — |
 | Resolved alerts | 30 days after `resolved_at` | TTL `expires_at` |
+| Cancelled alerts | 30 days after the cancel (`cancelled_at`, when the press was received) | TTL `expires_at` (the S3 `alerts/` copy stays, see below) |
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
 | Threshold change history *(proposed)* | the resident's lifetime + 6 years (MOH Circular 85/2022); kept after offboarding | TTL `expires_at` = date of death + 6 years, set when a date of death is recorded (no field for it yet); no expiry until then |
 | History (S3 `telemetry/`, raw) | daily summaries made by 90 days, raw deleted at 365 days *(both proposed)* | S3 lifecycle expiry on `telemetry/` at 365 days (not in Terraform yet) |
 | Alert copies and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; finding one resident's objects and the date of death are gaps (see [S3 history](#s3-history)); no expiry rule until then |
 | Failed fall and `vitals_alert` events (SQS `silvercare-critical-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
 | Latest device `vitals_alert`s | 5 per device | write rule |
+| Latest `alert_cancel`s ("I'm OK" presses) | 5 per wearable | write rule |
+| Status updates in `silvercare-alerts` (normally seconds; up to 4 days while retried) and `silvercare-alerts-dlq` (a Track B acknowledge carries the user's full name, `by_name`) | up to 4 days in the queue, 14 days in the DLQ | SQS message retention |
 | Suppressed repeat alerts | not kept (log line with IDs and outcome only, 30 days) | — |
 | User accounts (Cognito) | disabled at the user's offboarding, deleted 90 days later | admin steps in the Cognito console (see `docs/features/sign-in.md`) |
 
@@ -655,7 +754,7 @@ runs in one go:
 2. Unassign their devices, which also deletes the devices' `latest` items.
 3. Delete their photo from S3 (before the profile, see [Photos](#photos)).
 4. Delete their user links, then their `PROFILE` and `THRESHOLDS` items. Their
-   `THRESHOLD_LOG#` items (pattern 25) are **kept**, and this step does not set
+   `THRESHOLD_LOG#` items (pattern 27) are **kept**, and this step does not set
    `expires_at`: that waits for a recorded date of death (see
    [Threshold change history](#threshold-change-history)).
 

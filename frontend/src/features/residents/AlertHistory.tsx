@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react'
 import type { Resident, ResidentAlert } from '../../types/dashboard'
 import { AlertRow } from '../dashboard/AlertRow'
+import { isOnOpenList } from '../dashboard/stats'
 import { describeAlert } from '../dashboard/useAlertAnnouncer'
 import { DetailSection } from './DetailSection'
 
@@ -42,7 +43,7 @@ export function AlertHistory({ alerts, resident, now, actions, announce }: Alert
                 now={now}
                 showResident={false}
                 actions={
-                  actions && alert.status !== 'resolved'
+                  actions && isOnOpenList(alert)
                     ? {
                         onAcknowledge: () => {
                           actions.onAcknowledge(alert.alert_id)

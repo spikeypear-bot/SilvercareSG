@@ -209,8 +209,8 @@ Both the nurse and doctor dashboards have:
   display filter, not an alert threshold).
 - Alert rows: severity badge, alert type (the backend's Fall detected, High / Low heart
   rate, Low blood oxygen, High / Low skin temperature, plus the planned Possible fall,
-  Inactivity, Device offline, Low battery), "Open", "Acknowledged", or "Cancelled"
-  label, resident name, resident ID and home ID, relative time ("12 min ago") with the
+  Inactivity, Device offline, Low battery), "Open" or "Acknowledged" label (a
+  cancelled or resolved alert leaves the open list), resident name, resident ID and home ID, relative time ("12 min ago") with the
   exact time in a tooltip/`<time>`, "Acknowledged by <name>, <time>" once acknowledged,
   and, for an open alert, "Escalated to nurses" once `escalated_at` is set, or before
   that a live countdown "Escalates to nurses in N s" to the API's computed
@@ -288,10 +288,11 @@ demo `escalates_at` / `escalated_at`. Alert emails and escalation are backend fe
   it 90 days later. Accounts are not patient health records, and PDPA data
   minimisation applies, so they aren't kept longer. Both are manual admin steps in the
   Cognito console; nothing deletes accounts automatically, so the admin tracks the
-  90 days. Deleting an account doesn't break the threshold change history (or alert
-  history): those records capture the staff member's name when they're written
-  (`changed_by_name`, `acknowledged_by_name`, ...) instead of resolving it from the
-  `sub` (see Actor names in `docs/data-model.md`). Tokens: Amplify's default token storage
+  90 days. Deleting an account doesn't break the threshold change history: it
+  captures the staff member's name when it's written (`changed_by_name`,
+  `updated_by_name`). Alerts store only the `sub` (docs/features/alert-cancel.md), so
+  once the account is deleted an old acknowledge or resolve shows "Former staff member"
+  or "Former caregiver" (see Actor names in `docs/data-model.md`). Tokens: Amplify's default token storage
   (browser `localStorage`), ID/access tokens expire after 60 min, refresh after 7 days;
   sign-out clears them and revokes the refresh token.
 - Must not be logged or shown: no `console.log` of tokens, emails, names, passwords,

@@ -19,7 +19,7 @@ type Metric = keyof typeof THRESHOLD_INPUT_RANGES
 
 interface FieldSpec {
   field: ThresholdField
-  /** Name in the API and the change history (docs/data-model.md pattern 25). */
+  /** Name in the API and the change history (docs/data-model.md, Threshold change history). */
   key: ThresholdKey
   metric: Metric
   /** Form label, with the unit. */

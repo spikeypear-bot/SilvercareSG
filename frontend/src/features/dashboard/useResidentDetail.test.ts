@@ -167,6 +167,18 @@ describe('useResidentDetail actions (local state only)', () => {
     expect(result.current.data?.alerts).toHaveLength(data.alerts.length)
   })
 
+  it('resolve and acknowledge do nothing to a cancelled history alert (res-0002)', async () => {
+    const { result, data } = await loaded('res-0002')
+    const cancelled = firstWith(data, 'cancelled')
+    expect(cancelled).toBeDefined()
+    act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse D'))
+    act(() => result.current.acknowledgeAlert(cancelled.alert_id, 'Test Nurse D'))
+    expect(find(result, cancelled.alert_id)).toBe(cancelled)
+    expect(find(result, cancelled.alert_id)).not.toHaveProperty('resolved_by')
+    expect(find(result, cancelled.alert_id)).not.toHaveProperty('acknowledged_by')
+    result.current.data?.alerts.forEach((a, i) => expect(a).toBe(data.alerts[i]))
+  })
+
   it('updateThresholds replaces the values and sets updated_by/updated_at, leaving the rest', async () => {
     const { result, data, loader } = await loaded('res-0002')
     const values: VitalsThresholds = {

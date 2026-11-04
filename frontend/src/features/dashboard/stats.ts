@@ -7,9 +7,14 @@ import type {
 } from '../../types/dashboard'
 import { LOW_BATTERY_DISPLAY_PCT } from './labels'
 
-/** Open and acknowledged alerts: what the staff dashboard lists until someone resolves them. */
-export function unresolvedAlerts(alerts: readonly ResidentAlert[]): ResidentAlert[] {
-  return alerts.filter((a) => a.status !== 'resolved')
+/** Open or acknowledged: still on the open list (pattern 9). Cancel and resolve take it off. */
+export function isOnOpenList(alert: ResidentAlert): boolean {
+  return alert.status === 'open' || alert.status === 'acknowledged'
+}
+
+/** The alerts the staff dashboards list: open and acknowledged ones. */
+export function openListAlerts(alerts: readonly ResidentAlert[]): ResidentAlert[] {
+  return alerts.filter(isOnOpenList)
 }
 
 /** Critical first, then newest first within each group. */
@@ -47,7 +52,7 @@ export interface DashboardStats {
 }
 
 export function dashboardStats(data: DashboardData): DashboardStats {
-  const open = unresolvedAlerts(data.alerts)
+  const open = openListAlerts(data.alerts)
   return {
     residents: data.residents.length,
     openAlerts: open.length,

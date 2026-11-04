@@ -51,7 +51,7 @@ every rule, second action ──► history queue (SQS) ── batches of up to 
 |---|---|---|
 | `health` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/status'` | Lambda `device-health`; SQS `silvercare-history` |
 | `telemetry` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/+' WHERE topic(4) = 'vitals' OR topic(4) = 'motion' OR topic(4) = 'bed'` | Lambda `telemetry`; SQS `silvercare-history` |
-| `alert` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/+' WHERE topic(4) = 'fall' OR topic(4) = 'vitals_alert'` (reserved fields undefined) | Lambda `critical-alert`; SQS `silvercare-history` |
+| `alert` | `SELECT *, topic(3) AS device_id, topic(4) AS message, timestamp() AS received_at FROM 'silvercare/v1/+/+' WHERE topic(4) = 'fall' OR topic(4) = 'vitals_alert' OR topic(4) = 'alert_cancel'` (reserved fields undefined) | Lambda `critical-alert`; SQS `silvercare-history` |
 
 All rules use SQL version `2016-03-23`. A message that a Lambda rejects as invalid is
 logged (`device_id`, `message_id`, reason) and dropped. Lambdas invoked by IoT run
@@ -79,6 +79,12 @@ delayed `escalation_check` message (`DelaySeconds = 60`) on the same alerts queu
 handled by `alert-processor`, which emails the `silvercare-nurses` topic if the alert
 is still `open`. No new queue, function, or poller; failed checks reach the alerts DLQ
 and its alarm.
+
+Amended 2026-11-03 (`docs/features/alert-cancel.md`): the `alert` rule also matches the
+wearable's `alert_cancel` ("I'm OK" button). `critical-alert` turns it into a
+`status_update` message on the alerts queue, and `alert-processor` cancels the
+device's open alerts and sends follow-up emails. Track B's acknowledge API sends the
+same `status_update` message (`acknowledged`).
 
 Responsibilities:
 

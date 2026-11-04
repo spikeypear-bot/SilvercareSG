@@ -87,6 +87,44 @@ describe('useAlertAnnouncer', () => {
     expect(msg(result)).toBe('')
   })
 
+  it('ignores new alerts that arrive already cancelled ("I\'m OK")', () => {
+    const { result, rerender } = setup(data.alerts)
+    const cancelled = alert('n1', { status: 'cancelled', cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' })
+    rerender({ alerts: [cancelled, ...data.alerts] })
+    expect(msg(result)).toBe('')
+  })
+
+  it('announces a new acknowledged alert (it is on the open list)', () => {
+    const { result, rerender } = setup([])
+    rerender({
+      alerts: [alert('n1', { status: 'acknowledged', acknowledged_by: 'Test Nurse A', acknowledged_at: NOW.toISOString() })],
+    })
+    expect(msg(result)).toBe('New critical alert: Fall detected, Test Resident C.')
+  })
+
+  it('counts only the open-list alerts among several new ones', () => {
+    const { result, rerender } = setup([])
+    rerender({
+      alerts: [
+        alert('n1', { status: 'cancelled', cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' }),
+        alert('n2', { severity: 'warning', alert_type: 'inactivity', resident_id: 'res-0002' }),
+        alert('n3', { status: 'resolved', resolved_by: 'Test Nurse A', resolved_at: NOW.toISOString() }),
+      ],
+    })
+    // One open alert left: the single-alert message, not "3 new alerts".
+    expect(msg(result)).toBe('New alert: Inactivity, Test Resident B.')
+  })
+
+  it('does not announce a seen alert that is later cancelled', () => {
+    const { result, rerender } = setup(data.alerts)
+    rerender({
+      alerts: data.alerts.map((a, i) =>
+        i === 0 ? { ...a, status: 'cancelled' as const, cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' as const } : a,
+      ),
+    })
+    expect(msg(result)).toBe('')
+  })
+
   it('does not announce status changes to alerts it has seen', () => {
     const { result, rerender } = setup(data.alerts)
     rerender({

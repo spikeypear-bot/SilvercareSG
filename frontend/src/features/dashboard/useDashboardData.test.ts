@@ -186,6 +186,50 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     expect(first.resolved_by).toBe('Test Nurse A')
   })
 
+  describe('a cancelled alert ("I\'m OK")', () => {
+    async function loadedWithCancelled() {
+      const data = demoDataFor('staff', NOW)
+      const target = firstWith(data, 'open')
+      const cancelled: ResidentAlert = {
+        ...target,
+        status: 'cancelled',
+        cancelled_at: NOW.toISOString(),
+        cancelled_by_role: 'resident',
+      }
+      const withCancelled = { ...data, alerts: data.alerts.map((a) => (a === target ? cancelled : a)) }
+      const loader = vi.fn<DashboardLoader>().mockResolvedValue(withCancelled)
+      const hook = renderHook(() => useDashboardData('staff', loader))
+      await waitFor(() => expect(hook.result.current.data).not.toBeNull())
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(ACTION_TIME)
+      return { ...hook, data: withCancelled, cancelled }
+    }
+
+    it('resolve is a no-op: same object, still cancelled, no resolved_by/at', async () => {
+      const { result, cancelled } = await loadedWithCancelled()
+      act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse A'))
+      const after = find(result, cancelled.alert_id)
+      expect(after).toBe(cancelled)
+      expect(after.status).toBe('cancelled')
+      expect(after).not.toHaveProperty('resolved_by')
+      expect(after).not.toHaveProperty('resolved_at')
+    })
+
+    it('acknowledge is a no-op too', async () => {
+      const { result, cancelled } = await loadedWithCancelled()
+      act(() => result.current.acknowledgeAlert(cancelled.alert_id, 'Test Nurse A'))
+      const after = find(result, cancelled.alert_id)
+      expect(after).toBe(cancelled)
+      expect(after).not.toHaveProperty('acknowledged_by')
+    })
+
+    it('resolving it leaves every other alert untouched (same objects)', async () => {
+      const { result, data, cancelled } = await loadedWithCancelled()
+      act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse A'))
+      alertsOf(result).forEach((a, i) => expect(a).toBe(data.alerts[i]))
+    })
+  })
+
   it('resolve leaves every other alert untouched', async () => {
     const { result, data } = await loaded()
     const target = data.alerts[1]

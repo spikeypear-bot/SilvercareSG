@@ -126,25 +126,80 @@ describe('AlertRow cancelled (the wearable "I am OK" cancel)', () => {
     })
   })
 
-  it('has no Acknowledge button, only Resolve, which calls its handler', async () => {
-    const user = userEvent.setup()
+  it('has no Acknowledge and no Resolve, even when actions are passed', () => {
     const handlers = actions()
     renderRow({ alert: baseAlert({ status: 'cancelled', alert_type: 'fall', severity: 'critical' }), actions: handlers })
-    expect(screen.queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
-    const resolve = screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident H' })
-    await user.click(resolve)
-    expect(handlers.onResolve).toHaveBeenCalledTimes(1)
+    expect(screen.queryAllByRole('button')).toEqual([])
+    expect(handlers.onResolve).not.toHaveBeenCalled()
     expect(handlers.onAcknowledge).not.toHaveBeenCalled()
   })
 
-  it('only open alerts have an Acknowledge button', () => {
-    for (const status of ['open', 'acknowledged', 'cancelled'] as const) {
+  it.each(['cancelled', 'resolved'] as const)(
+    'a %s alert has no buttons even when actions are passed',
+    (status) => {
+      renderRow({
+        alert: baseAlert({
+          status,
+          resolved_by: status === 'resolved' ? 'Test Nurse A' : undefined,
+          resolved_at: status === 'resolved' ? NOW.toISOString() : undefined,
+        }),
+        actions: actions(),
+      })
+      expect(screen.queryAllByRole('button')).toEqual([])
+    },
+  )
+
+  it('only open alerts have Acknowledge; only open and acknowledged alerts have Resolve', () => {
+    for (const status of ['open', 'acknowledged', 'cancelled', 'resolved'] as const) {
       const view = renderRow({ alert: baseAlert({ status }), actions: actions() })
       const ack = screen.queryAllByRole('button', { name: /^Acknowledge/ })
       expect(ack, status).toHaveLength(status === 'open' ? 1 : 0)
-      expect(screen.getAllByRole('button', { name: /^Resolve/ }), status).toHaveLength(1)
+      const resolve = screen.queryAllByRole('button', { name: /^Resolve/ })
+      expect(resolve, status).toHaveLength(status === 'open' || status === 'acknowledged' ? 1 : 0)
       view.unmount()
     }
+  })
+
+  it('shows "Cancelled by the resident ("I\'m OK")" with the time from cancelled_at', () => {
+    const cancelledAt = new Date(NOW.getTime() - 12 * 60_000).toISOString()
+    renderRow({
+      alert: baseAlert({ status: 'cancelled', cancelled_at: cancelledAt, cancelled_by_role: 'resident' }),
+    })
+    const line = screen.getByText(/^Cancelled by the resident/)
+    expect(line.tagName).toBe('P')
+    expect(line).toHaveTextContent(/^Cancelled by the resident \("I'm OK"\), 12 min ago/)
+    expect(line).toHaveClass('text-base')
+    const time = line.querySelector('time')
+    expect(time).toHaveAttribute('datetime', cancelledAt)
+    // The time is from cancelled_at, not event_ts (30 s ago).
+    expect(time).not.toHaveAttribute('datetime', baseAlert().event_ts)
+  })
+
+  it('a cancel 30 s after the alert reads "just now" at NOW', () => {
+    const cancelledAt = new Date(NOW.getTime() - 10_000).toISOString()
+    renderRow({ alert: baseAlert({ status: 'cancelled', cancelled_at: cancelledAt, cancelled_by_role: 'resident' }) })
+    expect(screen.getByText(/^Cancelled by the resident/)).toHaveTextContent(/^Cancelled by the resident \("I'm OK"\), just now/)
+  })
+
+  it('shows no cancelled line without cancelled_at', () => {
+    renderRow({ alert: baseAlert({ status: 'cancelled' }) })
+    expect(screen.getByRole('listitem')).not.toHaveTextContent('Cancelled by')
+    expect(screen.getByText('Cancelled')).toBeInTheDocument()
+  })
+
+  it.each(['open', 'acknowledged', 'resolved'] as const)(
+    'a %s alert shows no cancelled line, even with a stray cancelled_at',
+    (status) => {
+      renderRow({ alert: baseAlert({ status, cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' }) })
+      expect(screen.getByRole('listitem')).not.toHaveTextContent('Cancelled by')
+    },
+  )
+
+  it('shows no acknowledged or resolved line on a cancelled alert', () => {
+    renderRow({ alert: baseAlert({ status: 'cancelled', cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' }) })
+    const row = screen.getByRole('listitem')
+    expect(row).not.toHaveTextContent('Acknowledged by')
+    expect(row).not.toHaveTextContent('Resolved by')
   })
 })
 
@@ -176,7 +231,13 @@ describe('AlertRow escalated_at (real clock)', () => {
         { escalated_at: past(), escalates_at: future() },
       ]
       variants.forEach((fields) => {
-        const view = renderRow({ alert: baseAlert({ status, ...fields }) })
+        const view = renderRow({
+          alert: baseAlert({
+            status,
+            ...fields,
+            ...(status === 'cancelled' && { cancelled_at: past(), cancelled_by_role: 'resident' as const }),
+          }),
+        })
         const row = screen.getByRole('listitem')
         expect(row, JSON.stringify(fields)).not.toHaveTextContent(/Escalat/)
         expect(screen.queryByRole('timer')).not.toBeInTheDocument()

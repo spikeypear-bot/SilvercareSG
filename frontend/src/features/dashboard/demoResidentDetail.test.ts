@@ -1,3 +1,4 @@
+import type { ResidentAlert } from '../../types/dashboard'
 import type { ResidentDetail, ThresholdKey, VitalsThresholds } from '../../types/resident'
 import { DEMO_DEFAULT_THRESHOLDS, createDemoData, createResidentDetail, residentId } from './demoData'
 
@@ -20,6 +21,26 @@ function setValue(t: VitalsThresholds, key: ThresholdKey, value: number): Vitals
 }
 
 const newestFirst = (times: string[]) => expect([...times].sort().reverse()).toEqual(times)
+
+/** What the API returns once the actor's account is deleted (docs/data-model.md, Actor names). */
+const FORMER_STAFF = /^Former staff member$/
+/** A synthetic "Test ..." name or the exact "Former staff member" placeholder. */
+const ACTOR_NAME = /^(Test .+|Former staff member)$/
+/** History alert types that come from the wearable. */
+const WEARABLE_TYPES = new Set<ResidentAlert['alert_type']>(['low_battery', 'hr_high', 'fall'])
+
+/** History alerts: those not in the dashboard data (which holds the open-list ones). */
+function historyOf(list: ResidentDetail[]): ResidentAlert[] {
+  const openIds = new Set(createDemoData(NOW).alerts.map((a) => a.alert_id))
+  return list.flatMap((d) => d.alerts.filter((a) => !openIds.has(a.alert_id)))
+}
+
+/** Resident index i and entry index k, read back from a demo history alert_id. */
+function historyIndex(alertId: string): { i: number; k: number } {
+  const m = /^6f1c2e0a-5b3d-5e8f-9a47-1(\d{3})(\d{8})$/.exec(alertId)
+  if (!m) throw new Error(`Not a demo history alert ID: ${alertId}`)
+  return { i: Number(m[1]) - 1, k: Number(m[2]) - 1 }
+}
 
 describe('createResidentDetail', () => {
   it.each(['res-9999', 'res-0000', 'res-0021', '', 'Test Resident A', 'RES-0001'])(
@@ -95,55 +116,153 @@ describe('createResidentDetail', () => {
     expect(new Set(allIds).size).toBe(allIds.length)
   })
 
-  it('history alerts are resolved, with resolved_by/at, within the last 30 days', () => {
-    const { alerts: openAlerts } = createDemoData(NOW)
-    const openIds = new Set(openAlerts.map((a) => a.alert_id))
-    const history = details.flatMap((d) => d.alerts.filter((a) => !openIds.has(a.alert_id)))
+  it('history alerts are resolved or cancelled, within the last 30 days', () => {
+    const history = historyOf(details)
     expect(history.length).toBeGreaterThan(0)
     history.forEach((a) => {
-      expect(a.status).toBe('resolved')
-      expect(a.resolved_by).toMatch(/^Test /)
+      expect(['resolved', 'cancelled']).toContain(a.status)
+      expect(Date.parse(a.event_ts)).toBeGreaterThan(NOW.getTime() - 30 * DAY_MS)
+      expect(Date.parse(a.event_ts)).toBeLessThanOrEqual(NOW.getTime())
+    })
+    // Both kinds are in the demo.
+    expect(history.some((a) => a.status === 'resolved')).toBe(true)
+    expect(history.some((a) => a.status === 'cancelled')).toBe(true)
+  })
+
+  it('resolved history alerts have resolved_by/at in order, some acknowledged first', () => {
+    const resolved = historyOf(details).filter((a) => a.status === 'resolved')
+    expect(resolved.length).toBeGreaterThan(0)
+    resolved.forEach((a) => {
+      expect(a.resolved_by).toMatch(ACTOR_NAME)
       expect(a.resolved_at).toBeDefined()
       const event = Date.parse(a.event_ts)
       const resolvedAt = Date.parse(a.resolved_at!)
-      expect(event).toBeGreaterThan(NOW.getTime() - 30 * DAY_MS)
       expect(resolvedAt).toBeGreaterThanOrEqual(event)
       expect(resolvedAt).toBeLessThanOrEqual(NOW.getTime())
       if (a.acknowledged_at) {
-        expect(a.acknowledged_by).toMatch(/^Test /)
+        expect(a.acknowledged_by).toMatch(ACTOR_NAME)
+        // Acknowledged and resolved by the same person in the demo.
+        expect(a.acknowledged_by).toBe(a.resolved_by)
         expect(Date.parse(a.acknowledged_at)).toBeGreaterThanOrEqual(event)
         expect(Date.parse(a.acknowledged_at)).toBeLessThanOrEqual(resolvedAt)
       }
+      expect(a).not.toHaveProperty('cancelled_at')
+      expect(a).not.toHaveProperty('cancelled_by_role')
     })
     // Some were acknowledged before being resolved, some were not.
-    expect(history.some((a) => a.acknowledged_by)).toBe(true)
-    expect(history.some((a) => !a.acknowledged_by)).toBe(true)
+    expect(resolved.some((a) => a.acknowledged_by)).toBe(true)
+    expect(resolved.some((a) => !a.acknowledged_by)).toBe(true)
   })
 
-  it("the detail's unresolved alerts match createDemoData for that resident", () => {
-    const { alerts } = createDemoData(NOW)
-    details.forEach((d) => {
-      const unresolved = d.alerts.filter((a) => a.status !== 'resolved')
-      expect(unresolved).toEqual(alerts.filter((a) => a.resident_id === d.resident.resident_id))
+  it('cancelled history alerts: cancelled_at is event_ts + 30 s, by the resident, with no ack or resolve fields', () => {
+    const cancelled = historyOf(details).filter((a) => a.status === 'cancelled')
+    expect(cancelled.length).toBeGreaterThan(0)
+    cancelled.forEach((a) => {
+      expect(a.cancelled_by_role).toBe('resident')
+      expect(Date.parse(a.cancelled_at!) - Date.parse(a.event_ts)).toBe(30_000)
+      expect(Date.parse(a.cancelled_at!)).toBeLessThanOrEqual(NOW.getTime())
+      for (const field of ['acknowledged_by', 'acknowledged_at', 'resolved_by', 'resolved_at'] as const) {
+        expect(a, `${a.alert_id} ${field}`).not.toHaveProperty(field)
+      }
     })
   })
 
-  it('the dashboard data still has no resolved alerts', () => {
-    const { alerts } = createDemoData(NOW)
-    expect(alerts.every((a) => a.status !== 'resolved')).toBe(true)
-    expect(alerts.every((a) => a.resolved_by === undefined && a.resolved_at === undefined)).toBe(true)
+  it('a history alert is cancelled exactly when it is from the wearable and (i + k) % 4 === 1', () => {
+    const mismatches: string[] = []
+    details.forEach((d) => {
+      historyOf([d]).forEach((a) => {
+        const { i, k } = historyIndex(a.alert_id)
+        expect(i).toBe(IDS.indexOf(d.resident.resident_id))
+        const fromWearable = a.device_id === d.wearable!.device_id
+        expect(fromWearable, a.alert_id).toBe(WEARABLE_TYPES.has(a.alert_type))
+        const expected = fromWearable && (i + k) % 4 === 1 ? 'cancelled' : 'resolved'
+        if (a.status !== expected) mismatches.push(`${a.alert_id}: ${a.status}, expected ${expected}`)
+      })
+    })
+    expect(mismatches).toEqual([])
   })
 
-  it('every name is synthetic ("Test ...")', () => {
+  it('only wearable alerts are cancelled: res-0002, res-0004 and res-0016, each a high heart rate', () => {
+    const cancelled = details.flatMap((d) =>
+      historyOf([d])
+        .filter((a) => a.status === 'cancelled')
+        .map((a) => {
+          expect(a.device_id).toBe(d.wearable!.device_id)
+          return [d.resident.resident_id, a.alert_type]
+        }),
+    )
+    expect(cancelled).toEqual([
+      ['res-0002', 'hr_high'],
+      ['res-0004', 'hr_high'],
+      ['res-0016', 'hr_high'],
+    ])
+    // A bedroom alert where (i + k) % 4 === 1 stays resolved: res-0010's first (i = 9, k = 0).
+    const bedroom = historyOf([detailOf('res-0010')]).find((a) => historyIndex(a.alert_id).k === 0)!
+    expect(bedroom.device_id).toBe(detailOf('res-0010').bedroom!.device_id)
+    expect(bedroom.status).toBe('resolved')
+  })
+
+  it('"Former staff member" is the actor exactly when (i + k) % 7 === 5, on resolved alerts only', () => {
+    const mismatches: string[] = []
+    const formerAt: string[] = []
+    details.forEach((d) => {
+      historyOf([d]).forEach((a) => {
+        if (a.status !== 'resolved') {
+          expect(a.resolved_by).toBeUndefined()
+          return
+        }
+        const { i, k } = historyIndex(a.alert_id)
+        const former = (i + k) % 7 === 5
+        const expected = former ? FORMER_STAFF : /^Test Nurse [ABC]$/
+        if (!expected.test(String(a.resolved_by))) mismatches.push(`${a.alert_id} resolved_by ${a.resolved_by}`)
+        if (a.acknowledged_by !== undefined && !expected.test(a.acknowledged_by)) {
+          mismatches.push(`${a.alert_id} acknowledged_by ${a.acknowledged_by}`)
+        }
+        if (former) formerAt.push(`${d.resident.resident_id} k=${k}${a.acknowledged_by ? ' ack' : ''}`)
+      })
+    })
+    expect(mismatches).toEqual([])
+    expect(formerAt).toEqual([
+      'res-0006 k=0 ack',
+      'res-0011 k=2',
+      'res-0012 k=1',
+      'res-0013 k=0',
+      'res-0019 k=1 ack',
+      'res-0020 k=0 ack',
+    ])
+  })
+
+  it("the detail's open-list alerts (open and acknowledged) match createDemoData for that resident", () => {
+    const { alerts } = createDemoData(NOW)
+    details.forEach((d) => {
+      const openList = d.alerts.filter((a) => a.status === 'open' || a.status === 'acknowledged')
+      expect(openList).toEqual(alerts.filter((a) => a.resident_id === d.resident.resident_id))
+    })
+  })
+
+  it('the dashboard data has only open and acknowledged alerts: no resolved or cancelled ones', () => {
+    const { alerts } = createDemoData(NOW)
+    expect(alerts.length).toBeGreaterThan(0)
+    expect(alerts.every((a) => a.status === 'open' || a.status === 'acknowledged')).toBe(true)
+    expect(alerts.every((a) => a.resolved_by === undefined && a.resolved_at === undefined)).toBe(true)
+    expect(alerts.every((a) => a.cancelled_at === undefined && a.cancelled_by_role === undefined)).toBe(true)
+  })
+
+  it('every name is synthetic ("Test ...", or the "Former staff member" placeholder)', () => {
     details.forEach((d) => {
       expect(d.resident.name).toMatch(/^Test Resident [A-T]$/)
       if (d.thresholds.updated_by !== undefined) expect(d.thresholds.updated_by).toMatch(/^Test /)
       d.threshold_history.forEach((e) => expect(e.changed_by).toMatch(/^Test /))
       d.alerts.forEach((a) => {
-        if (a.acknowledged_by) expect(a.acknowledged_by).toMatch(/^Test /)
-        if (a.resolved_by) expect(a.resolved_by).toMatch(/^Test /)
+        if (a.acknowledged_by) expect(a.acknowledged_by).toMatch(ACTOR_NAME)
+        if (a.resolved_by) expect(a.resolved_by).toMatch(ACTOR_NAME)
       })
     })
+    // The placeholder is exactly this string; anything else must still be "Test ...".
+    expect('Former staff member').toMatch(ACTOR_NAME)
+    for (const bad of ['Former staff', 'Former staff member X', 'former staff member', 'Former caregiver', 'Jane Tan']) {
+      expect(bad).not.toMatch(ACTOR_NAME)
+    }
   })
 
   it('res-0014 has no alerts at all', () => {
