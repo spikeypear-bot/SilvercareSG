@@ -24,46 +24,61 @@ For each record:
    Unassigned alerts get notification = "skipped_unassigned" in the same PutItem.
 3. Archive: PutObject alerts/date=<event_ts UTC date>/<alert_id>.json in the history
    bucket (the same key on a retry, so one object per alert).
-4. Notify (resident assigned, item has no notified_at): SNS Publish with the
-   resident_id message attribute (subscriptions filter on it), log and emit the
+4. Notify caregivers (resident assigned, item has no notified_at): SNS Publish with
+   the resident_id message attribute (subscriptions filter on it), log and emit the
    dispatch latency, then set notified_at once. A crash between Publish and the update
    sends the email again on retry: a duplicate is accepted, a missing one isn't.
-5. Queue the escalation check (docs/features/escalation.md, criteria 2-4): after step
-   4 for an assigned alert, after step 2 for an unassigned one, if the item is open and
-   has no escalation_queued_at: SendMessage the check to this same queue with
-   DelaySeconds 60, then set escalation_queued_at once. A failed send fails the record;
-   the retry doesn't email again (notified_at is set). A crash between the send and the
-   update can queue a second check, which the check handling below makes harmless.
+5. Route to the nurses (docs/features/alert-routing.md, criteria 1-4), by the stored
+   item's severity (missing = critical, as old falls):
+   - assigned critical, or unassigned (any severity): if the item has no escalated_at,
+     Publish the at-once email to the nurses topic, then set escalated_at once. A
+     failed Publish fails the record; the retry doesn't email caregivers again
+     (notified_at is set). No escalation check.
+   - assigned warning (docs/features/escalation.md, criteria 2-4): if the item is open
+     and has no escalation_queued_at, SendMessage the check to this same queue with
+     DelaySeconds 300, then set escalation_queued_at once. A failed send fails the
+     record. A crash between the send and the update can queue a second check, which
+     the check handling below makes harmless.
+   The log line's `nurses` field says which: immediate, escalation_queued, or none
+   (suppressed).
 
-Escalation checks (docs/features/escalation.md, criteria 5-8), 60 s later, skip the
+Escalation checks (docs/features/escalation.md, criteria 5-8), 300 s later, skip the
 repeat check: strongly consistent GetItem of the alert (pattern 23). No item: failure.
 A present status other than open (acknowledged, cancelled, resolved): not_escalated;
 a missing status escalates (fail-safe). escalated_at
-already set: duplicate. More than 15 minutes after created_at: not_escalated, reason
+already set: duplicate. More than 20 minutes after created_at: not_escalated, reason
 stale (an invalid created_at is not stale). Otherwise Publish to the nurses topic, then set escalated_at
 once (a failed condition after the Publish is a duplicate). status stays open.
 
-Status updates (docs/features/alert-cancel.md, criteria 8-14) skip the repeat check.
-For a cancel, changed_at is when the IoT rule received the alert_cancel (server time).
-Find the targets: for a device target (a cancel), a strongly consistent Query of the
-resident's alerts up to changed_at (sk <= "ALERT#<changed_at>#~"), filtered to that
-device and to items still open or waiting for this update's follow-up (pattern 24),
-paginated; for an alert target (an acknowledge), a strongly consistent GetItem
-(pattern 25). None: outcome no_open_alerts (cancel) or not_open (acknowledge). For each
-open target: UpdateItem conditional on status = open (a cancel also REMOVEs open_pk and
-sets expires_at = changed_at + 30 days); a failed condition is skipped without email.
-Then the follow-up: caregivers through the alerts topic with the resident_id attribute
-(not for unassigned), nurses through the nurses topic only if the item has
-escalated_at; then SET status_notified_at once. A target whose status already equals
-new_status (set by this same update, for an acknowledge by the same sub) but has no
+Status updates (docs/features/alert-cancel.md, criteria 8-14; changed by
+docs/features/alert-routing.md, criteria 10-15) skip the repeat check. A resident
+cancel (wearable) has a device target and changed_at = when the IoT rule received the
+alert_cancel (server time); a caregiver cancel and a nurse acknowledge (Track B's API)
+have an alert target. Find the targets: for a device target, a strongly consistent
+Query of the resident's alerts up to changed_at (sk <= "ALERT#<changed_at>#~"),
+filtered to that device and to items open or acknowledged, or waiting for this update's
+follow-up (pattern 24), paginated; for an alert target, a strongly consistent GetItem
+(pattern 25). A cancel changes open and acknowledged alerts, an acknowledge only open
+ones. None: outcome no_open_alerts (device target) or not_open (alert target). For each
+target: UpdateItem conditional on the statuses it may change from. A cancel sets
+cancelled_at, cancelled_by_role, cancelled_by (caregiver sub), expires_at = changed_at +
+30 days, and REMOVEs open_pk and the acknowledge's status_notified_at (so the cancel's
+own follow-up is tracked); an acknowledge sets acknowledged_at, acknowledged_by, and
+ack_note if there is a note. A failed condition is skipped without email. Then the
+follow-up: caregivers through the alerts topic with the resident_id attribute (not for
+unassigned); for a cancel, nurses too if the item has escalated_at or acknowledged_at;
+then SET status_notified_at once (also for an unassigned acknowledge, which emails
+nobody). A target whose status already equals new_status (set by this same update: the
+same by_role, and for a caregiver or nurse the same sub) but has no
 status_notified_at is a retry after a crash: it gets its follow-up now (a duplicate is
 accepted, a missing one isn't).
 
 Any AWS error fails only that record. Logs hold one line per record with alert_id,
 alert_type, severity, device_id, resident_id, and the outcome (plus a reason or error
-code; checks add kind and escalation_delay_ms; status updates log one line per alert
-with kind, new_status, and by_role), never details, vitals, limits, email addresses,
-the email body, or a status update's by or by_name.
+code; new alerts add nurses; checks add kind and escalation_delay_ms; status updates log
+one line per alert with kind, new_status, by_role, and, for an acknowledge, has_note),
+never details, vitals, limits, email addresses, the email body, or a status update's
+by, by_name, or note.
 """
 
 from __future__ import annotations
@@ -87,7 +102,9 @@ from message import (
     DEVICE_ID_RE,
     KIND_ESCALATION_CHECK,
     KIND_STATUS_UPDATE,
+    ROLE_RESIDENT,
     SEVERITIES,
+    SEVERITY_CRITICAL,
     STATUS_ACKNOWLEDGED,
     STATUS_CANCELLED,
     UNASSIGNED,
@@ -122,10 +139,17 @@ SUPPRESSED = "suppressed"
 INVALID = "invalid"
 ERROR = "error"
 
-# Escalation (docs/features/escalation.md).
-ESCALATION_DELAY_S = 60
+# Escalation (docs/features/escalation.md; 5 minutes since alert-routing).
+ESCALATION_DELAY_S = 300
 STATUS_OPEN = "open"
-STALE_AFTER = timedelta(minutes=15)
+# The new alert log line's `nurses` field (alert-routing criterion 5).
+NURSES_IMMEDIATE = "immediate"
+NURSES_ESCALATION_QUEUED = "escalation_queued"
+NURSES_NONE = "none"
+# Above the last retry of a failing check (300 s delay + 4 x 180 s visibility = 17
+# min), so a check that keeps failing reaches the DLQ and its alarm instead of being
+# dropped as stale. Only a late redrive is stale.
+STALE_AFTER = timedelta(minutes=20)
 STALE = "stale"
 ESCALATED = "escalated"
 NOT_ESCALATED = "not_escalated"
@@ -133,14 +157,19 @@ NOT_ESCALATED = "not_escalated"
 # value written by mistake never reaches the logs.
 KNOWN_STATUSES = frozenset({"open", "acknowledged", "cancelled", "resolved"})
 
-# Status updates (docs/features/alert-cancel.md).
+# Status updates (docs/features/alert-cancel.md, docs/features/alert-routing.md).
 CANCELLED_RETENTION = timedelta(days=30)
 UPDATED = "updated"
 SKIPPED = "skipped"
 NO_OPEN_ALERTS = "no_open_alerts"
 NOT_OPEN = "not_open"
+# The statuses each new_status may change (alert-routing criterion 10).
+CHANGEABLE_FROM = {
+    STATUS_CANCELLED: (STATUS_OPEN, STATUS_ACKNOWLEDGED),
+    STATUS_ACKNOWLEDGED: (STATUS_OPEN,),
+}
 # What the device-target Query reads: enough for the update, the follow-up email, the
-# retry rule, and the log line (never details).
+# retry rule, and the log line (never details or ack_note).
 TARGET_ATTRIBUTES = (
     "pk",
     "sk",
@@ -152,7 +181,10 @@ TARGET_ATTRIBUTES = (
     "#status",
     "escalated_at",
     "status_notified_at",
+    "acknowledged_at",
     "acknowledged_by",
+    "cancelled_by",
+    "cancelled_by_role",
 )
 
 _serializer = TypeSerializer()
@@ -305,6 +337,15 @@ def latency_ms(received_dt: datetime, published_dt: datetime) -> int:
 def needs_escalation_check(item: dict[str, Any]) -> bool:
     """Criteria 3-4: queue a check only for an open item that has none queued yet."""
     return item.get("status") == STATUS_OPEN and "escalation_queued_at" not in item
+
+
+def nurses_at_once(resident_id: str, item: dict[str, Any]) -> bool:
+    """Alert-routing criterion 1: nurses are emailed at once for every unassigned
+    alert and for critical ones; a stored item with no severity (falls stored before
+    vitals alerts) counts as critical. Warnings from assigned devices escalate."""
+    if resident_id == UNASSIGNED:
+        return True
+    return (item.get("severity") or SEVERITY_CRITICAL) == SEVERITY_CRITICAL
 
 
 def check_key(check: EscalationCheck) -> dict[str, str]:
@@ -532,12 +573,48 @@ def queue_escalation_check(alert: Alert, item: dict[str, Any]) -> None:
             raise
 
 
-def process(alert: Alert) -> tuple[str, int | None]:
-    """Steps 0b-5 for one valid alert. Returns (outcome, dispatch latency or None)."""
+def notify_nurses(alert: Alert, item: dict[str, Any]) -> None:
+    """Step 5 (alert-routing criteria 2-3, 6): publish the at-once nurse email, then
+    set escalated_at once. Nothing if the nurses were already emailed (a retry), or
+    if a redelivery finds the alert already acknowledged, cancelled, or resolved (a
+    missing status counts as open, as for escalation checks).
+
+    A failed Publish raises and fails the record; a crash between the Publish and the
+    update emails the nurses again on retry (a duplicate is accepted).
+    """
+    if "escalated_at" in item:
+        return
+    if item.get("status", STATUS_OPEN) != STATUS_OPEN:
+        return
+    severity = item.get("severity") or SEVERITY_CRITICAL
+    sns_client().publish(
+        TopicArn=os.environ["NURSES_TOPIC_ARN"],
+        Subject=email_text.subject(alert.alert_type, alert.resident_id, severity),
+        Message=email_text.nurse_body(
+            item, alert.resident_id, os.environ["PORTAL_URL"]
+        ),
+    )
+    try:
+        dynamodb_client().update_item(
+            TableName=os.environ["ALERTS_TABLE"],
+            Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
+            UpdateExpression="SET escalated_at = :now",
+            ConditionExpression="attribute_not_exists(escalated_at)",
+            ExpressionAttributeValues={":now": {"S": format_iso_ms(datetime.now(UTC))}},
+        )
+    except ClientError as exc:
+        # Another delivery of the same message already set it: nothing more to do.
+        if not _is_condition_failure(exc):
+            raise
+
+
+def process(alert: Alert) -> tuple[str, int | None, str]:
+    """Steps 0b-5 for one valid alert. Returns (outcome, dispatch latency or None,
+    the nurses route for the log line)."""
     if alert.alert_type not in NEVER_SUPPRESSED and is_repeat(
         alert, recent_alerts(alert)
     ):
-        return SUPPRESSED, None
+        return SUPPRESSED, None, NURSES_NONE
 
     details = dict(alert.details)
     if alert.alert_type == "fall":
@@ -548,16 +625,20 @@ def process(alert: Alert) -> tuple[str, int | None]:
     outcome, item = store_alert(build_item(alert, details, datetime.now(UTC)))
     archive_alert(alert, item)
 
+    latency = None
     if alert.resident_id == UNASSIGNED:
-        queue_escalation_check(alert, item)
-        return (SKIPPED_UNASSIGNED if outcome == STORED else DUPLICATE), None
-    if "notified_at" in item:
-        # A retry after the email went out (e.g. the check's send failed last time).
-        queue_escalation_check(alert, item)
-        return outcome, None
-    latency = notify(alert, item)
+        outcome = SKIPPED_UNASSIGNED if outcome == STORED else DUPLICATE
+    elif "notified_at" not in item:
+        latency = notify(alert, item)
+        outcome = NOTIFIED
+    # else: a retry after the caregiver email went out (e.g. the nurse Publish or the
+    # check's send failed last time); only the nurse step runs.
+
+    if nurses_at_once(alert.resident_id, item):
+        notify_nurses(alert, item)
+        return outcome, latency, NURSES_IMMEDIATE
     queue_escalation_check(alert, item)
-    return NOTIFIED, latency
+    return outcome, latency, NURSES_ESCALATION_QUEUED
 
 
 # ---- escalation checks ----
@@ -683,34 +764,44 @@ def cancel_expires_at(changed_dt: datetime) -> int:
 
 
 def is_follow_up_retry(item: dict[str, Any], update: StatusUpdate) -> bool:
-    """Criterion 10: the item already has this update's status but no
-    status_notified_at (a crash after the update, before the follow-up was recorded).
-    For an acknowledge, only if the same user acknowledged it."""
+    """Alert-routing criterion 11: the item already has this update's status but no
+    status_notified_at (a crash after the update, before the follow-up was recorded),
+    set by the same kind of update: an acknowledge by the same sub, a caregiver cancel
+    by the same sub, a resident cancel by the resident."""
     if item.get("status") != update.new_status or "status_notified_at" in item:
         return False
     if update.new_status == STATUS_ACKNOWLEDGED:
         return item.get("acknowledged_by") == update.by
-    return True
+    if item.get("cancelled_by_role") != update.by_role:
+        return False
+    return update.by_role == ROLE_RESIDENT or item.get("cancelled_by") == update.by
+
+
+def is_changeable(item: dict[str, Any], update: StatusUpdate) -> bool:
+    """Criterion 10: a cancel changes open and acknowledged alerts, an acknowledge
+    only open ones."""
+    return item.get("status") in CHANGEABLE_FROM[update.new_status]
 
 
 def is_target(item: dict[str, Any], update: StatusUpdate) -> bool:
-    """An item this update changes (open) or owes a follow-up (a retry)."""
+    """An item this update changes or owes a follow-up (a retry)."""
     if update.device_id is not None and item.get("device_id") != update.device_id:
         return False
-    return item.get("status") == STATUS_OPEN or is_follow_up_retry(item, update)
+    return is_changeable(item, update) or is_follow_up_retry(item, update)
 
 
 def query_device_targets(update: StatusUpdate) -> list[dict[str, Any]]:
     """Pattern 24: the resident's alerts up to changed_at from this device that are
-    open, or already have this status but no status_notified_at (retry). Strongly
-    consistent, paginated."""
+    open or acknowledged, or already have this status but no status_notified_at
+    (retry). Strongly consistent, paginated. Only resident cancels have a device
+    target."""
     client = dynamodb_client()
     items: list[dict[str, Any]] = []
     request: dict[str, Any] = {
         "TableName": os.environ["ALERTS_TABLE"],
         "KeyConditionExpression": "pk = :pk AND sk <= :high",
         "FilterExpression": (
-            "device_id = :device AND (#status = :open OR "
+            "device_id = :device AND (#status IN (:open, :acknowledged) OR "
             "(#status = :new AND attribute_not_exists(status_notified_at)))"
         ),
         "ExpressionAttributeNames": {"#status": "status"},
@@ -719,6 +810,7 @@ def query_device_targets(update: StatusUpdate) -> list[dict[str, Any]]:
             ":high": {"S": device_target_upper_bound(update)},
             ":device": {"S": update.device_id or ""},
             ":open": {"S": STATUS_OPEN},
+            ":acknowledged": {"S": STATUS_ACKNOWLEDGED},
             ":new": {"S": update.new_status},
         },
         "ProjectionExpression": ", ".join(TARGET_ATTRIBUTES),
@@ -734,7 +826,8 @@ def query_device_targets(update: StatusUpdate) -> list[dict[str, Any]]:
 
 
 def read_alert_target(update: StatusUpdate) -> dict[str, Any] | None:
-    """Pattern 25: the one alert an acknowledge names, strongly consistent."""
+    """Pattern 25: the one alert a caregiver cancel or nurse acknowledge names,
+    strongly consistent."""
     response = dynamodb_client().get_item(
         TableName=os.environ["ALERTS_TABLE"],
         Key={
@@ -757,8 +850,13 @@ def find_targets(update: StatusUpdate) -> list[dict[str, Any]]:
 
 
 def apply_status(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any] | None:
-    """Criterion 9: UpdateItem conditional on status = open. Returns the item after
-    the update, or None if the condition failed (it changed meanwhile)."""
+    """Alert-routing criterion 11: UpdateItem conditional on the statuses it may change
+    from. Returns the item after the update, or None if the condition failed (it
+    changed meanwhile).
+
+    A cancel keeps the acknowledge's fields (acknowledged_at/_by, ack_note) and REMOVEs
+    the acknowledge's status_notified_at, so the cancel's follow-up is tracked on its
+    own (else a crash before it would leave it unsent)."""
     names = {"#status": "status"}
     values: dict[str, Any] = {
         ":new": {"S": update.new_status},
@@ -766,21 +864,34 @@ def apply_status(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any] |
         ":open": {"S": STATUS_OPEN},
     }
     if update.new_status == STATUS_CANCELLED:
-        expression = (
-            "SET #status = :new, cancelled_at = :at, cancelled_by_role = :role, "
-            "expires_at = :expires REMOVE open_pk"
-        )
+        sets = [
+            "#status = :new",
+            "cancelled_at = :at",
+            "cancelled_by_role = :role",
+            "expires_at = :expires",
+        ]
         values[":role"] = {"S": update.by_role}
         values[":expires"] = {"N": str(cancel_expires_at(update.changed_dt))}
+        if update.by is not None:
+            sets.append("cancelled_by = :by")
+            values[":by"] = {"S": update.by}
+        expression = f"SET {', '.join(sets)} REMOVE open_pk, status_notified_at"
+        condition = "#status IN (:open, :acknowledged)"
+        values[":acknowledged"] = {"S": STATUS_ACKNOWLEDGED}
     else:
-        expression = "SET #status = :new, acknowledged_at = :at, acknowledged_by = :by"
+        sets = ["#status = :new", "acknowledged_at = :at", "acknowledged_by = :by"]
         values[":by"] = {"S": update.by or ""}
+        if update.note is not None:
+            sets.append("ack_note = :note")
+            values[":note"] = {"S": update.note}
+        expression = f"SET {', '.join(sets)}"
+        condition = "#status = :open"
     try:
         response = dynamodb_client().update_item(
             TableName=os.environ["ALERTS_TABLE"],
             Key={"pk": {"S": item["pk"]}, "sk": {"S": item["sk"]}},
             UpdateExpression=expression,
-            ConditionExpression="#status = :open",
+            ConditionExpression=condition,
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
             ReturnValues="ALL_NEW",
@@ -796,9 +907,20 @@ def apply_status(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any] |
     return {**item, "status": update.new_status}
 
 
+def follow_up_to_nurses(update: StatusUpdate, item: dict[str, Any]) -> bool:
+    """Alert-routing criterion 13: a cancel goes to the nurses if they were emailed
+    about the alert (escalated_at) or had acknowledged it (acknowledged_at, which only
+    an acknowledge sets and a cancel keeps); an acknowledge never does."""
+    if update.new_status != STATUS_CANCELLED:
+        return False
+    return "escalated_at" in item or "acknowledged_at" in item
+
+
 def send_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
-    """Criteria 10, 12-14: email caregivers (resident_id filter; not for unassigned)
-    and, if the alert was escalated, the nurses; then SET status_notified_at once."""
+    """Alert-routing criteria 13-15: email caregivers (resident_id filter; not for
+    unassigned) and, for a cancel the nurses were involved in, the nurses; then SET
+    status_notified_at once (also when nobody was emailed: an unassigned
+    acknowledge)."""
     subject = email_text.follow_up_subject(
         item.get("alert_type"), update.resident_id, update.new_status
     )
@@ -810,6 +932,7 @@ def send_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
         changed_at=update.changed_dt,
         by_role=update.by_role,
         by_name=update.by_name,
+        note=update.note,
     )
     if update.resident_id != UNASSIGNED:
         sns_client().publish(
@@ -823,7 +946,7 @@ def send_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
                 },
             },
         )
-    if "escalated_at" in item:
+    if follow_up_to_nurses(update, item):
         sns_client().publish(
             TopicArn=os.environ["NURSES_TOPIC_ARN"], Subject=subject, Message=body
         )
@@ -844,7 +967,7 @@ def send_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
 def apply_to_target(update: StatusUpdate, item: dict[str, Any]) -> str:
     """One target: update it and send the follow-up (updated), skip it if it changed
     meanwhile (skipped), or send the missing follow-up of a retry (updated)."""
-    if item.get("status") == STATUS_OPEN:
+    if is_changeable(item, update):
         updated = apply_status(update, item)
         if updated is None:
             return SKIPPED
@@ -854,19 +977,23 @@ def apply_to_target(update: StatusUpdate, item: dict[str, Any]) -> str:
 
 
 def _status_update_ids(update: StatusUpdate) -> dict[str, Any]:
-    """IDs every status update log line has. Never by or by_name."""
+    """IDs every status update log line has, plus has_note for an acknowledge
+    (alert-routing criterion 12). Never by, by_name, or note."""
     target = (
         {"device_id": update.device_id}
         if update.device_id is not None
         else {"alert_id": update.alert_id}
     )
-    return {
+    ids: dict[str, Any] = {
         **target,
         "resident_id": update.resident_id,
         "kind": KIND_STATUS_UPDATE,
         "new_status": update.new_status,
         "by_role": update.by_role,
     }
+    if update.new_status == STATUS_ACKNOWLEDGED:
+        ids["has_note"] = update.note is not None
+    return ids
 
 
 def _status_item_log_ids(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any]:
@@ -939,7 +1066,7 @@ def handle_record(record: Any) -> bool:
         "resident_id": result.resident_id,
     }
     try:
-        outcome, latency = process(result)
+        outcome, latency, nurses = process(result)
     except Exception as exc:  # noqa: BLE001 - any failure: retry only this record
         # Only the error code is logged; exception text could quote the request.
         logger.error(
@@ -947,7 +1074,7 @@ def handle_record(record: Any) -> bool:
         )
         return False
 
-    extra: dict[str, Any] = {**ids, "outcome": outcome}
+    extra: dict[str, Any] = {**ids, "outcome": outcome, "nurses": nurses}
     if latency is not None:
         extra["dispatch_latency_ms"] = latency
     logger.info(LOG_MESSAGE, extra=extra)

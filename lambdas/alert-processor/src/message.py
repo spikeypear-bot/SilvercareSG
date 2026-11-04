@@ -21,26 +21,34 @@ from docs/metrics.md (integers for hr_bpm and spo2_pct), except that a critical
 `hr_low` may have `value` 0 (no pulse); `held_s` is an integer 10-600.
 
 Escalation checks (docs/features/escalation.md, criterion 1) are a second message kind
-on the same queue, sent by alert-processor itself with a 60 s delay:
+on the same queue, sent by alert-processor itself with a 300 s delay (warnings from
+assigned devices only, docs/features/alert-routing.md):
 
     {"kind": "escalation_check", "schema_version": 1, "alert_id": "<uuid>",
      "resident_id": "res-0003", "event_ts": "2026-10-18T03:14:07.360Z"}
 
-Status updates (docs/features/alert-cancel.md, criterion 6) are a third kind, sent
-without delay by `critical-alert` (the wearable "I'm OK" cancel) and later by Track B's
-acknowledge API:
+Status updates (docs/features/alert-cancel.md, criterion 6; changed by
+docs/features/alert-routing.md, criterion 9) are a third kind, sent without delay by
+`critical-alert` (the wearable "I'm OK" cancel) and later by Track B's API (caregiver
+cancel, nurse acknowledge):
 
     {"kind": "status_update", "schema_version": 1, "resident_id": "res-0001",
      "new_status": "cancelled", "changed_at": "2026-11-03T02:00:05.000Z",
      "by_role": "resident", "by": null, "by_name": null,
      "target": {"device_id": "wearable-0001"}}
 
-`target` is {"device_id"} (every open alert from that device) or
-{"alert_id", "event_ts"} (one alert). A `resident` update must be `cancelled` with a
-device target, `by` null and `by_name` null; a `staff` or `caregiver` update must be
-`acknowledged` with an alert target, a Cognito `sub` (UUID) as `by`, and a `by_name`
-of 1-100 characters. `by_name` is a full name: it is used only to build the masked name
-in the follow-up email and never stored or logged.
+`target` is {"device_id"} (every open or acknowledged alert from that device) or
+{"alert_id", "event_ts"} (one alert). The rules per `by_role`:
+
+    resident   cancelled     device target  by null         by_name null   no note
+    caregiver  cancelled     alert target   by Cognito sub  by_name 1-100  no note
+    nurse      acknowledged  alert target   by Cognito sub  by_name null   note optional
+
+`note` (nurse acknowledge only) is absent, null, or 1-500 characters, not only
+whitespace, with no control or other non-printing characters except newline. Any other `by_role` (e.g.
+`staff`, `family`) or combination is rejected. `by_name` is a full name: it is used
+only to build the masked name in the follow-up email and never stored or logged; the
+note is stored on the alert and emailed to caregivers, never logged.
 
 A body without `kind` is an alert message. `parse_message` returns an `Alert`, an
 `EscalationCheck`, a `StatusUpdate`, or a `Rejection`; an unknown `kind` is rejected
@@ -98,16 +106,20 @@ STATUS_UPDATE_FIELDS = (
     "by_name",
     "target",
 )
+# Optional: absent or null means no note (alert-routing criterion 9).
+STATUS_UPDATE_OPTIONAL_FIELDS = ("note",)
 STATUS_CANCELLED = "cancelled"
 STATUS_ACKNOWLEDGED = "acknowledged"
 NEW_STATUSES = frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED})
 ROLE_RESIDENT = "resident"
-ROLE_STAFF = "staff"
 ROLE_CAREGIVER = "caregiver"
-BY_ROLES = frozenset({ROLE_RESIDENT, ROLE_STAFF, ROLE_CAREGIVER})
+ROLE_NURSE = "nurse"
+BY_ROLES = frozenset({ROLE_RESIDENT, ROLE_CAREGIVER, ROLE_NURSE})
 DEVICE_TARGET_FIELDS = frozenset({"device_id"})
 ALERT_TARGET_FIELDS = frozenset({"alert_id", "event_ts"})
 BY_NAME_MAX_LEN = 100
+NOTE_MAX_LEN = 500
+NOTE_NEWLINE = "\n"
 # A Cognito user's sub: a UUID, lowercase.
 SUB_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
@@ -194,8 +206,9 @@ class EscalationCheck:
 
 @dataclass(frozen=True)
 class StatusUpdate:
-    """A validated status_update. Exactly one target: device_id (a cancel), or
-    alert_id + event_ts (an acknowledge). by and by_name are None for the resident."""
+    """A validated status_update. Exactly one target: device_id (a resident cancel),
+    or alert_id + event_ts (a caregiver cancel or a nurse acknowledge). by is None for
+    the resident, by_name is set only for a caregiver, note only for a nurse."""
 
     resident_id: str
     new_status: str
@@ -207,6 +220,7 @@ class StatusUpdate:
     device_id: str | None = None
     alert_id: str | None = None
     event_ts: str | None = None
+    note: str | None = None
 
 
 def _reject_constant(value: str) -> Any:
@@ -451,38 +465,68 @@ def _check_target(target: Any) -> tuple[dict[str, str] | None, str]:
     return None, "invalid:target"
 
 
-def _check_role_rules(
-    by_role: str, new_status: str, target: dict[str, str], by: Any, by_name: Any
-) -> str | None:
-    """Criterion 6: what each by_role may send."""
+def _valid_note(value: Any) -> bool:
+    """1-500 characters, at least one that isn't whitespace, and no control or other
+    non-printing characters except newline (alert-routing criterion 9). Format
+    characters (category Cf) are rejected too: bidi overrides and zero-width
+    characters could make the emailed note read differently from what was typed."""
+    if type(value) is not str or not 1 <= len(value) <= NOTE_MAX_LEN:
+        return False
+    if not value.strip():
+        return False
+    # Line and paragraph separators (Zl, Zp) show as line breaks in many mail clients.
+    return not any(
+        ch != NOTE_NEWLINE
+        and (
+            unicodedata.category(ch).startswith("C")
+            or unicodedata.category(ch) in ("Zl", "Zp")
+        )
+        for ch in value
+    )
+
+
+def _check_role_rules(body: dict, target: dict[str, str]) -> str | None:
+    """Alert-routing criterion 9: what each by_role may send. A cancel has no `note`
+    key at all; a nurse's may be absent or null."""
+    by_role, new_status = body["by_role"], body["new_status"]
+    by, by_name = body["by"], body["by_name"]
+    expected_status = STATUS_ACKNOWLEDGED if by_role == ROLE_NURSE else STATUS_CANCELLED
+    if new_status != expected_status:
+        return "invalid:new_status"
+    expected_target = "device_id" if by_role == ROLE_RESIDENT else "alert_id"
+    if expected_target not in target:
+        return "invalid:target"
     if by_role == ROLE_RESIDENT:
-        if new_status != STATUS_CANCELLED:
-            return "invalid:new_status"
-        if "device_id" not in target:
-            return "invalid:target"
         if by is not None:
             return "invalid:by"
-        if by_name is not None:
-            return "invalid:by_name"
-        return None
-    if new_status != STATUS_ACKNOWLEDGED:
-        return "invalid:new_status"
-    if "alert_id" not in target:
-        return "invalid:target"
-    if type(by) is not str or not SUB_RE.match(by):
+    elif type(by) is not str or not SUB_RE.match(by):
         return "invalid:by"
-    if not _valid_by_name(by_name):
+    if by_role == ROLE_CAREGIVER:
+        # Caregivers are linked to real residents only; Track B's link check should
+        # already stop this (defence in depth).
+        if body["resident_id"] == UNASSIGNED:
+            return "invalid:resident_id"
+        if not _valid_by_name(by_name):
+            return "invalid:by_name"
+    elif by_name is not None:
         return "invalid:by_name"
+    if by_role == ROLE_NURSE:
+        note = body.get("note")
+        if note is not None and not _valid_note(note):
+            return "invalid:note"
+    elif "note" in body:
+        return "invalid:note"
     return None
 
 
 def validate_status_update(body: dict) -> StatusUpdate | Rejection:
-    """Check a parsed body with kind status_update against its schema (criterion 6).
-    Reason codes name the field, never its value (by_name is a full name)."""
+    """Check a parsed body with kind status_update against its schema (alert-routing
+    criterion 9). Reason codes name the field, never its value (by_name is a full name,
+    note is free text)."""
     for name in STATUS_UPDATE_FIELDS:
         if name not in body:
             return Rejection(f"missing:{name}")
-    if set(body) - set(STATUS_UPDATE_FIELDS):
+    if set(body) - set(STATUS_UPDATE_FIELDS) - set(STATUS_UPDATE_OPTIONAL_FIELDS):
         return Rejection("unknown_field")
 
     version = body["schema_version"]
@@ -511,9 +555,7 @@ def validate_status_update(body: dict) -> StatusUpdate | Rejection:
     if target is None:
         return Rejection(reason)
 
-    role_reason = _check_role_rules(
-        body["by_role"], body["new_status"], target, body["by"], body["by_name"]
-    )
+    role_reason = _check_role_rules(body, target)
     if role_reason:
         return Rejection(role_reason)
 
@@ -528,6 +570,7 @@ def validate_status_update(body: dict) -> StatusUpdate | Rejection:
         device_id=target.get("device_id"),
         alert_id=target.get("alert_id"),
         event_ts=target.get("event_ts"),
+        note=body.get("note"),
     )
 
 
@@ -572,7 +615,8 @@ def log_ids(text: Any) -> dict[str, str | None]:
 
     Anything else is logged as "invalid" (or omitted when absent), so free text from a
     malformed body never reaches the logs. Works for every message kind; for a status
-    update, device_id and alert_id come from `target`. Never `by` or `by_name`.
+    update, device_id and alert_id come from `target`. Never `by`, `by_name`, or
+    `note`.
     """
     body = parse_body(text)
     body = body if isinstance(body, dict) else {}

@@ -54,6 +54,10 @@ def expected_body(vitals_line: str) -> str:
             "Fall details: confidence 0.91, peak 3.8 g, still for 20 s",
             vitals_line,
             "",
+            # A fall is critical: the caregiver email says the nurses were alerted
+            # too (alert-routing criterion 8).
+            "The care centre nurse has also been alerted.",
+            "",
             f"Open the SilverCare portal: {PORTAL}/",
             "",
             "This is an automated message. Do not reply.",

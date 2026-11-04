@@ -8,20 +8,22 @@
 # resident's subscribers through the silvercare-alerts SNS topic, filtered by
 # resident_id.
 #
-# Escalation (docs/features/escalation.md): after emailing (or storing an unassigned
-# alert), alert-processor sends an escalation check back to silvercare-alerts with a
-# per-message DelaySeconds of 60 (the queue's own delay stays 0). 60 s later it reads
-# the alert again and, if it is still open and not yet escalated, emails every nurse
-# subscriber through the silvercare-nurses SNS topic (no filter: staff see every
-# resident). No extra queue, function, mapping, or alarm: failed checks reach
-# silvercare-alerts-dlq and its alarm like failed alerts.
+# Nurses (docs/features/escalation.md, docs/features/alert-routing.md): critical alerts
+# and every alert from an unassigned device are emailed to every nurse subscriber at
+# once through the silvercare-nurses SNS topic (no filter: staff see every resident).
+# For a warning from an assigned device, alert-processor sends an escalation check back
+# to silvercare-alerts with a per-message DelaySeconds of 300 (the queue's own delay
+# stays 0). 5 minutes later it reads the alert again and, if it is still open and not
+# yet escalated, emails the nurses. No extra queue, function, mapping, or alarm: failed
+# checks reach silvercare-alerts-dlq and its alarm like failed alerts.
 #
-# Cancel and follow-ups (docs/features/alert-cancel.md): critical-alert sends a
-# `status_update` for the wearable "I'm OK" button (Track B's acknowledge API will send
-# one too). alert-processor sets the matching open alerts to cancelled (or
-# acknowledged) and emails a short follow-up through the same two topics: caregivers
-# always (resident_id filter), nurses only if they were already escalated to. No new
-# resources: failed updates reach silvercare-alerts-dlq like failed alerts.
+# Cancel, acknowledge, and follow-ups (docs/features/alert-cancel.md, alert-routing.md):
+# critical-alert sends a `status_update` for the wearable "I'm OK" button; Track B's
+# API will send one for a caregiver cancel or a nurse acknowledge. alert-processor
+# changes the matching alerts and emails a short follow-up through the same two topics:
+# caregivers (resident_id filter), and for a cancel the nurses if they were emailed or
+# had acknowledged. No new resources: failed updates reach silvercare-alerts-dlq like
+# failed alerts.
 #
 # No critical alert may be lost on the way: critical-alert's failed async invocations
 # and the silvercare_alert rule's failed actions go to silvercare-critical-alert-dlq,
@@ -59,7 +61,7 @@ locals {
   # Per-DLQ alarm text. silvercare-critical-alert-dlq holds Lambda on-failure records
   # and IoT rule error payloads, which have no source queue to redrive to.
   dlq_alarm_descriptions = {
-    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed, an escalation_check may not have emailed the nurses, or a status_update (cancel or acknowledge) may not have been applied or followed up. Inspect it, fix the cause, and redrive it to silvercare-alerts. escalation_check messages are skipped as stale once 15 minutes have passed since the alert was stored, so redriving one later sends no nurse email. A redriven status_update still changes only alerts that are open (cancel: those up to when the press was received)."
+    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed, an escalation_check may not have emailed the nurses, or a status_update (cancel or acknowledge) may not have been applied or followed up. Inspect it, fix the cause, and redrive it to silvercare-alerts. escalation_check messages are skipped as stale once 20 minutes have passed since the alert was stored (all automatic retries finish before that), so redriving one later sends no nurse email. A redriven status_update still changes only alerts that are open (a cancel also acknowledged ones; for the wearable, those up to when the press was received)."
     critical_alert_dlq = "silvercare-critical-alert-dlq has at least one message: a fall or device vitals_alert may not have become an alert, or an alert_cancel may not have cancelled the open alerts. Inspect it, then replay the original payload manually (it cannot be redriven)."
   }
 }
@@ -349,8 +351,9 @@ resource "aws_sns_topic_subscription" "alert_email" {
 # SNS: nurse escalation emails (docs/features/escalation.md, criteria 11-12)
 # ---------------------------------------------------------------------------------------
 
-# Alerts still open 60 s after the first notification (or after being stored, for
-# unassigned devices). Carries the same health data as silvercare-alerts.
+# Critical and unassigned alerts at once, warnings still open 5 minutes after the
+# first notification (docs/features/alert-routing.md), and cancel follow-ups. Carries
+# the same health data as silvercare-alerts.
 resource "aws_sns_topic" "nurses" {
   name = "silvercare-nurses"
   # AWS managed key: free, no key policy to maintain.

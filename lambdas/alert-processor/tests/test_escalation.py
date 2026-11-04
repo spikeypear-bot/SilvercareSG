@@ -1,5 +1,11 @@
 """Escalation to nurses end to end against moto (docs/features/escalation.md, criteria
-2-10 and 17): queuing the delayed check on the alert path, and handling it."""
+2-10 and 17; changed by docs/features/alert-routing.md, criteria 1 and 4): queuing the
+delayed check on the alert path, and handling it.
+
+Since alert-routing only warnings from assigned devices get a check (critical and
+unassigned alerts go to the nurses at once: test_routing.py), so these tests use a
+warning. Checks for critical or unassigned items stored before alert-routing (no
+escalated_at) are still handled the same way; those tests store the item directly."""
 
 from __future__ import annotations
 
@@ -37,6 +43,7 @@ ALERT_KEYS = {
     "reason",
     "error",
     "dispatch_latency_ms",
+    "nurses",
 }
 CHECK_KEYS = ALERT_KEYS | {"kind", "escalation_delay_ms"}
 PORTAL = "https://d0000example.cloudfront.net"
@@ -46,6 +53,11 @@ ISO_MS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\Z")
 T0 = datetime(2026, 11, 3, 2, 0, 0, 0, tzinfo=UTC)
 EVENT_TS_2 = "2026-10-18T03:20:00.000Z"
 EVENT_TS_3 = "2026-10-18T03:25:00.000Z"
+DELAY_S = 300
+# A warning from an assigned device: the only alert that still gets a check.
+WARNING = vitals_body("hr_high", "warning")
+UNASSIGNED_WARNING = vitals_body("hr_high", "warning", resident_id="unassigned")
+ESCALATION_LINE = "Escalated: no response within 5 minutes of the first alert."
 
 
 def exact_check_body(alert_id=ALERT_ID, resident_id=RESIDENT, event_ts=EVENT_TS):
@@ -113,12 +125,22 @@ class Spy:
     """Wraps a client: records (client name, operation, kwargs) into a shared list and
     optionally raises a ClientError on one operation."""
 
-    def __init__(self, client, name, events, fail_on=None, code="ThrottlingException"):
+    def __init__(
+        self,
+        client,
+        name,
+        events,
+        fail_on=None,
+        code="ThrottlingException",
+        fail_nth=None,
+    ):
         self._client = client
         self._name = name
         self._events = events
         self._fail_on = fail_on
         self._code = code
+        self._fail_nth = fail_nth
+        self._count = 0
 
     def __getattr__(self, op):
         method = getattr(self._client, op)
@@ -126,6 +148,8 @@ class Spy:
         def wrapper(**kwargs):
             self._events.append((self._name, op, kwargs))
             if op == self._fail_on:
+                self._count += 1
+            if op == self._fail_on and self._fail_nth in (None, self._count):
                 raise ClientError(
                     {"Error": {"Code": self._code, "Message": "synthetic"}}, op
                 )
@@ -152,7 +176,7 @@ def check_records(logs) -> list[dict]:
 @pytest.fixture(autouse=True)
 def clock(monkeypatch):
     """Fixes handler's datetime.now(UTC) at T0 for every test here, so no test depends
-    on the real clock (a check more than 15 min after created_at is stale). Set
+    on the real clock (a check more than 20 min after created_at is stale). Set
     clock["now"] to move time."""
     state = {"now": T0}
 
@@ -168,16 +192,17 @@ def clock(monkeypatch):
 # ======== queuing the check (criteria 2-4) ========
 
 
-def test_assigned_alert_queues_one_check_with_60_s_delay(aws):
-    assert run(alert_body()) == {"batchItemFailures": []}
+def test_assigned_warning_queues_one_check_with_300_s_delay(aws):
+    assert run(WARNING) == {"batchItemFailures": []}
 
     assert aws.sqs.sends == [
         {
             "QueueUrl": aws.queue_url,
             "MessageBody": exact_check_body(),
-            "DelaySeconds": 60,
+            "DelaySeconds": DELAY_S,
         }
     ]
+    assert aws.nurse_publishes() == []
 
 
 def test_assigned_check_is_queued_after_the_caregiver_email(aws, monkeypatch):
@@ -186,42 +211,30 @@ def test_assigned_check_is_queued_after_the_caregiver_email(aws, monkeypatch):
     spy(monkeypatch, "sqs_client", events)
     spy(monkeypatch, "dynamodb_client", events)
 
-    run(alert_body())
+    run(WARNING)
 
     assert ops(events) == [
-        ("dynamodb_client", "get_item"),  # latest vitals (fall)
+        ("dynamodb_client", "query"),  # repeat check (not for falls)
         ("dynamodb_client", "put_item"),
         ("sns_client", "publish"),
         ("dynamodb_client", "update_item"),  # notified_at
         ("sqs_client", "send_message"),
         ("dynamodb_client", "update_item"),  # escalation_queued_at
     ]
+    assert events[2][2]["TopicArn"] == aws.topic_arn
     assert "notified_at" in events[3][2]["UpdateExpression"]
     assert "escalation_queued_at" in events[5][2]["UpdateExpression"]
 
 
-def test_unassigned_alert_queues_check_after_store_without_email(aws, monkeypatch):
-    events: list = []
-    spy(monkeypatch, "sns_client", events)
-    spy(monkeypatch, "sqs_client", events)
-    spy(monkeypatch, "dynamodb_client", events)
+@pytest.mark.parametrize(
+    "body",
+    [alert_body(), vitals_body("hr_high", "critical"), UNASSIGNED_WARNING],
+    ids=["fall", "critical-vitals", "unassigned-warning"],
+)
+def test_critical_or_unassigned_alert_queues_no_check(aws, body):
+    assert run(body) == {"batchItemFailures": []}
 
-    assert run(alert_body(resident_id="unassigned")) == {"batchItemFailures": []}
-
-    assert ops(events) == [
-        ("dynamodb_client", "get_item"),
-        ("dynamodb_client", "put_item"),
-        ("sqs_client", "send_message"),
-        ("dynamodb_client", "update_item"),
-    ]
-    assert aws.sqs.sends == [
-        {
-            "QueueUrl": aws.queue_url,
-            "MessageBody": exact_check_body(resident_id="unassigned"),
-            "DelaySeconds": 60,
-        }
-    ]
-    assert aws.sns.publishes == []
+    assert aws.sqs.sends == []
 
 
 def test_vitals_alert_queues_check_too(aws):
@@ -234,22 +247,21 @@ def test_escalation_queued_at_is_set_with_a_condition_after_the_send(aws, monkey
     events: list = []
     spy(monkeypatch, "dynamodb_client", events)
 
-    run(alert_body(resident_id="unassigned"))
+    run(WARNING)
 
-    (update,) = [kw for _, op, kw in events if op == "update_item"]
+    _, update = [kw for _, op, kw in events if op == "update_item"]
     assert update["UpdateExpression"] == "SET escalation_queued_at = :now"
     assert update["ConditionExpression"] == (
         "attribute_not_exists(escalation_queued_at)"
     )
-    assert update["Key"] == key(resident_id="unassigned")
-    value = get_item(aws, resident_id="unassigned")["escalation_queued_at"]
-    assert ISO_MS.match(value)
+    assert update["Key"] == key()
+    assert ISO_MS.match(get_item(aws)["escalation_queued_at"])
 
 
 def test_escalation_queued_at_is_the_send_time(aws, clock):
     clock["now"] = T0 + timedelta(milliseconds=1234)
 
-    run(alert_body())
+    run(WARNING)
 
     assert get_item(aws)["escalation_queued_at"] == "2026-11-03T02:00:01.234Z"
 
@@ -274,45 +286,36 @@ def test_invalid_alert_body_queues_no_check(aws, body):
     assert aws.sqs.sends == []
 
 
-@pytest.mark.parametrize("resident_id", [RESIDENT, "unassigned"])
-def test_redelivered_alert_queues_no_second_check(aws, resident_id):
-    run(alert_body(resident_id=resident_id))
-    run(alert_body(resident_id=resident_id))
+def test_redelivered_alert_queues_no_second_check(aws):
+    run(WARNING)
+    run(WARNING)
 
     assert len(aws.sqs.sends) == 1
 
 
-@pytest.mark.parametrize("resident_id", [RESIDENT, "unassigned"])
-def test_item_with_escalation_queued_at_queues_nothing(aws, resident_id):
+def test_item_with_escalation_queued_at_queues_nothing(aws):
     put_item(
         aws,
-        alert_body(resident_id=resident_id),
+        WARNING,
         notified_at="2026-11-03T02:00:00.100Z",
         escalation_queued_at="2026-11-03T02:00:00.200Z",
     )
 
-    assert run(alert_body(resident_id=resident_id)) == {"batchItemFailures": []}
+    assert run(WARNING) == {"batchItemFailures": []}
 
     assert aws.sqs.sends == []
     assert aws.sns.publishes == []
 
 
 @pytest.mark.parametrize("status", ["acknowledged", "cancelled", "resolved"])
-@pytest.mark.parametrize("resident_id", [RESIDENT, "unassigned"])
-def test_redelivered_alert_whose_item_is_not_open_queues_no_check(
-    aws, status, resident_id
-):
-    put_item(
-        aws,
-        alert_body(resident_id=resident_id),
-        status=status,
-        notified_at="2026-11-03T02:00:00.100Z",
-    )
+def test_redelivered_warning_whose_item_is_not_open_queues_no_check(aws, status):
+    put_item(aws, WARNING, status=status, notified_at="2026-11-03T02:00:00.100Z")
 
-    assert run(alert_body(resident_id=resident_id)) == {"batchItemFailures": []}
+    assert run(WARNING) == {"batchItemFailures": []}
 
     assert aws.sqs.sends == []
-    assert "escalation_queued_at" not in get_item(aws, resident_id=resident_id)
+    assert aws.sns.publishes == []
+    assert "escalation_queued_at" not in get_item(aws)
 
 
 def test_failed_send_fails_the_record_and_sets_no_escalation_queued_at(
@@ -320,7 +323,7 @@ def test_failed_send_fails_the_record_and_sets_no_escalation_queued_at(
 ):
     with monkeypatch.context() as m:
         spy(m, "sqs_client", [], fail_on="send_message")
-        result = run(alert_body())
+        result = run(WARNING)
 
     assert result == {"batchItemFailures": [{"itemIdentifier": "sqs-msg-0001"}]}
     item = get_item(aws)
@@ -336,62 +339,53 @@ def test_retry_after_failed_send_queues_check_without_second_caregiver_email(
 ):
     with monkeypatch.context() as m:
         spy(m, "sqs_client", [], fail_on="send_message")
-        run(alert_body())
+        run(WARNING)
 
-    assert run(alert_body()) == {"batchItemFailures": []}
+    assert run(WARNING) == {"batchItemFailures": []}
 
     assert len(aws.alert_publishes()) == 1
+    assert aws.nurse_publishes() == []
     assert [s["MessageBody"] for s in aws.sqs.sends] == [exact_check_body()]
     assert "escalation_queued_at" in get_item(aws)
-
-
-def test_retry_after_failed_send_for_unassigned_alert_queues_check(aws, monkeypatch):
-    with monkeypatch.context() as m:
-        spy(m, "sqs_client", [], fail_on="send_message")
-        assert run(alert_body(resident_id="unassigned"))["batchItemFailures"]
-
-    assert run(alert_body(resident_id="unassigned")) == {"batchItemFailures": []}
-
-    assert len(aws.sqs.sends) == 1
-    assert aws.sns.publishes == []
 
 
 def test_escalation_queued_at_already_set_by_another_delivery_is_not_an_error(
     aws, monkeypatch
 ):
-    # Unassigned: escalation_queued_at is the only UpdateItem on this path.
+    # The 2nd UpdateItem is escalation_queued_at (the 1st is notified_at).
     spy(
         monkeypatch,
         "dynamodb_client",
         [],
         fail_on="update_item",
         code="ConditionalCheckFailedException",
+        fail_nth=2,
     )
 
-    assert run(alert_body(resident_id="unassigned")) == {"batchItemFailures": []}
+    assert run(WARNING) == {"batchItemFailures": []}
     assert len(aws.sqs.sends) == 1
 
 
 def test_escalation_queued_at_update_error_fails_the_record(aws, monkeypatch):
-    spy(monkeypatch, "dynamodb_client", [], fail_on="update_item")
+    spy(monkeypatch, "dynamodb_client", [], fail_on="update_item", fail_nth=2)
 
-    assert run(alert_body(resident_id="unassigned")) == {
-        "batchItemFailures": [{"itemIdentifier": "sqs-msg-0001"}]
-    }
+    assert run(WARNING) == {"batchItemFailures": [{"itemIdentifier": "sqs-msg-0001"}]}
+    assert len(aws.sqs.sends) == 1
 
 
 def test_alert_log_line_has_no_check_keys(aws, logs):
-    run(alert_body())
+    run(WARNING)
 
     (rec,) = logs()
     assert set(rec) - POWERTOOLS_KEYS <= ALERT_KEYS, rec
+    assert rec["nurses"] == "escalation_queued"
 
 
 # ======== handling the check (criteria 5-8) ========
 
 
 def test_open_alert_check_emails_nurses_once(aws):
-    run(alert_body())
+    run(WARNING)
     item = get_item(aws)
 
     assert run(check_body()) == {"batchItemFailures": []}
@@ -399,7 +393,7 @@ def test_open_alert_check_emails_nurses_once(aws):
     (call,) = aws.nurse_publishes()
     assert call == {
         "TopicArn": aws.nurses_topic_arn,
-        "Subject": "SilverCare ESCALATED alert: Fall - res-0003",
+        "Subject": "SilverCare ESCALATED alert: High heart rate - res-0003",
         "Message": email_text.escalation_body(item, RESIDENT, PORTAL),
     }
     assert "MessageAttributes" not in call
@@ -407,19 +401,19 @@ def test_open_alert_check_emails_nurses_once(aws):
 
 
 def test_escalated_alert_gets_escalated_at_and_stays_open(aws, clock):
-    run(alert_body())
-    clock["now"] = T0 + timedelta(seconds=60, milliseconds=250)
+    run(WARNING)
+    clock["now"] = T0 + timedelta(seconds=DELAY_S, milliseconds=250)
 
     run(check_body())
 
     item = get_item(aws)
-    assert item["escalated_at"] == "2026-11-03T02:01:00.250Z"
+    assert item["escalated_at"] == "2026-11-03T02:05:00.250Z"
     assert item["status"] == "open"
     assert item["open_pk"] == "OPEN"
 
 
 def test_escalated_at_update_is_conditional(aws, monkeypatch):
-    run(alert_body())
+    run(WARNING)
     events: list = []
     spy(monkeypatch, "dynamodb_client", events)
 
@@ -432,7 +426,7 @@ def test_escalated_at_update_is_conditional(aws, monkeypatch):
 
 
 def test_escalated_check_log_line(aws, logs):
-    run(alert_body())
+    run(WARNING)
 
     run(check_body())
 
@@ -441,8 +435,8 @@ def test_escalated_check_log_line(aws, logs):
     assert rec["message"] == "alert"
     assert rec["level"] == "INFO"
     assert rec["alert_id"] == ALERT_ID
-    assert rec["alert_type"] == "fall"
-    assert rec["severity"] == "critical"
+    assert rec["alert_type"] == "hr_high"
+    assert rec["severity"] == "warning"
     assert rec["device_id"] == DEVICE
     assert rec["resident_id"] == RESIDENT
     assert rec["kind"] == "escalation_check"
@@ -453,7 +447,7 @@ def test_escalated_check_log_line(aws, logs):
 
 @pytest.mark.parametrize("status", ["acknowledged", "cancelled", "resolved"])
 def test_stopped_alert_is_not_escalated(aws, logs, status):
-    run(alert_body())
+    run(WARNING)
     set_attr(aws, "status", status)
 
     assert run(check_body()) == {"batchItemFailures": []}
@@ -470,7 +464,7 @@ def test_stopped_alert_is_not_escalated(aws, logs, status):
 
 @pytest.mark.parametrize("status", ["Test Resident A said hr 187", "OPEN", "", 1])
 def test_unknown_present_status_is_not_escalated_and_logged_as_other(aws, logs, status):
-    run(alert_body())
+    run(WARNING)
     set_attr(aws, "status", status)
 
     run(check_body())
@@ -487,7 +481,7 @@ def test_unknown_present_status_is_not_escalated_and_logged_as_other(aws, logs, 
 
 
 def test_missing_status_escalates_as_a_fail_safe(aws, logs):
-    run(alert_body())
+    run(WARNING)
     remove_attr(aws, "status")
 
     assert run(check_body()) == {"batchItemFailures": []}
@@ -499,7 +493,7 @@ def test_missing_status_escalates_as_a_fail_safe(aws, logs):
 
 
 def test_already_escalated_alert_is_a_duplicate(aws, logs):
-    run(alert_body())
+    run(WARNING)
     set_attr(aws, "escalated_at", "2026-11-03T02:01:00.000Z")
 
     assert run(check_body()) == {"batchItemFailures": []}
@@ -512,7 +506,7 @@ def test_already_escalated_alert_is_a_duplicate(aws, logs):
 
 
 def test_second_check_for_the_same_alert_sends_no_second_nurse_email(aws, logs):
-    run(alert_body())
+    run(WARNING)
 
     run(check_body())
     run(check_body())
@@ -524,7 +518,7 @@ def test_second_check_for_the_same_alert_sends_no_second_nurse_email(aws, logs):
 def test_condition_failure_after_publish_is_a_duplicate_not_a_failure(
     aws, monkeypatch, logs
 ):
-    run(alert_body())
+    run(WARNING)
     spy(
         monkeypatch,
         "dynamodb_client",
@@ -567,7 +561,7 @@ def test_check_for_a_missing_item_fails_the_record(aws, logs):
 def test_aws_error_while_handling_a_check_fails_the_record(
     aws, monkeypatch, logs, client_fn, operation
 ):
-    run(alert_body())
+    run(WARNING)
     spy(monkeypatch, client_fn, [], fail_on=operation)
 
     assert run(check_body()) == {
@@ -582,7 +576,7 @@ def test_aws_error_while_handling_a_check_fails_the_record(
 
 
 def test_retry_after_nurse_publish_failure_escalates_once(aws, monkeypatch):
-    run(alert_body())
+    run(WARNING)
     with monkeypatch.context() as m:
         spy(m, "sns_client", [], fail_on="publish")
         run(check_body())
@@ -610,7 +604,7 @@ def test_check_makes_no_repeat_query_and_reads_the_item_consistently(aws, monkey
 
 
 def test_handling_a_check_queues_no_further_check(aws):
-    run(alert_body())
+    run(WARNING)
     assert len(aws.sqs.sends) == 1
 
     run(check_body())
@@ -619,8 +613,9 @@ def test_handling_a_check_queues_no_further_check(aws):
 
 
 def test_failing_check_in_a_batch_fails_only_that_record(aws):
-    run(alert_body())
-    run(alert_body(alert_id=ALERT_ID_3, event_ts=EVENT_TS_3))
+    run(WARNING)
+    # Another type, so it isn't held back as a repeat.
+    run(vitals_body("spo2_low", "warning", alert_id=ALERT_ID_3, event_ts=EVENT_TS_3))
 
     result = run(
         check_body(),
@@ -635,7 +630,7 @@ def test_failing_check_in_a_batch_fails_only_that_record(aws):
 
 
 def test_invalid_check_in_a_batch_fails_only_that_record(aws, logs):
-    run(alert_body())
+    run(WARNING)
 
     result = run(check_body(kind="reminder"), check_body())
 
@@ -655,7 +650,7 @@ def test_invalid_check_in_a_batch_fails_only_that_record(aws, logs):
     ],
 )
 def test_invalid_check_is_reported_as_failure_and_sends_nothing(aws, logs, body):
-    run(alert_body())
+    run(WARNING)
 
     assert run(body) == {"batchItemFailures": [{"itemIdentifier": "sqs-msg-0001"}]}
 
@@ -669,21 +664,39 @@ def test_invalid_check_is_reported_as_failure_and_sends_nothing(aws, logs, body)
 # ---- nurse email through the handler (criteria 9-10) ----
 
 
-@pytest.mark.parametrize("severity", ["warning", "critical"])
-def test_nurse_subject_is_escalated_for_both_severities(aws, severity):
-    run(vitals_body("hr_high", severity))
+def test_warning_check_email_has_escalated_subject_and_5_minute_line(aws):
+    run(WARNING)
 
     run(check_body())
 
     (call,) = aws.nurse_publishes()
     assert call["Subject"] == "SilverCare ESCALATED alert: High heart rate - res-0003"
     assert len(call["Subject"]) <= 100
+    assert "Severity: Warning" in call["Message"]
+    assert ESCALATION_LINE in call["Message"]
+    assert "60 s" not in call["Message"]
+
+
+@pytest.mark.parametrize("severity", ["warning", "critical"])
+def test_check_of_item_stored_before_routing_escalates_for_both_severities(
+    aws, severity
+):
+    """A critical item without escalated_at (stored before alert-routing) is still
+    escalated by a check; check handling is unchanged (criterion 4)."""
+    put_item(aws, vitals_body("hr_high", severity))
+
+    run(check_body())
+
+    (call,) = aws.nurse_publishes()
+    assert call["Subject"] == "SilverCare ESCALATED alert: High heart rate - res-0003"
     assert f"Severity: {severity.capitalize()}" in call["Message"]
-    assert "Escalated: no response within 60 s of the first alert." in call["Message"]
+    assert ESCALATION_LINE in call["Message"]
+    assert "Sent to the care centre at once" not in call["Message"]
 
 
 def test_unassigned_check_emails_nurses_with_device_line(aws):
-    run(alert_body(resident_id="unassigned"))
+    # Stored before alert-routing: no escalated_at, so a check still escalates.
+    put_item(aws, alert_body(resident_id="unassigned"))
     item = get_item(aws, resident_id="unassigned")
 
     assert run(check_body(resident_id="unassigned")) == {"batchItemFailures": []}
@@ -708,18 +721,18 @@ def test_caregiver_email_is_unchanged_by_escalation(aws):
 
 
 def test_escalation_delay_is_from_notified_at(aws, logs, clock):
-    run(alert_body())  # notified_at = T0
+    run(WARNING)  # notified_at = T0
     assert get_item(aws)["notified_at"] == "2026-11-03T02:00:00.000Z"
-    clock["now"] = T0 + timedelta(seconds=60, milliseconds=250)
+    clock["now"] = T0 + timedelta(seconds=DELAY_S, milliseconds=250)
 
     run(check_body())
 
     (rec,) = check_records(logs)
-    assert rec["escalation_delay_ms"] == 60250
+    assert rec["escalation_delay_ms"] == 300250
 
 
 def test_escalation_delay_for_unassigned_is_from_created_at(aws, logs, clock):
-    run(alert_body(resident_id="unassigned"))  # created_at = T0
+    put_item(aws, UNASSIGNED_WARNING)  # created_at = T0, stored before routing
     clock["now"] = T0 + timedelta(seconds=61, milliseconds=5)
 
     run(check_body(resident_id="unassigned"))
@@ -754,8 +767,7 @@ def test_escalation_delay_pure():
 
 
 def test_check_log_has_no_delay_when_item_has_no_valid_timestamps(aws, logs):
-    run(alert_body(resident_id="unassigned"))
-    set_attr(aws, "created_at", "not a time", resident_id="unassigned")
+    put_item(aws, UNASSIGNED_WARNING, created_at="not a time")
 
     run(check_body(resident_id="unassigned"))
 
@@ -804,7 +816,7 @@ def test_needs_escalation_check(item, needed):
 
 
 def test_check_log_masks_hand_edited_item_fields(aws, logs):
-    run(alert_body())
+    run(WARNING)
     set_attr(aws, "device_id", "Test Resident A")
     set_attr(aws, "severity", "very bad hr 187")
 
@@ -870,19 +882,19 @@ def test_logs_hold_no_values_details_emails_or_body(aws, logs):
 
 # ======== stale checks (decisions table, criterion 5) ========
 
-FIFTEEN_MIN = timedelta(minutes=15)
+STALE_AFTER = timedelta(minutes=20)
 CREATED = "2026-11-03T02:00:00.000Z"  # T0
 
 
 @pytest.mark.parametrize(
     ("after", "decision"),
     [
-        (FIFTEEN_MIN - timedelta(milliseconds=1), None),
-        (FIFTEEN_MIN, None),
-        (FIFTEEN_MIN + timedelta(milliseconds=1), ("not_escalated", "stale")),
+        (STALE_AFTER - timedelta(milliseconds=1), None),
+        (STALE_AFTER, None),
+        (STALE_AFTER + timedelta(milliseconds=1), ("not_escalated", "stale")),
         (timedelta(days=3), ("not_escalated", "stale")),
     ],
-    ids=["just-below", "exactly-15-min", "just-above", "days-later"],
+    ids=["just-below", "exactly-20-min", "just-above", "days-later"],
 )
 def test_stale_boundary(after, decision):
     item = {"status": "open", "created_at": CREATED}
@@ -927,16 +939,16 @@ def test_status_then_escalated_at_then_stale(item, decision):
 def test_escalation_decision_now_defaults_to_the_current_time(clock):
     item = {"status": "open", "created_at": CREATED}
 
-    clock["now"] = T0 + FIFTEEN_MIN + timedelta(milliseconds=1)
+    clock["now"] = T0 + STALE_AFTER + timedelta(milliseconds=1)
     assert handler.escalation_decision(item) == ("not_escalated", "stale")
-    clock["now"] = T0 + FIFTEEN_MIN
+    clock["now"] = T0 + STALE_AFTER
     assert handler.escalation_decision(item) is None
 
 
 @pytest.mark.parametrize("resident_id", [RESIDENT, "unassigned"])
 def test_stale_check_emails_nobody(aws, logs, clock, resident_id):
-    run(alert_body(resident_id=resident_id))  # created_at = T0
-    clock["now"] = T0 + FIFTEEN_MIN + timedelta(milliseconds=1)
+    put_item(aws, vitals_body(resident_id=resident_id))  # created_at = T0
+    clock["now"] = T0 + STALE_AFTER + timedelta(milliseconds=1)
 
     assert run(check_body(resident_id=resident_id)) == {"batchItemFailures": []}
 
@@ -951,21 +963,55 @@ def test_stale_check_emails_nobody(aws, logs, clock, resident_id):
     assert "escalation_delay_ms" not in rec
 
 
-def test_check_exactly_15_minutes_after_created_at_escalates(aws, logs, clock):
-    run(alert_body())
-    clock["now"] = T0 + FIFTEEN_MIN
+def test_check_exactly_20_minutes_after_created_at_escalates(aws, logs, clock):
+    run(WARNING)
+    clock["now"] = T0 + STALE_AFTER
 
     run(check_body())
 
     assert len(aws.nurse_publishes()) == 1
     (rec,) = check_records(logs)
     assert rec["outcome"] == "escalated"
-    assert rec["escalation_delay_ms"] == 900000
+    assert rec["escalation_delay_ms"] == 1_200_000
+
+
+def test_stale_after_is_20_minutes():
+    assert handler.STALE_AFTER == timedelta(minutes=20)
+
+
+def test_check_on_its_5th_try_about_17_minutes_after_created_at_still_emails(
+    aws, logs, clock
+):
+    """A check first arrives 300 s after the alert and is retried every 180 s, so its
+    5th try is at about 17 minutes: still within the 20-minute limit."""
+    run(WARNING)  # created_at = notified_at = T0
+    clock["now"] = T0 + timedelta(seconds=DELAY_S + 4 * 180)
+
+    assert run(check_body()) == {"batchItemFailures": []}
+
+    assert len(aws.nurse_publishes()) == 1
+    (rec,) = check_records(logs)
+    assert rec["outcome"] == "escalated"
+    assert rec["escalation_delay_ms"] == 1_020_000
+
+
+def test_check_15_minutes_and_1_ms_after_created_at_is_no_longer_stale(
+    aws, logs, clock
+):
+    """The old 15-minute limit no longer applies."""
+    run(WARNING)
+    clock["now"] = T0 + timedelta(minutes=15, milliseconds=1)
+
+    run(check_body())
+
+    assert len(aws.nurse_publishes()) == 1
+    (rec,) = check_records(logs)
+    assert rec["outcome"] == "escalated"
 
 
 @pytest.mark.parametrize("bad", ["not a time", None])
 def test_check_with_invalid_or_missing_created_at_escalates(aws, logs, clock, bad):
-    run(alert_body())
+    run(WARNING)
     if bad is None:
         remove_attr(aws, "created_at")
     else:
@@ -980,7 +1026,7 @@ def test_check_with_invalid_or_missing_created_at_escalates(aws, logs, clock, ba
 
 
 def test_stale_acknowledged_alert_logs_the_status_reason(aws, logs, clock):
-    run(alert_body())
+    run(WARNING)
     set_attr(aws, "status", "acknowledged")
     clock["now"] = T0 + timedelta(hours=1)
 
@@ -991,7 +1037,7 @@ def test_stale_acknowledged_alert_logs_the_status_reason(aws, logs, clock):
 
 
 def test_stale_escalated_alert_is_a_duplicate(aws, logs, clock):
-    run(alert_body())
+    run(WARNING)
     set_attr(aws, "escalated_at", "2026-11-03T02:01:00.000Z")
     clock["now"] = T0 + timedelta(hours=1)
 
@@ -1030,7 +1076,7 @@ def test_missing_or_unknown_alert_type_escalates_with_label_alert(
 @pytest.mark.parametrize("details", ["free text", ["x"], None, 5])
 @pytest.mark.parametrize("make", [alert_body, vitals_body], ids=["fall", "vitals"])
 def test_non_dict_details_still_escalates(aws, logs, details, make):
-    run(make())
+    put_item(aws, make())  # a fall: stored before routing, without escalated_at
     if details is None:
         remove_attr(aws, "details")
     else:
@@ -1044,7 +1090,7 @@ def test_non_dict_details_still_escalates(aws, logs, details, make):
 
 @pytest.mark.parametrize("device_id", ["Test Resident A", "wearable-07", 7, None])
 def test_unassigned_hand_edited_device_id_prints_device_invalid(aws, device_id):
-    run(alert_body(resident_id="unassigned"))
+    put_item(aws, UNASSIGNED_WARNING)  # stored before routing, no escalated_at
     if device_id is None:
         remove_attr(aws, "device_id", resident_id="unassigned")
     else:

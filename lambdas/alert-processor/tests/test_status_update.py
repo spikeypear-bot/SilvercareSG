@@ -1,6 +1,8 @@
 """Status updates end to end against moto (docs/features/alert-cancel.md, criteria 8-12
-and 19): cancel and acknowledge targets, the conditional updates, follow-up emails,
-retries, the later escalation check, and log privacy."""
+and 19; changed by docs/features/alert-routing.md, criteria 10-15): resident cancel
+targets, the conditional updates, follow-up emails, retries, the later escalation
+check, and log privacy. Nurse acknowledges and caregiver cancels are in
+test_status_update_routing.py."""
 
 from __future__ import annotations
 
@@ -16,16 +18,18 @@ from events import (
     ALERT_ID_2,
     ALERT_ID_3,
     CAREGIVER_NAME,
+    CAREGIVER_SUB,
     CHANGED_AT,
     DEVICE,
     EVENT_TS,
+    NOTE,
+    NURSE_SUB,
     RESIDENT,
-    STAFF_NAME,
-    STAFF_SUB,
-    ack_body,
     alert_body,
     cancel_body,
+    caregiver_cancel_body,
     check_body,
+    nurse_ack_body,
     record,
     sqs_event,
     vitals_body,
@@ -262,7 +266,7 @@ def test_escalated_at_set_just_before_the_cancel_still_emails_nurses(aws, monkey
     assert status_update["ReturnValues"] == "ALL_NEW"
 
 
-def test_cancel_update_is_conditional_on_status_open(aws, monkeypatch):
+def test_cancel_update_is_conditional_on_status_open_or_acknowledged(aws, monkeypatch):
     put_alert(aws)
     events: list = []
     spy(monkeypatch, "dynamodb_client", events)
@@ -270,8 +274,10 @@ def test_cancel_update_is_conditional_on_status_open(aws, monkeypatch):
     run(cancel_body())
 
     first, second = [kw for op, kw in events if op == "update_item"]
-    assert first["ConditionExpression"] == "#status = :open"
-    assert "REMOVE open_pk" in first["UpdateExpression"]
+    assert first["ConditionExpression"] == "#status IN (:open, :acknowledged)"
+    assert first["ExpressionAttributeValues"][":open"] == {"S": "open"}
+    assert first["ExpressionAttributeValues"][":acknowledged"] == {"S": "acknowledged"}
+    assert first["UpdateExpression"].endswith("REMOVE open_pk, status_notified_at")
     assert second["UpdateExpression"] == "SET status_notified_at = :now"
     assert second["ConditionExpression"] == "attribute_not_exists(status_notified_at)"
 
@@ -356,8 +362,10 @@ def test_cancel_leaves_another_residents_alert_open(aws):
     assert get_item(aws, resident_id="res-0004")["status"] == "open"
 
 
-@pytest.mark.parametrize("status", ["acknowledged", "resolved"])
-def test_cancel_leaves_a_non_open_alert_unchanged_without_email(aws, logs, status):
+@pytest.mark.parametrize("status", ["cancelled", "resolved"])
+def test_cancel_leaves_a_cancelled_or_resolved_alert_unchanged_without_email(
+    aws, logs, status
+):
     put_alert(aws, status=status, open_pk=None, status_notified_at=T0_ISO)
 
     assert run(cancel_body()) == {"batchItemFailures": []}
@@ -370,15 +378,42 @@ def test_cancel_leaves_a_non_open_alert_unchanged_without_email(aws, logs, statu
     assert rec["outcome"] == "no_open_alerts"
 
 
-def test_acknowledged_alert_without_status_notified_at_is_not_a_cancel_target(
-    aws, logs
-):
-    put_alert(aws, status="acknowledged", acknowledged_by=STAFF_SUB, open_pk=None)
+def test_acknowledged_alert_without_status_notified_at_is_still_cancelled(aws, logs):
+    """A cancel applies to acknowledged alerts (alert-routing criterion 10), whether
+    or not the acknowledge's follow-up went out."""
+    put_alert(
+        aws,
+        status="acknowledged",
+        acknowledged_at="2026-10-18T03:14:30.000Z",
+        acknowledged_by=NURSE_SUB,
+    )
 
     run(cancel_body())
 
-    assert get_item(aws)["status"] == "acknowledged"
+    item = get_item(aws)
+    assert item["status"] == "cancelled"
+    assert item["acknowledged_by"] == NURSE_SUB
+    assert item["status_notified_at"] == T0_ISO
+    (rec,) = status_records(logs)
+    assert rec["outcome"] == "updated"
+
+
+def test_resident_cancel_retry_needs_cancelled_by_role_resident(aws, logs):
+    """An item cancelled by a caregiver whose follow-up is missing is not the
+    resident's to retry: the wearable cancel finds no alert and emails nobody."""
+    put_alert(
+        aws,
+        **{
+            **cancelled_attrs(),
+            "cancelled_by_role": "caregiver",
+            "cancelled_by": CAREGIVER_SUB,
+        },
+    )
+
+    assert run(cancel_body()) == {"batchItemFailures": []}
+
     assert aws.sns.publishes == []
+    assert "status_notified_at" not in get_item(aws)
     (rec,) = status_records(logs)
     assert rec["outcome"] == "no_open_alerts"
 
@@ -397,6 +432,27 @@ def test_cancel_query_is_consistent_and_bounded_by_changed_at(aws, monkeypatch):
     assert values[":pk"] == {"S": f"RESIDENT#{RESIDENT}"}
     assert values[":high"] == {"S": f"ALERT#{CHANGED_AT}#~"}
     assert values[":device"] == {"S": DEVICE}
+    assert "#status IN (:open, :acknowledged)" in kw["FilterExpression"]
+    assert values[":acknowledged"] == {"S": "acknowledged"}
+
+
+def test_cancel_query_projects_the_retry_fields_but_never_ack_note(aws, monkeypatch):
+    events: list = []
+    spy(monkeypatch, "dynamodb_client", events)
+
+    run(cancel_body())
+
+    ((_, kw),) = events
+    projected = {name.strip() for name in kw["ProjectionExpression"].split(",")}
+    assert {
+        "acknowledged_at",
+        "cancelled_by",
+        "cancelled_by_role",
+        "status_notified_at",
+        "escalated_at",
+    } <= projected
+    assert "ack_note" not in projected
+    assert "details" not in projected
 
 
 def test_cancel_query_follows_every_page(aws, monkeypatch):
@@ -500,13 +556,13 @@ def test_alert_changed_before_the_update_is_skipped_without_email(
         monkeypatch,
         "dynamodb_client",
         [],
-        before={("update_item", 1): lambda: set_attr(aws, "status", "acknowledged")},
+        before={("update_item", 1): lambda: set_attr(aws, "status", "resolved")},
     )
 
     assert run(cancel_body()) == {"batchItemFailures": []}
 
     item = get_item(aws)
-    assert item["status"] == "acknowledged"
+    assert item["status"] == "resolved"
     assert "cancelled_at" not in item
     assert "status_notified_at" not in item
     assert aws.sns.publishes == []
@@ -590,134 +646,12 @@ def test_query_failure_fails_the_record(aws, monkeypatch, logs):
     assert rec["outcome"] == "error"
 
 
-# ======== acknowledge (alert target) ========
-
-
-def test_staff_acknowledge_sets_acknowledged_fields_and_keeps_open_pk(aws):
-    put_alert(aws)
-
-    assert run(ack_body("staff")) == {"batchItemFailures": []}
-
-    item = get_item(aws)
-    assert item["status"] == "acknowledged"
-    assert item["acknowledged_at"] == CHANGED_AT
-    assert item["acknowledged_by"] == STAFF_SUB
-    assert item["open_pk"] == "OPEN"
-    assert "expires_at" not in item
-    assert "cancelled_at" not in item
-    assert item["status_notified_at"] == T0_ISO
-
-
-def test_staff_acknowledge_emails_caregivers_with_masked_name(aws):
-    put_alert(aws)
-
-    run(ack_body("staff"))
-
-    (pub,) = aws.alert_publishes()
-    assert pub["Subject"] == "SilverCare update: Fall - res-0003 acknowledged"
-    assert (
-        "The alert below was acknowledged by Te** Nu*** Al*** (staff) at"
-        " 2026-10-18 11:15:00 SGT." in pub["Message"]
-    )
-    assert STAFF_NAME not in pub["Message"]
-    assert STAFF_SUB not in pub["Message"]
-
-
-def test_caregiver_acknowledge_email_says_caregiver(aws):
-    put_alert(aws)
-
-    run(ack_body("caregiver"))
-
-    (pub,) = aws.alert_publishes()
-    assert "by Te** Ca******* Be** (caregiver) at" in pub["Message"]
-    assert CAREGIVER_NAME not in pub["Message"]
-
-
-def test_acknowledge_changes_only_the_named_alert(aws):
-    put_alert(aws)
-    put_alert(aws, alert_body(alert_id=ALERT_ID_2, event_ts=EVENT_TS_2))
-
-    run(ack_body())
-
-    assert get_item(aws)["status"] == "acknowledged"
-    assert get_item(aws, alert_id=ALERT_ID_2, event_ts=EVENT_TS_2)["status"] == "open"
-
-
-def test_acknowledge_reads_the_alert_with_a_consistent_get(aws, monkeypatch):
-    put_alert(aws)
-    events: list = []
-    spy(monkeypatch, "dynamodb_client", events)
-
-    run(ack_body())
-
-    op, kw = events[0]
-    assert op == "get_item"
-    assert kw["ConsistentRead"] is True
-    assert kw["Key"] == key()
-
-
-@pytest.mark.parametrize("status", ["cancelled", "resolved"])
-def test_acknowledge_of_non_open_alert_is_not_open_without_email(aws, logs, status):
-    put_alert(aws, status=status, open_pk=None, status_notified_at=T0_ISO)
-
-    assert run(ack_body()) == {"batchItemFailures": []}
-
-    assert aws.sns.publishes == []
-    (rec,) = status_records(logs)
-    assert rec["outcome"] == "not_open"
-
-
-def test_acknowledge_of_missing_alert_is_not_open(aws, logs):
-    assert run(ack_body()) == {"batchItemFailures": []}
-
-    (rec,) = status_records(logs)
-    assert rec["outcome"] == "not_open"
-
-
-def test_acknowledge_retry_by_the_same_user_sends_the_missing_follow_up(aws):
-    put_alert(
-        aws,
-        status="acknowledged",
-        acknowledged_at=CHANGED_AT,
-        acknowledged_by=STAFF_SUB,
-    )
-
-    run(ack_body())
-
-    assert len(aws.alert_publishes()) == 1
-    assert get_item(aws)["status_notified_at"] == T0_ISO
-
-
-def test_acknowledge_by_another_user_after_an_unnotified_one_sends_nothing(aws, logs):
-    put_alert(
-        aws,
-        status="acknowledged",
-        acknowledged_at=CHANGED_AT,
-        acknowledged_by="a1b2c3d4-0000-4000-8000-0000000000ff",
-    )
-
-    run(ack_body())
-
-    assert aws.sns.publishes == []
-    assert "status_notified_at" not in get_item(aws)
-    (rec,) = status_records(logs)
-    assert rec["outcome"] == "not_open"
-
-
-def test_acknowledge_of_escalated_alert_emails_nurses_too(aws):
-    put_alert(aws, escalated_at="2026-11-03T01:59:00.000Z")
-
-    run(ack_body())
-
-    assert len(aws.nurse_publishes()) == 1
-    assert len(aws.alert_publishes()) == 1
-
-
 # ======== later escalation check (criterion 19) ========
 
 
 def test_cancelled_alert_later_escalation_check_is_not_escalated(aws, logs):
-    run(alert_body())
+    # A warning: the only kind that still gets an escalation check.
+    run(vitals_body("hr_high", "warning"))
     run(cancel_body())
 
     assert run(check_body()) == {"batchItemFailures": []}
@@ -772,51 +706,91 @@ def _log_text(logs) -> str:
     )
 
 
-def test_acknowledge_logs_never_hold_by_name_details_or_email_text(aws, logs):
+def test_acknowledge_logs_never_hold_by_note_details_or_email_text(aws, logs):
     put_alert(aws, escalated_at="2026-11-03T01:59:00.000Z")
 
-    run(ack_body("staff"))
+    run(nurse_ack_body(note=NOTE))
 
     text = _log_text(logs)
     # Real IDs first, before UUIDs are replaced.
-    assert STAFF_SUB not in text
+    assert NURSE_SUB not in text
     text = UUID.sub("<uuid>", text)
     for hidden in (
-        STAFF_NAME,
-        "Test",
-        "Nurse",
-        "Alpha",
-        "Te**",
-        "Nu***",
-        "Al***",
+        NOTE,
+        "Synthetic",
+        "ambulance",
+        "8 minutes",
         "0.91",
         "3.8",
         "confidence",
         "details",
         "SilverCare update",
         "was acknowledged",
-        "(staff)",
+        "care centre",
+        "Message from",
         "Open the SilverCare portal",
         "by_name",
         "'by'",
         "by=",
     ):
         assert hidden not in text, hidden
+    # has_note is allowed; a note, ack_note, by, or by_name key is not.
+    for rec in logs():
+        assert not {"note", "ack_note", "by", "by_name"} & set(rec), rec
+    assert [r["has_note"] for r in status_records(logs)] == [True]
 
 
-def test_rejected_status_update_logs_never_hold_by_or_by_name(aws, logs):
-    body = ack_body("staff", by_name="Test Nurse Alpha\n")
+def test_caregiver_cancel_logs_never_hold_by_or_by_name(aws, logs):
+    put_alert(aws, escalated_at="2026-11-03T01:59:00.000Z")
 
+    run(caregiver_cancel_body())
+
+    text = _log_text(logs)
+    assert CAREGIVER_SUB not in text
+    text = UUID.sub("<uuid>", text)
+    for hidden in (
+        CAREGIVER_NAME,
+        "Test",
+        "Caregiver",
+        "Beta",
+        "Te**",
+        "Ca*******",
+        "(caregiver)",
+        "by_name",
+        "by=",
+        "SilverCare update",
+    ):
+        assert hidden not in text, hidden
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        (caregiver_cancel_body(by_name="Test Caregiver Beta\n"), "invalid:by_name"),
+        (nurse_ack_body(note="Synthetic note\twith a tab"), "invalid:note"),
+        (
+            nurse_ack_body(note="Synthetic note", by_name="Test Nurse"),
+            "invalid:by_name",
+        ),
+        (caregiver_cancel_body(note="Synthetic note"), "invalid:note"),
+        (nurse_ack_body(note="Synthetic\u202enote"), "invalid:note"),
+    ],
+    ids=["bad-by_name", "bad-note", "nurse-by_name", "cancel-note", "bidi-note"],
+)
+def test_rejected_status_update_logs_never_hold_by_by_name_or_note(
+    aws, logs, body, reason
+):
     result = run(body)
 
     assert result == {"batchItemFailures": [{"itemIdentifier": "sqs-msg-0001"}]}
     text = _log_text(logs)
-    assert STAFF_SUB not in text
+    assert NURSE_SUB not in text
+    assert CAREGIVER_SUB not in text
     text = UUID.sub("<uuid>", text)
-    for hidden in ("Test", "Nurse", "Alpha", "by_name="):
+    for hidden in ("Test", "Caregiver", "Nurse", "Synthetic", "by_name=", "note="):
         assert hidden not in text, hidden
     (rec,) = logs()
-    assert rec["reason"] == "invalid:by_name"
+    assert rec["reason"] == reason
 
 
 def test_cancel_logs_never_hold_email_text_or_details(aws, logs):

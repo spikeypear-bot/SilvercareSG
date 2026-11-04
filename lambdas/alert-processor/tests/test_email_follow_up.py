@@ -108,16 +108,16 @@ def test_cancel_body_is_exact():
     )
 
 
-def test_staff_acknowledge_body_has_masked_name_and_staff_role():
+def test_nurse_acknowledge_body_names_the_care_centre_nurse():
     text = body(
         it=item(alert_type="hr_high", severity="warning"),
         new_status="acknowledged",
-        by_role="staff",
-        by_name="Test Nurse Alpha",
+        by_role="nurse",
+        by_name=None,
     )
 
     assert text == expected(
-        "The alert below was acknowledged by Te** Nu*** Al*** (staff) at"
+        "The alert below was acknowledged by the care centre nurse at"
         " 2026-11-03 10:00:05 SGT.",
         "Type: High heart rate",
         "Severity: Warning",
@@ -126,13 +126,56 @@ def test_staff_acknowledge_body_has_masked_name_and_staff_role():
     )
 
 
-def test_caregiver_acknowledge_body_has_masked_name_and_caregiver_role():
+def test_nurse_acknowledge_with_note_adds_the_note_block_after_when():
     text = body(
-        new_status="acknowledged", by_role="caregiver", by_name="Test Caregiver Beta"
+        new_status="acknowledged",
+        by_role="nurse",
+        by_name=None,
+        note="Synthetic note: ambulance on the way, 8 minutes.",
     )
 
     assert text == expected(
-        "The alert below was acknowledged by Te** Ca******* Be** (caregiver) at"
+        "The alert below was acknowledged by the care centre nurse at"
+        " 2026-11-03 10:00:05 SGT.",
+        "Type: Fall",
+        "Severity: Critical",
+        "Resident: res-0001",
+        "When: 2026-11-03 10:00:00 SGT",
+        "",
+        "Message from the care centre:",
+        "> Synthetic note: ambulance on the way, 8 minutes.",
+    )
+
+
+def test_note_keeps_its_lines_as_sent():
+    note = "Synthetic line one.\n  Synthetic indented line.\n\nSynthetic last line."
+
+    lines = body(
+        new_status="acknowledged", by_role="nurse", by_name=None, note=note
+    ).splitlines()
+
+    i = lines.index("Message from the care centre:")
+    # Every line is quoted with "> ", an empty one too (alert-routing review fix).
+    assert lines[i + 1 : i + 5] == [
+        "> Synthetic line one.",
+        ">   Synthetic indented line.",
+        "> ",
+        "> Synthetic last line.",
+    ]
+    assert lines[i + 5] == ""
+
+
+def test_nurse_acknowledge_without_note_has_no_note_block():
+    text = body(new_status="acknowledged", by_role="nurse", by_name=None, note=None)
+
+    assert "Message from the care centre" not in text
+
+
+def test_caregiver_cancel_body_has_masked_name_and_caregiver_role():
+    text = body(by_role="caregiver", by_name="Test Caregiver Beta")
+
+    assert text == expected(
+        "The alert below was cancelled by Te** Ca******* Be** (caregiver) at"
         " 2026-11-03 10:00:05 SGT.",
         "Type: Fall",
         "Severity: Critical",
@@ -141,12 +184,83 @@ def test_caregiver_acknowledge_body_has_masked_name_and_caregiver_role():
     )
 
 
-def test_acknowledge_body_never_has_the_full_name():
-    text = body(new_status="acknowledged", by_role="staff", by_name="Test Nurse Alpha")
+def test_caregiver_cancel_body_never_has_the_full_name():
+    text = body(by_role="caregiver", by_name="Test Caregiver Beta")
 
-    assert "Test Nurse Alpha" not in text
-    assert "Nurse" not in text
-    assert "Alpha" not in text
+    assert "Test Caregiver Beta" not in text
+    assert "Caregiver Beta" not in text
+    assert "Beta" not in text
+
+
+def test_cancel_of_acknowledged_alert_adds_the_acknowledged_line():
+    acked = item(acknowledged_at="2026-11-03T02:00:02.000Z")
+
+    text = body(it=acked, by_role="caregiver", by_name="Tan Mei Ling")
+
+    expected_lines = [
+        "SilverCare update",
+        "",
+        (
+            "The alert below was cancelled by Ta* Me* Li** (caregiver) at"
+            " 2026-11-03 10:00:05 SGT."
+        ),
+        (
+            "It had been acknowledged by the care centre nurse at"
+            " 2026-11-03 10:00:02 SGT."
+        ),
+        "",
+        "Type: Fall",
+        "Severity: Critical",
+        "Resident: res-0001",
+        "When: 2026-11-03 10:00:00 SGT",
+        "",
+        "Open the SilverCare portal: https://d0000example.cloudfront.net/",
+        "",
+        "This is an automated message. Do not reply.",
+        "",
+    ]
+    assert text.split("\n") == expected_lines
+
+
+def test_resident_cancel_of_acknowledged_alert_adds_the_acknowledged_line():
+    acked = item(acknowledged_at="2026-11-03T02:00:02.000Z")
+
+    lines = body(it=acked).splitlines()
+
+    assert lines[2:4] == [
+        "The alert below was cancelled by the resident at 2026-11-03 10:00:05 SGT.",
+        "It had been acknowledged by the care centre nurse at 2026-11-03 10:00:02 SGT.",
+    ]
+
+
+@pytest.mark.parametrize("acknowledged_at", ["Test Resident A", "2026-11-03", 7])
+def test_cancel_with_bad_acknowledged_at_says_an_unknown_time(acknowledged_at):
+    text = body(it=item(acknowledged_at=acknowledged_at))
+
+    assert (
+        "\nIt had been acknowledged by the care centre nurse at an unknown time.\n"
+        in text
+    )
+    assert "Test Resident" not in text
+
+
+def test_cancel_line_keys_on_acknowledged_at_not_status_or_acknowledged_by():
+    """acknowledged_by alone (no acknowledged_at) adds no acknowledged line."""
+    it = item(acknowledged_by="a1b2c3d4-0000-4000-8000-00000000abcd")
+
+    assert "It had been acknowledged" not in body(it=it)
+
+
+def test_acknowledge_body_has_no_cancel_after_acknowledge_line():
+    it = item(acknowledged_at="2026-11-03T02:00:02.000Z")
+
+    text = body(it=it, new_status="acknowledged", by_role="nurse", by_name=None)
+
+    assert "It had been acknowledged" not in text
+
+
+def test_cancel_of_unacknowledged_alert_has_no_acknowledged_line():
+    assert "It had been acknowledged" not in body()
 
 
 def test_unassigned_body_adds_device_line_after_resident():

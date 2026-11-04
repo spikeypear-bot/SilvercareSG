@@ -186,15 +186,26 @@ def check_body(**overrides: Any) -> str:
     return json.dumps(check_message(**overrides), separators=(",", ":"))
 
 
-# ---- status updates (docs/features/alert-cancel.md, criterion 6) ----
+# ---- status updates (docs/features/alert-cancel.md, criterion 6; changed by
+# docs/features/alert-routing.md, criterion 9) ----
 
-# A synthetic Cognito sub (lowercase UUID) and a synthetic full name for acknowledges.
-STAFF_SUB = "a1b2c3d4-0000-4000-8000-00000000abcd"
+# Synthetic Cognito subs (lowercase UUIDs) and a synthetic full name for cancels.
+NURSE_SUB = "a1b2c3d4-0000-4000-8000-00000000abcd"
 CAREGIVER_SUB = "a1b2c3d4-0000-4000-8000-00000000cafe"
-STAFF_NAME = "Test Nurse Alpha"
 CAREGIVER_NAME = "Test Caregiver Beta"
+CAREGIVER_MASKED = "Te** Ca******* Be**"
+NOTE = "Synthetic note: ambulance on the way, 8 minutes."
 # The cancel press reached AWS IoT 52.64 s after the default alert's event_ts.
 CHANGED_AT = "2026-10-18T03:15:00.000Z"
+
+
+def _apply(body: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    for name, value in overrides.items():
+        if value is DELETE:
+            body.pop(name, None)
+        else:
+            body[name] = value
+    return body
 
 
 def cancel_message(**overrides: Any) -> dict[str, Any]:
@@ -211,32 +222,47 @@ def cancel_message(**overrides: Any) -> dict[str, Any]:
         "by_name": None,
         "target": {"device_id": DEVICE},
     }
-    for name, value in overrides.items():
-        if value is DELETE:
-            body.pop(name, None)
-        else:
-            body[name] = value
-    return body
+    return _apply(body, overrides)
 
 
-def ack_message(by_role: str = "staff", **overrides: Any) -> dict[str, Any]:
-    """A valid acknowledge (alert target) of the default alert by staff or a
-    caregiver."""
-    staff = by_role == "staff"
-    fields: dict[str, Any] = {
-        "new_status": "acknowledged",
-        "by_role": by_role,
-        "by": STAFF_SUB if staff else CAREGIVER_SUB,
-        "by_name": STAFF_NAME if staff else CAREGIVER_NAME,
-        "target": {"alert_id": ALERT_ID, "event_ts": EVENT_TS},
-    }
-    fields.update(overrides)
-    return cancel_message(**fields)
+def caregiver_cancel_message(**overrides: Any) -> dict[str, Any]:
+    """A valid caregiver cancel (alert target, sub, name claim, no note key) of the
+    default alert. Pass a field as DELETE to remove it."""
+    body = cancel_message(
+        by_role="caregiver",
+        by=CAREGIVER_SUB,
+        by_name=CAREGIVER_NAME,
+        target={"alert_id": ALERT_ID, "event_ts": EVENT_TS},
+    )
+    return _apply(body, overrides)
+
+
+def nurse_ack_message(note: Any = DELETE, **overrides: Any) -> dict[str, Any]:
+    """A valid nurse acknowledge (alert target, sub, by_name null) of the default
+    alert. `note` is absent unless given (None sends "note": null)."""
+    body = cancel_message(
+        new_status="acknowledged",
+        by_role="nurse",
+        by=NURSE_SUB,
+        by_name=None,
+        target={"alert_id": ALERT_ID, "event_ts": EVENT_TS},
+    )
+    if note is not DELETE:
+        body["note"] = note
+    return _apply(body, overrides)
+
+
+def _compact(body: dict[str, Any]) -> str:
+    return json.dumps(body, separators=(",", ":"))
 
 
 def cancel_body(**overrides: Any) -> str:
-    return json.dumps(cancel_message(**overrides), separators=(",", ":"))
+    return _compact(cancel_message(**overrides))
 
 
-def ack_body(by_role: str = "staff", **overrides: Any) -> str:
-    return json.dumps(ack_message(by_role, **overrides), separators=(",", ":"))
+def caregiver_cancel_body(**overrides: Any) -> str:
+    return _compact(caregiver_cancel_message(**overrides))
+
+
+def nurse_ack_body(note: Any = DELETE, **overrides: Any) -> str:
+    return _compact(nurse_ack_message(note, **overrides))

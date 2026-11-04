@@ -11,7 +11,8 @@ from events import DEVICE, EVENT_TS, NO_PULSE_DETAILS, RESIDENT, VITALS_DETAILS
 
 PORTAL = "https://d0000example.cloudfront.net"
 WHEN_LINE = "When: 2026-10-18 11:14:07 SGT"
-ESCALATION_LINE = "Escalated: no response within 60 s of the first alert."
+ESCALATION_LINE = "Escalated: no response within 5 minutes of the first alert."
+NURSE_ALERTED_LINE = "The care centre nurse has also been alerted."
 FALL_DETAILS_LINE = "Fall details: confidence 0.91, peak 3.8 g, still for 20 s"
 
 LABELS = {
@@ -215,11 +216,23 @@ def test_escalation_line_comes_right_after_severity():
     ids=["fall", "warning", "critical"],
 )
 def test_escalation_body_is_the_caregiver_body_plus_one_line(item):
+    """Plus the escalation line; minus the caregiver-only "nurse has also been
+    alerted" line of a critical alert (alert-routing criterion 8)."""
     caregiver = email_text.body(item, RESIDENT, PORTAL).splitlines()
     nurse = email_text.escalation_body(item, RESIDENT, PORTAL).splitlines()
 
+    if NURSE_ALERTED_LINE in caregiver:
+        j = caregiver.index(NURSE_ALERTED_LINE)
+        caregiver = caregiver[: j - 1] + caregiver[j + 1 :]
     i = caregiver.index(next(x for x in caregiver if x.startswith("Severity: ")))
     assert nurse == caregiver[: i + 1] + [ESCALATION_LINE] + caregiver[i + 1 :]
+
+
+@pytest.mark.parametrize("resident_id", [RESIDENT, "unassigned"])
+def test_escalation_body_never_has_the_nurse_alerted_line(resident_id):
+    body = email_text.escalation_body(fall_item(), resident_id, PORTAL)
+
+    assert NURSE_ALERTED_LINE not in body
 
 
 # ---- caregiver email unchanged (criterion 10: escalation only adds to nurse email) ----

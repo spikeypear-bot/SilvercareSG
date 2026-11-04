@@ -68,10 +68,10 @@ variable "ops_subscribers" {
   }
 }
 
-# docs/features/escalation.md, criterion 12. No filter policy: every nurse subscriber
-# gets every escalated alert (staff see every resident).
+# docs/features/escalation.md, criterion 12; docs/features/alert-routing.md. No filter
+# policy: every nurse subscriber gets every nurse email (staff see every resident).
 variable "nurse_subscribers" {
-  description = "Labels of the nurses emailed when an alert is still open 60 s after the first notification. Every label needs an entry in subscriber_emails."
+  description = "Labels of the nurses (the care centre) emailed at once for critical and unassigned alerts, and when a warning is still open 5 minutes after the first notification. Every label needs an entry in subscriber_emails."
   type        = list(string)
   default     = []
 
