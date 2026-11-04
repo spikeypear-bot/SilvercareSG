@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { axeViolations } from '../../test/axe'
 import { demoDataFor } from '../../test/dashboardMock'
 import type { ResidentAlert } from '../../types/dashboard'
-import { AcknowledgedLines, AlertRow } from './AlertRow'
+import { AcknowledgedLines, AlertRow, RoutingLine } from './AlertRow'
 import { sentToNurseAtOnce } from './stats'
 import { ALERT_TYPE_LABELS } from './labels'
 
@@ -605,37 +605,75 @@ describe('sentToNurseAtOnce', () => {
   })
 })
 
-describe('AlertRow showSentAtOnce', () => {
+describe('AlertRow readerIsRecipient (the nurse inbox)', () => {
   const escalatedAt = () => new Date(Date.now() - 30_000).toISOString()
+  const inTwoMinutes = () => new Date(Date.now() + 120_000).toISOString()
 
-  it('defaults to true: a critical open alert shows "Sent to the care centre nurse at once"', () => {
-    renderRow({ alert: baseAlert({ severity: 'critical', alert_type: 'fall', escalated_at: escalatedAt() }) })
+  it('defaults to false: the routing lines show for a reader who is not the recipient', () => {
+    const { unmount } = renderRow({
+      alert: baseAlert({ severity: 'critical', alert_type: 'fall', escalated_at: escalatedAt() }),
+    })
     expect(screen.getByText('Sent to the care centre nurse at once')).toBeInTheDocument()
+    unmount()
+    const second = renderRow({ alert: baseAlert({ severity: 'warning', escalated_at: escalatedAt() }) })
+    expect(screen.getByText('Escalated to the care centre nurse')).toBeInTheDocument()
+    second.unmount()
+    renderRow({ alert: baseAlert({ escalates_at: inTwoMinutes() }) })
+    expect(screen.getByRole('timer')).toHaveTextContent(/^Escalates to the care centre nurse in \d:\d{2}$/)
+    expect(screen.queryByText('Not yet escalated')).not.toBeInTheDocument()
   })
 
   it.each([
     ['a critical alert', { severity: 'critical', alert_type: 'fall' }],
     ['an unassigned warning', { severity: 'warning', resident_id: 'unassigned' }],
-  ] as const)('false hides the at-once line for %s, and adds no other escalation line', (_, fields) => {
-    renderRow({ alert: baseAlert({ ...fields, escalated_at: escalatedAt() }), showSentAtOnce: false })
+    ['an assigned warning', { severity: 'warning' }],
+  ] as const)('hides the routing line for %s that has escalated, and adds no label', (_, fields) => {
+    renderRow({ alert: baseAlert({ ...fields, escalated_at: escalatedAt() }), readerIsRecipient: true })
     const row = screen.getByRole('listitem')
-    expect(row).not.toHaveTextContent(/Sent to the care centre nurse|at once|Escalat/)
+    expect(row).not.toHaveTextContent(/Sent to the care centre nurse|at once|Escalat|Not yet escalated/)
     expect(screen.queryByRole('timer')).not.toBeInTheDocument()
   })
 
-  it('false still shows "Escalated to the care centre nurse" for an escalated assigned warning', () => {
-    renderRow({ alert: baseAlert({ severity: 'warning', escalated_at: escalatedAt() }), showSentAtOnce: false })
-    expect(screen.getByText('Escalated to the care centre nurse')).toBeInTheDocument()
+  it('shows a quiet "Not yet escalated" with no timer, instead of the countdown', () => {
+    renderRow({ alert: baseAlert({ escalates_at: inTwoMinutes() }), readerIsRecipient: true })
+    const label = screen.getByText('Not yet escalated')
+    expect(label.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+    expect(label).toHaveClass('text-slate-600')
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument()
+    // (The row's own event time, e.g. "10:29 am", is still shown; only the countdown is gone.)
+    expect(screen.getByRole('listitem')).not.toHaveTextContent(/Escalates|Escalated/)
   })
 
-  it('false still shows the countdown, and the acknowledge line and note', () => {
-    const { unmount } = renderRow({
-      alert: baseAlert({ escalates_at: new Date(Date.now() + 120_000).toISOString() }),
-      showSentAtOnce: false,
-    })
-    expect(screen.getByRole('timer')).toHaveTextContent(/^Escalates to the care centre nurse in \d:\d{2}$/)
-    unmount()
+  it('"Not yet escalated" goes away when escalates_at passes, with nothing in its place', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    try {
+      vi.setSystemTime(NOW)
+      renderRow({
+        alert: baseAlert({ escalates_at: new Date(NOW.getTime() + 3_000).toISOString() }),
+        readerIsRecipient: true,
+      })
+      expect(screen.getByText('Not yet escalated')).toBeInTheDocument()
+      act(() => vi.advanceTimersByTime(3_000))
+      expect(screen.queryByText('Not yet escalated')).not.toBeInTheDocument()
+      expect(screen.getByRole('listitem')).not.toHaveTextContent(/Escalat/)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
 
+  it('no label on an alert that is not open, or has no escalates_at', () => {
+    const { unmount } = renderRow({
+      alert: baseAlert({ status: 'acknowledged', acknowledged_at: NOW.toISOString(), escalates_at: inTwoMinutes() }),
+      readerIsRecipient: true,
+    })
+    expect(screen.queryByText('Not yet escalated')).not.toBeInTheDocument()
+    unmount()
+    renderRow({ alert: baseAlert(), readerIsRecipient: true })
+    expect(screen.queryByText('Not yet escalated')).not.toBeInTheDocument()
+  })
+
+  it('still shows the acknowledge line and note', () => {
     renderRow({
       alert: baseAlert({
         status: 'acknowledged',
@@ -644,11 +682,50 @@ describe('AlertRow showSentAtOnce', () => {
         acknowledged_at: new Date(NOW.getTime() - 60_000).toISOString(),
         ack_note: 'Synthetic note: on the way.',
       }),
-      showSentAtOnce: false,
+      readerIsRecipient: true,
     })
     const row = screen.getByRole('listitem')
     expect(row).toHaveTextContent(/Acknowledged by the care centre nurse, 1 min ago/)
     expect(within(row).getByText('Synthetic note: on the way.')).toBeInTheDocument()
+  })
+})
+
+describe('RoutingLine for a caregiver', () => {
+  const renderLine = (alert: ResidentAlert) =>
+    render(
+      <div data-testid="line">
+        <RoutingLine alert={alert} audience="caregiver" />
+      </div>,
+    )
+
+  it('the countdown tells the caregiver how long they have to cancel, as m:ss', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    try {
+      vi.setSystemTime(NOW)
+      renderLine(baseAlert({ escalates_at: new Date(NOW.getTime() + 275_000).toISOString() }))
+      expect(screen.getByRole('timer')).toHaveTextContent(
+        /^The care centre nurse will be alerted in 4:35 unless you cancel this alert$/,
+      )
+      act(() => vi.advanceTimersByTime(210_000))
+      expect(screen.getByRole('timer')).toHaveTextContent('in 1:05 unless')
+      act(() => vi.advanceTimersByTime(65_000))
+      expect(screen.queryByRole('timer')).not.toBeInTheDocument()
+      expect(screen.getByTestId('line')).toHaveTextContent('Escalated to the care centre nurse')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the at-once and escalated lines, and nothing for an alert that is not open', () => {
+    const { unmount } = renderLine(baseAlert({ severity: 'critical', escalated_at: NOW.toISOString() }))
+    expect(screen.getByTestId('line')).toHaveTextContent('Sent to the care centre nurse at once')
+    unmount()
+    const second = renderLine(baseAlert({ escalated_at: NOW.toISOString() }))
+    expect(screen.getByTestId('line')).toHaveTextContent('Escalated to the care centre nurse')
+    second.unmount()
+    renderLine(baseAlert({ status: 'cancelled', escalates_at: new Date(Date.now() + 60_000).toISOString() }))
+    expect(screen.getByTestId('line')).toBeEmptyDOMElement()
   })
 })
 

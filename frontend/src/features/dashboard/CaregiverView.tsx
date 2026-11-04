@@ -15,9 +15,9 @@ import { AlertAnnouncer } from './AlertAnnouncer'
 import {
   AcknowledgedLines,
   CancelledLine,
-  EscalatedText,
   LifecycleLabel,
   ResolvedLine,
+  RoutingLine,
 } from './AlertRow'
 import { BatteryLevel, BedroomStatusText, WearableStatusText } from './DeviceStatus'
 import { DashboardError, LoadingStatus } from './DashboardStates'
@@ -30,9 +30,10 @@ import {
 } from './labels'
 import { MainLayout } from './MainLayout'
 import { Sparkline } from './Sparkline'
-import { isOnOpenList, sentToNurseAtOnce } from './stats'
+import { isOnOpenList } from './stats'
 import { describeAlert, useAlertAnnouncer } from './useAlertAnnouncer'
 import { useDashboardData } from './useDashboardData'
+import { useEscalationWatcher } from './useEscalationWatcher'
 
 const MAX_RECENT_ALERTS = 5
 
@@ -76,6 +77,9 @@ function CaregiverContent({
   )
   // The page's one screen-reader announcer, fed from the alert data and the cancels.
   const { message, announce } = useAlertAnnouncer(data.alerts, residentsById)
+  useEscalationWatcher(data.alerts, (alert) =>
+    announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
+  )
 
   return (
     <>
@@ -285,8 +289,9 @@ function RecentAlertItem({
       <span className="text-sm text-slate-600">
         <RelativeTime iso={alert.event_ts} now={now} />
       </span>
-      {/* Explains the routing to the caregiver, who isn't the nurse. */}
-      {alert.status === 'open' && alert.escalated_at && sentToNurseAtOnce(alert) && <EscalatedText atOnce />}
+      {/* Explains the routing to the caregiver, who isn't the nurse; before a warning
+          escalates, how long they have to cancel it. */}
+      <RoutingLine alert={alert} audience="caregiver" />
       <AcknowledgedLines alert={alert} now={now} />
       <CancelledLine alert={alert} now={now} />
       <ResolvedLine alert={alert} now={now} />

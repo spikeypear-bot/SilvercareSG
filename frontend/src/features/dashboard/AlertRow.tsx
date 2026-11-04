@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bell, CircleArrowUp, CircleCheckBig, CircleX, Timer, UserCheck, type LucideIcon } from 'lucide-react'
+import {
+  Bell,
+  CircleArrowUp,
+  CircleCheckBig,
+  CircleX,
+  Hourglass,
+  Timer,
+  UserCheck,
+  type LucideIcon,
+} from 'lucide-react'
 import { Button } from '../../components/Button'
 import { RelativeTime } from '../../components/RelativeTime'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -31,11 +40,14 @@ interface AlertRowProps {
   /** The resident line. Left out on the resident's own page. */
   showResident?: boolean
   /**
-   * "Sent to the care centre nurse at once" on open critical and unassigned alerts. Left
-   * out on the nurse dashboard's inbox: the nurse is the recipient, and the Critical badge
-   * already says it. Shown where it explains the routing to someone else.
+   * The reader is the care centre nurse, the one the alert is routed to (the nurse
+   * dashboard's inbox). Then the routing lines ("Sent to the care centre nurse at once",
+   * "Escalated to the care centre nurse", and the countdown) are left out as redundant,
+   * and a warning still waiting to escalate shows only the quiet "Not yet escalated".
+   * Elsewhere (resident page, doctor dashboard) the routing lines explain it to someone
+   * who isn't the recipient.
    */
-  showSentAtOnce?: boolean
+  readerIsRecipient?: boolean
 }
 
 /** One alert: severity, type, resident, home, time, lifecycle, and optional actions. */
@@ -46,7 +58,7 @@ export function AlertRow({
   actions,
   variant = 'list',
   showResident = true,
-  showSentAtOnce = true,
+  readerIsRecipient = false,
 }: AlertRowProps) {
   const resolveRef = useRef<HTMLButtonElement>(null)
   const acknowledgeRef = useRef<HTMLButtonElement>(null)
@@ -94,14 +106,7 @@ export function AlertRow({
       </div>
       <p className="text-base font-semibold text-slate-900">{typeLabel}</p>
       {showResident && <ResidentLine resident={resident} residentId={alert.resident_id} />}
-      {alert.status === 'open' && alert.escalated_at && (sentToNurseAtOnce(alert) ? (
-        showSentAtOnce && <EscalatedText atOnce />
-      ) : (
-        <EscalatedText atOnce={false} />
-      ))}
-      {alert.status === 'open' && !alert.escalated_at && alert.escalates_at && (
-        <EscalationStatus escalatesAt={alert.escalates_at} />
-      )}
+      {readerIsRecipient ? <NotYetEscalated alert={alert} /> : <RoutingLine alert={alert} audience="staff" />}
       <AcknowledgedLines alert={alert} now={now} />
       <CancelledLine alert={alert} now={now} />
       <ResolvedLine alert={alert} now={now} />
@@ -219,17 +224,56 @@ function minutesSeconds(totalS: number): string {
  * screen readers hear about escalation once, through the page's announcer
  * (`useEscalationWatcher`), instead of every tick.
  */
-function EscalationStatus({ escalatesAt }: { escalatesAt: string }) {
+function EscalationStatus({ escalatesAt, audience }: { escalatesAt: string; audience: RoutingAudience }) {
   const now = useNow(1000)
   const remainingS = Math.ceil((Date.parse(escalatesAt) - now.getTime()) / 1000)
 
   if (remainingS <= 0) return <EscalatedText atOnce={false} />
+  const time = <span className="tabular-nums">{minutesSeconds(remainingS)}</span>
   return (
     <p className="inline-flex items-center gap-1.5 text-base font-semibold text-amber-900">
       <Timer className="size-5 shrink-0" aria-hidden="true" />
-      <span role="timer">
-        Escalates to the care centre nurse in <span className="tabular-nums">{minutesSeconds(remainingS)}</span>
-      </span>
+      {audience === 'caregiver' ? (
+        <span role="timer">
+          The care centre nurse will be alerted in {time} unless you cancel this alert
+        </span>
+      ) : (
+        <span role="timer">Escalates to the care centre nurse in {time}</span>
+      )}
+    </p>
+  )
+}
+
+/** Who reads a routing line: staff who aren't the recipient, or the resident's caregiver. */
+export type RoutingAudience = 'staff' | 'caregiver'
+
+/**
+ * How an open alert is routed to the care centre nurse, for a reader who isn't the nurse:
+ * "Sent to the care centre nurse at once" (critical, unassigned), "Escalated to the care
+ * centre nurse" (a warning after 5 minutes), or, before that, the countdown to
+ * `escalates_at`. For a caregiver the countdown says how long they have to cancel.
+ * Nothing for an alert that isn't open.
+ */
+export function RoutingLine({ alert, audience }: { alert: ResidentAlert; audience: RoutingAudience }) {
+  if (alert.status !== 'open') return null
+  if (alert.escalated_at) return <EscalatedText atOnce={sentToNurseAtOnce(alert)} />
+  if (alert.escalates_at) return <EscalationStatus escalatesAt={alert.escalates_at} audience={audience} />
+  return null
+}
+
+/**
+ * For the care centre nurse (the recipient): a quiet "Not yet escalated" on an open
+ * warning still waiting for its 5-minute check, with no timer, so it can be told apart.
+ * It goes away when `escalates_at` passes.
+ */
+function NotYetEscalated({ alert }: { alert: ResidentAlert }) {
+  const now = useNow(1000)
+  if (alert.status !== 'open' || alert.escalated_at || !alert.escalates_at) return null
+  if (Date.parse(alert.escalates_at) <= now.getTime()) return null
+  return (
+    <p className="inline-flex items-center gap-1.5 text-base text-slate-600">
+      <Hourglass className="size-5 shrink-0" aria-hidden="true" />
+      Not yet escalated
     </p>
   )
 }

@@ -164,6 +164,11 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
     acknowledged: { minutesAgo: 110 },
   },
   { resident: 2, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 410 },
+  // The caregiver view's demo countdown: B is linked to every caregiver, and this warning
+  // has 3:00 left on every page load. B's previous inactivity warning (38 min ago) is past
+  // the 30-minute repeat hold-back, so this is a new alert. Last, so the IDs above stay
+  // stable.
+  { resident: 2, type: 'inactivity', severity: 'warning', device: 'bedroom', minutesAgo: 2 },
 ]
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRST'

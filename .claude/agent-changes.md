@@ -5,6 +5,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** twice, Claude's inline Python heredoc that edited TypeScript tests failed
+  with "unexpected EOF" because the script contained backticks (template literals), and
+  had to be redone. **Changed:** `.claude/skills/local-dev/SKILL.md` (`make lint` row):
+  write such scripts to the scratchpad and run them as a file.
+
 - **Problem:** the `alert-actions-ui` note check (spec and code by Claude) followed the
   data-model summary "Unicode category C, e.g. ... U+2028/U+2029", but those two are
   categories Zl/Zp, so the form let them through while `alert-processor` refuses them;

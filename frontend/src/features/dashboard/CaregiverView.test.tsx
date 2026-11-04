@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axeViolations } from '../../test/axe'
 import { dashboardLoader, demoDataFor, resetDashboardLoader } from '../../test/dashboardMock'
@@ -246,12 +246,16 @@ describe('linked residents (demo data)', () => {
 // --- recent alerts ---------------------------------------------------------
 
 describe('recent alerts', () => {
-  it('res-0002 lists its 2 demo warnings newest first; res-0005 has none', async () => {
+  it('res-0002 lists its 3 demo warnings newest first; res-0005 has none', async () => {
     await renderLoaded()
     const items = timelineItems(cardFor('Test Resident B'))
-    expect(items).toHaveLength(2)
+    expect(items).toHaveLength(3)
     expect(items[0]).toHaveTextContent('Inactivity')
-    expect(items[1]).toHaveTextContent('Possible fall')
+    // The newest is mid-countdown for the caregiver; the older one has escalated.
+    expect(within(items[0]).getByRole('timer')).toBeInTheDocument()
+    expect(items[1]).toHaveTextContent('Inactivity')
+    expect(items[1]).toHaveTextContent('Escalated to the care centre nurse')
+    expect(items[2]).toHaveTextContent('Possible fall')
     items.forEach((item) => expect(within(item).getByText('Warning')).toBeInTheDocument())
     expect(within(cardFor('Test Resident E')).getByText('No recent alerts.')).toBeInTheDocument()
     expect(timelineItems(cardFor('Test Resident E'))).toEqual([])
@@ -309,11 +313,13 @@ describe('recent alerts', () => {
     expect(times[0]).toBe(data.alerts[0].event_ts)
   })
 
-  it('the demo warnings show no escalation line: "Escalated to …" is never shown to a caregiver', async () => {
+  it('an escalated demo warning shows "Escalated to the care centre nurse" (the caregiver is not the recipient)', async () => {
     const { data } = await renderLoaded()
-    expect(data.alerts.some((a) => a.escalated_at && a.severity === 'warning')).toBe(true)
+    const escalated = data.alerts.filter((a) => a.resident_id === 'res-0002' && a.escalated_at && a.status === 'open')
+    expect(escalated.length).toBeGreaterThan(0)
     const card = cardFor('Test Resident B')
-    expect(card).not.toHaveTextContent(/Escalat|Sent to the care centre nurse|at once/)
+    expect(within(card).getAllByText('Escalated to the care centre nurse')).toHaveLength(escalated.length)
+    expect(card).not.toHaveTextContent('at once')
   })
 
   it('an open critical alert with escalated_at shows "Sent to the care centre nurse at once"', async () => {
@@ -328,8 +334,21 @@ describe('recent alerts', () => {
     expect(line.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
   })
 
+  it('an escalated open warning shows "Escalated to the care centre nurse", not "at once"', async () => {
+    const data = withAlerts((d) => [
+      alertFor(d, 'res-0005', {
+        severity: 'warning',
+        alert_type: 'inactivity',
+        escalated_at: new Date(Date.now() - 60_000).toISOString(),
+      }),
+    ])
+    await renderLoaded(data)
+    const [item] = timelineItems(cardFor('Test Resident E'))
+    expect(within(item).getByText('Escalated to the care centre nurse')).toBeInTheDocument()
+    expect(item).not.toHaveTextContent('at once')
+  })
+
   it.each([
-    ['an escalated warning', { severity: 'warning', alert_type: 'inactivity', status: 'open' }],
     ['an acknowledged critical alert', { status: 'acknowledged', acknowledged_at: new Date().toISOString() }],
     ['a resolved critical alert', { status: 'resolved', resolved_by: 'Test Nurse A', resolved_at: new Date().toISOString() }],
     ['a cancelled critical alert', { status: 'cancelled', cancelled_at: new Date().toISOString(), cancelled_by_role: 'resident' }],
@@ -447,10 +466,121 @@ describe('status comes from the data (criteria 19, 22)', () => {
   })
 })
 
+// --- countdown to escalation, for the caregiver ------------------------------
+
+describe('countdown to escalation (fake clock)', () => {
+  const NOW = new Date('2026-10-18T02:30:00Z')
+  const INACTIVITY = 'Inactivity, Test Resident E'
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  async function renderWarning(overrides: Partial<ResidentAlert> = {}) {
+    const data = demoDataFor('family', NOW)
+    const resident = data.residents.find((r) => r.resident_id === 'res-0005')
+    if (!resident) throw new Error('res-0005 is not linked')
+    const warning: ResidentAlert = {
+      alert_id: 'alert-test-countdown',
+      resident_id: 'res-0005',
+      device_id: resident.bedroom.device_id,
+      alert_type: 'inactivity',
+      severity: 'warning',
+      status: 'open',
+      event_ts: new Date(NOW.getTime() - 25_000).toISOString(),
+      escalates_at: new Date(NOW.getTime() + 275_000).toISOString(),
+      ...overrides,
+    }
+    dashboardLoader.mockResolvedValue({ ...data, alerts: [warning] })
+    renderWithAuth(<CaregiverView />, { user: TEST_USERS.caregiver })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+  }
+
+  const tick = (ms: number) =>
+    act(() => {
+      vi.advanceTimersByTime(ms)
+    })
+  const timer = () => within(cardFor('Test Resident E')).getByRole('timer')
+  const announcer = () => screen.getByRole('status')
+
+  it('tells the caregiver how long they have to cancel, as m:ss, ticking every second', async () => {
+    await renderWarning()
+    expect(timer()).toHaveTextContent(/^The care centre nurse will be alerted in 4:35 unless you cancel this alert$/)
+    expect(timer().parentElement?.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+    tick(1000)
+    expect(timer()).toHaveTextContent('in 4:34 unless')
+    tick(214_000)
+    expect(timer()).toHaveTextContent('in 1:00 unless')
+    tick(59_000)
+    expect(timer()).toHaveTextContent('in 0:01 unless')
+    // The countdown is not a live region; the page's announcer stays quiet until escalation.
+    expect(timer().closest('[aria-live]')).toBeNull()
+    expect(announcer()).toBeEmptyDOMElement()
+  })
+
+  it('at zero it shows "Escalated to the care centre nurse" and announces it once', async () => {
+    await renderWarning()
+    tick(275_000)
+    expect(within(cardFor('Test Resident E')).queryByRole('timer')).not.toBeInTheDocument()
+    expect(cardFor('Test Resident E')).toHaveTextContent('Escalated to the care centre nurse')
+    expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${INACTIVITY}.`)
+    const announced = announcer().textContent
+    tick(5_000)
+    expect(announcer().textContent).toBe(announced)
+  })
+
+  it('cancelling before the deadline removes the countdown and nothing escalates', async () => {
+    await renderWarning()
+    tick(60_000)
+    fireEvent.click(screen.getByRole('button', { name: `Cancel alert: ${INACTIVITY}` }))
+    fireEvent.click(screen.getByRole('button', { name: `Yes, cancel alert: ${INACTIVITY}` }))
+    expect(within(cardFor('Test Resident E')).queryByRole('timer')).not.toBeInTheDocument()
+    expect(announcer()).toHaveTextContent(`Alert cancelled: ${INACTIVITY}.`)
+    const announced = announcer().textContent
+    tick(5 * 60_000)
+    expect(announcer().textContent).toBe(announced)
+    expect(cardFor('Test Resident E')).not.toHaveTextContent(/Escalat/)
+  })
+
+  it('the demo data shows B\'s newest inactivity warning mid-countdown, 3:00 left on load', async () => {
+    dashboardLoader.mockResolvedValue(demoDataFor('family', NOW))
+    renderWithAuth(<CaregiverView />, { user: TEST_USERS.caregiver })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const timers = within(cardFor('Test Resident B')).getAllByRole('timer')
+    expect(timers).toHaveLength(1)
+    expect(timers[0]).toHaveTextContent(/^The care centre nurse will be alerted in 3:00 unless you cancel this alert$/)
+    expect(within(cardFor('Test Resident E')).queryByRole('timer')).not.toBeInTheDocument()
+    tick(180_000)
+    expect(screen.getByRole('status')).toHaveTextContent('Escalated to the care centre nurse: Inactivity, Test Resident B.')
+  })
+
+  it('an acknowledged alert shows no countdown', async () => {
+    await renderWarning({ status: 'acknowledged', acknowledged_at: NOW.toISOString() })
+    expect(within(cardFor('Test Resident E')).queryByRole('timer')).not.toBeInTheDocument()
+    tick(5 * 60_000)
+    expect(cardFor('Test Resident E')).not.toHaveTextContent(/Escalat/)
+    expect(announcer()).toBeEmptyDOMElement()
+  })
+})
+
 // --- caregiver cancel (alert-actions-ui, criteria 10-16) ---------------------
 
 describe('caregiver cancel', () => {
   const INACTIVITY = 'Inactivity, Test Resident B'
+  // B has two demo inactivity warnings (one mid-countdown), so the demo-data tests use
+  // B's only possible fall.
+  const POSSIBLE_FALL = 'Possible fall, Test Resident B'
   const cancelButton = (context: string) => screen.getByRole('button', { name: `Cancel alert: ${context}` })
   const itemFor = (context: string) => cancelButton(context).closest('li') as HTMLElement
   const announcer = () => screen.getByRole('status')
@@ -497,42 +627,42 @@ describe('caregiver cancel', () => {
 
   it('"Cancel alert" asks to confirm first, with focus on "Keep alert", and changes nothing yet', async () => {
     const { user } = await renderLoaded()
-    const item = itemFor(INACTIVITY)
-    await user.click(cancelButton(INACTIVITY))
+    const item = itemFor(POSSIBLE_FALL)
+    await user.click(cancelButton(POSSIBLE_FALL))
     const prompt = within(item).getByRole('group', { name: /^Cancel this alert\?/ })
     expect(prompt).toHaveTextContent(
       "Cancel this alert? It will no longer be escalated to the care centre nurse. This resident's caregivers, and the care centre nurse if they were alerted, will be emailed that you cancelled it.",
     )
-    expect(within(prompt).getByRole('button', { name: `Keep alert: ${INACTIVITY}` })).toHaveFocus()
-    expect(within(prompt).getByRole('button', { name: `Yes, cancel alert: ${INACTIVITY}` })).toBeInTheDocument()
+    expect(within(prompt).getByRole('button', { name: `Keep alert: ${POSSIBLE_FALL}` })).toHaveFocus()
+    expect(within(prompt).getByRole('button', { name: `Yes, cancel alert: ${POSSIBLE_FALL}` })).toBeInTheDocument()
     expect(within(item).getByText('Open')).toBeInTheDocument()
     expect(item).not.toHaveTextContent('Cancelled by')
   })
 
   it('"Keep alert" closes the confirmation, changes nothing, and returns focus to "Cancel alert"', async () => {
     const { user } = await renderLoaded()
-    await user.click(cancelButton(INACTIVITY))
-    await user.click(screen.getByRole('button', { name: `Keep alert: ${INACTIVITY}` }))
+    await user.click(cancelButton(POSSIBLE_FALL))
+    await user.click(screen.getByRole('button', { name: `Keep alert: ${POSSIBLE_FALL}` }))
     expect(screen.queryByRole('group', { name: /^Cancel this alert\?/ })).not.toBeInTheDocument()
-    expect(cancelButton(INACTIVITY)).toHaveFocus()
-    expect(within(itemFor(INACTIVITY)).getByText('Open')).toBeInTheDocument()
+    expect(cancelButton(POSSIBLE_FALL)).toHaveFocus()
+    expect(within(itemFor(POSSIBLE_FALL)).getByText('Open')).toBeInTheDocument()
     expect(announcer()).toBeEmptyDOMElement()
   })
 
   it('"Yes, cancel alert" cancels it as the caregiver, moves focus to "Recent alerts", and announces it', async () => {
     const { user } = await renderLoaded()
     const card = cardFor('Test Resident B')
-    await user.click(cancelButton(INACTIVITY))
-    await user.click(screen.getByRole('button', { name: `Yes, cancel alert: ${INACTIVITY}` }))
-    const [item] = timelineItems(card)
-    expect(item).toHaveTextContent('Inactivity')
+    const item = itemFor(POSSIBLE_FALL)
+    await user.click(cancelButton(POSSIBLE_FALL))
+    await user.click(screen.getByRole('button', { name: `Yes, cancel alert: ${POSSIBLE_FALL}` }))
+    expect(item).toHaveTextContent('Possible fall')
     expect(within(item).getByText('Cancelled')).toBeInTheDocument()
     expect(item).toHaveTextContent('Cancelled by Test Caregiver A (caregiver), just now')
     expect(within(item).queryByRole('button')).not.toBeInTheDocument()
     expect(within(card).getByRole('heading', { level: 3, name: 'Recent alerts' })).toHaveFocus()
-    expect(announcer()).toHaveTextContent('Alert cancelled: Inactivity, Test Resident B.')
-    // The other alert is untouched.
-    expect(cancelButton('Possible fall, Test Resident B')).toBeInTheDocument()
+    expect(announcer()).toHaveTextContent(`Alert cancelled: ${POSSIBLE_FALL}.`)
+    // The other alerts (B's two inactivity warnings) are untouched.
+    expect(screen.getAllByRole('button', { name: `Cancel alert: ${INACTIVITY}` })).toHaveLength(2)
   })
 
   it('cancelling an acknowledged alert keeps the acknowledge line and note', async () => {
@@ -557,8 +687,8 @@ describe('caregiver cancel', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem')
     const log = vi.spyOn(console, 'log')
     const { user } = await renderLoaded()
-    await user.click(cancelButton(INACTIVITY))
-    await user.click(screen.getByRole('button', { name: `Yes, cancel alert: ${INACTIVITY}` }))
+    await user.click(cancelButton(POSSIBLE_FALL))
+    await user.click(screen.getByRole('button', { name: `Yes, cancel alert: ${POSSIBLE_FALL}` }))
     expect(setItem).not.toHaveBeenCalled()
     expect(log).not.toHaveBeenCalled()
     expect(window.location.href).not.toMatch(/res-|Test|alert/)
@@ -598,9 +728,9 @@ describe('accessibility', { timeout: 30_000 }, () => {
 
   it('has no axe violations with the cancel confirmation open, and after cancelling', async () => {
     const { user, container } = await renderLoaded()
-    await user.click(screen.getByRole('button', { name: 'Cancel alert: Inactivity, Test Resident B' }))
+    await user.click(screen.getByRole('button', { name: 'Cancel alert: Possible fall, Test Resident B' }))
     expect(await axeViolations(container)).toEqual([])
-    await user.click(screen.getByRole('button', { name: 'Yes, cancel alert: Inactivity, Test Resident B' }))
+    await user.click(screen.getByRole('button', { name: 'Yes, cancel alert: Possible fall, Test Resident B' }))
     expect(await axeViolations(container)).toEqual([])
   })
 

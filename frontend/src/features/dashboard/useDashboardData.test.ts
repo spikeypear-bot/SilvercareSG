@@ -38,7 +38,7 @@ describe('loadDashboardData (criterion 18)', () => {
     await vi.advanceTimersByTimeAsync(DEMO_DELAY_MS)
     const data = await promise
     expect(data.residents).toHaveLength(20)
-    expect(data.alerts).toHaveLength(12)
+    expect(data.alerts).toHaveLength(13)
     expect(data.alerts.some((a) => a.status === 'open')).toBe(true)
     expect(data.alerts.some((a) => a.status === 'acknowledged')).toBe(true)
     expect(data.alerts.some((a) => a.status === 'resolved')).toBe(false)

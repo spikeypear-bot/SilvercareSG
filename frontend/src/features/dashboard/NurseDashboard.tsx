@@ -126,8 +126,8 @@ function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve 
                 alert={alert}
                 resident={residentsById.get(alert.resident_id)}
                 now={now}
-                // The nurse is the recipient: the Critical badge already says it went to them.
-                showSentAtOnce={false}
+                // The nurse is the recipient: no routing lines or countdown, only "Not yet escalated".
+                readerIsRecipient
                 actions={{
                   onAcknowledge: (ackNote) => {
                     onAcknowledge(alert.alert_id, ackNote)

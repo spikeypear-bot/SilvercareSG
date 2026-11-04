@@ -112,7 +112,7 @@ describe('review only: no alert actions, static tiles', () => {
     expect(screen.queryAllByRole('button', { pressed: true }).filter((b) => statsSection().contains(b))).toEqual([])
 
     expect(tileValue('Residents monitored')).toBe('20')
-    expect(tileValue('Open alerts')).toBe('12')
+    expect(tileValue('Open alerts')).toBe('13')
     expect(within(statsSection()).getByText('3 critical')).toBeInTheDocument()
     // 6 offline devices (L and O wearables; F, I, O, Q bedroom sensors).
     expect(tileValue('Devices offline')).toBe('6')
@@ -131,7 +131,7 @@ describe('review only: no alert actions, static tiles', () => {
 describe('open alerts summary', () => {
   it('shows the count, critical and acknowledged numbers, and who responds', async () => {
     await renderLoaded()
-    expect(screen.getByRole('heading', { level: 2, name: 'Open alerts (12)' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Open alerts (13)' })).toBeInTheDocument()
     expect(summary()).toHaveTextContent(
       '3 critical · 3 acknowledged. Nurses respond to alerts; the 3 most urgent are shown here.',
     )
@@ -329,6 +329,12 @@ describe('escalation announcements (fake clock)', () => {
     tick(1000)
     expect(screen.getByRole('status')).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
 
+    // B's inactivity warning (the caregiver view's demo countdown) escalates 30 s later.
+    tick(29_000)
+    expect(screen.getByRole('status')).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
+    tick(1000)
+    expect(screen.getByRole('status')).toHaveTextContent('Escalated to the care centre nurse: Inactivity, Test Resident B.')
+
     const announced = screen.getByRole('status').textContent
     tick(5 * 60_000)
     expect(screen.getByRole('status').textContent).toBe(announced)
@@ -336,8 +342,8 @@ describe('escalation announcements (fake clock)', () => {
 
   it('does not announce alerts that had already escalated when the page opened', async () => {
     const data = demoDataFor('staff', NOW)
-    // Drop the mid-countdown alert; every other alert has already escalated.
-    dashboardLoader.mockResolvedValue({ ...data, alerts: data.alerts.filter((a) => a.resident_id !== 'res-0008') })
+    // Drop the two mid-countdown alerts; every other alert has already escalated.
+    dashboardLoader.mockResolvedValue({ ...data, alerts: data.alerts.filter((a) => !a.escalates_at) })
     renderWithAuth(<DoctorDashboard />, { user: TEST_USERS.doctor })
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)

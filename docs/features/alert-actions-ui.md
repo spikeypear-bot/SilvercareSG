@@ -100,7 +100,9 @@ component changes.
     announcer says "Alert cancelled: <type>, <resident>."
 14. Each caregiver-view alert item shows its lifecycle as text (Open / Acknowledged /
     Cancelled / Resolved label, with an icon, never colour alone), and the lines for
-    its state: the at-once line (unchanged), the acknowledge line and note, the cancel
+    its state: the routing line (at once; or, for a warning, the countdown "The care
+    centre nurse will be alerted in m:ss unless you cancel this alert", then "Escalated
+    to the care centre nurse"; see `sign-in.md`, caregiver view), the acknowledge line and note, the cancel
     line (resident: `Cancelled by the resident ("I'm OK"), <time>`; caregiver:
     `Cancelled by <name> (caregiver), <time>`), and `Resolved by <name>, <time>`.
 15. Cancelling an alert in the caregiver view doesn't change the staff dashboards'
