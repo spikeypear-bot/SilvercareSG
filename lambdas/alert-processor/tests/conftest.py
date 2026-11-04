@@ -3,7 +3,8 @@
 Fake AWS credentials and env vars are set before anything imports boto3, so no test
 can reach real AWS. `aws` starts moto and creates silvercare-alerts and
 silvercare-latest (keys and indexes as infra/dynamodb.tf), the history bucket, and the
-alerts and nurses SNS topics, and the silvercare-alerts SQS queue (escalation checks are
+alerts, nurses, and ops SNS topics (ops: docs/features/watchdog.md), and the
+silvercare-alerts SQS queue (escalation checks are
 sent to it; docs/features/escalation.md).
 """
 
@@ -36,6 +37,9 @@ os.environ.setdefault(
 )
 os.environ.setdefault(
     "NURSES_TOPIC_ARN", "arn:aws:sns:ap-southeast-1:123456789012:silvercare-nurses"
+)
+os.environ.setdefault(
+    "OPS_TOPIC_ARN", "arn:aws:sns:ap-southeast-1:123456789012:silvercare-ops"
 )
 os.environ.setdefault(
     "ALERTS_QUEUE_URL",
@@ -158,6 +162,10 @@ class Aws:
     sqs: SqsRecorder
     queue_url: str
     nurses_topic_arn: str
+    ops_topic_arn: str = ""
+
+    def ops_publishes(self) -> list[dict]:
+        return [p for p in self.sns.publishes if p["TopicArn"] == self.ops_topic_arn]
 
     def alert_publishes(self) -> list[dict]:
         return [p for p in self.sns.publishes if p["TopicArn"] == self.topic_arn]
@@ -201,6 +209,8 @@ def aws(monkeypatch):
         monkeypatch.setenv("ALERTS_TOPIC_ARN", topic_arn)
         nurses_topic_arn = sns.create_topic(Name="silvercare-nurses")["TopicArn"]
         monkeypatch.setenv("NURSES_TOPIC_ARN", nurses_topic_arn)
+        ops_topic_arn = sns.create_topic(Name="silvercare-ops")["TopicArn"]
+        monkeypatch.setenv("OPS_TOPIC_ARN", ops_topic_arn)
         recorder = SnsRecorder(sns)
         monkeypatch.setattr(handler, "sns_client", lambda: recorder)
         sqs = boto3.client("sqs", region_name=REGION)
@@ -216,6 +226,7 @@ def aws(monkeypatch):
             sqs=sqs_recorder,
             queue_url=queue_url,
             nurses_topic_arn=nurses_topic_arn,
+            ops_topic_arn=ops_topic_arn,
         )
     _clear_clients()
 

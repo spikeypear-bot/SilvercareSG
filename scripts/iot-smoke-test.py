@@ -51,6 +51,16 @@ criterion 18).
 The cancel also cancels any other open alert of the wearable (e.g. from --alerts).
 Needs no AWS credentials.
 
+With --low-battery (any device type; docs/features/watchdog.md, criterion 18a), after
+the checks (and the other flags' messages, if given) pass it publishes, on one more
+connection as the device, one `status` with battery_pct 10, not charging (a wearable
+also worn), then prints what to expect: within 5 minutes (the next watchdog run) a
+"SilverCare device problem: Low battery" email to the ops team and the resident's
+caregivers, none to the nurses; the plain smoke test (battery 100) resolves it quietly
+at the next run; and about 15 minutes after the device's last status it is reported
+offline. Use an assigned device the simulator isn't sending for. Needs no AWS
+credentials.
+
 Prints only check names, PASS / FAIL, and message IDs, never payloads, keys, or
 certificates. Exits 0 only if every check passes.
 """
@@ -105,6 +115,10 @@ CHECK_OTHER_CLIENT_ID = "5 connect with another client ID is refused"
 CHECK_INGEST = "6 publish ingest test messages (PUBACK for each)"
 CHECK_ALERTS = "7 publish alert test messages (PUBACK for each)"
 CHECK_CANCEL = "8 publish cancel test messages (PUBACK for each)"
+CHECK_LOW_BATTERY = "9 publish low-battery status (PUBACK)"
+
+# --low-battery (watchdog criterion 18a): below the watchdog's limit of 20 %.
+LOW_BATTERY_PCT = 10
 
 # --alerts (vitals-alerts criterion 27). Seconds between the messages' ts, so the
 # vitals pair is well within the cloud check's 3-minute pairing limit.
@@ -476,6 +490,75 @@ def report_cancel(
     )
 
 
+def build_low_battery_payload(
+    dtype: str, now: datetime | None = None, message_id: str | None = None
+) -> dict:
+    """A valid synthetic status with battery_pct 10, not charging (a wearable is also
+    worn, so it raises only the low-battery alert)."""
+    payload = build_status_payload(dtype, now, message_id)
+    payload["battery_pct"] = LOW_BATTERY_PCT
+    if dtype == "wearable":
+        payload["worn"] = True
+        payload["charging"] = False
+    return payload
+
+
+def build_low_battery_messages(
+    dtype: str,
+    now: datetime | None = None,
+    new_id: Callable[[], str] | None = None,
+) -> list[tuple[str, str, dict]]:
+    """The --low-battery messages, as (expected result, message type, payload)."""
+    new_id = new_id or (lambda: str(uuid.uuid4()))
+    return [
+        (
+            "battery_low at the next watchdog run",
+            "status",
+            build_low_battery_payload(dtype, now, new_id()),
+        )
+    ]
+
+
+def report_low_battery(
+    device_id: str, messages: list[tuple[str, str, dict]], out: TextIO | None = None
+) -> None:
+    """Print the sent message ID (no other fields) and what to expect."""
+    out = out or sys.stdout
+    print("Low-battery message sent (expected result):", file=out)
+    for expected, message, payload in messages:
+        print(f"  {message:<12}  {payload['message_id']}  {expected}", file=out)
+    print(
+        "Use an assigned device the simulator isn't sending for: a simulator"
+        " heartbeat with a normal battery would overwrite this one and resolve or"
+        " prevent the alert. Expect within 5 minutes (the next watchdog run), if"
+        f" {device_id} is assigned to a resident:",
+        file=out,
+    )
+    print(
+        f"  'SilverCare device problem: Low battery - {device_id} (<resident>)' to the"
+        " ops subscribers and to the resident's caregivers; no email to the nurses;",
+        file=out,
+    )
+    print(
+        "  a battery_low item (severity warning, open) under the resident in"
+        " silvercare-alerts with notified_at and ops_notified_at; a watchdog log line"
+        " with action 'raised'.",
+        file=out,
+    )
+    print(
+        "Then run the plain smoke test (it sends a normal battery): at the next"
+        " watchdog run the alert is resolved quietly (no email; status 'resolved',"
+        " resolved_by_role 'system').",
+        file=out,
+    )
+    print(
+        "About 15 minutes after the device's last status, the watchdog reports it"
+        " offline ('SilverCare device problem: Device offline'), unless it sends"
+        " another status first.",
+        file=out,
+    )
+
+
 def ingest_check_command(
     device_id: str,
     valid_ids: Iterable[str],
@@ -744,6 +827,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="wearables only: after the checks, publish a fall and an alert_cancel 5 s later and print what to expect",
     )
+    parser.add_argument(
+        "--low-battery",
+        action="store_true",
+        help="after the checks, publish a status with battery 10 %% (not charging) and print what to expect",
+    )
     parser.add_argument("--ca-file", type=Path, default=DEFAULT_CA_FILE)
     parser.add_argument("--keys-dir", type=Path, default=DEFAULT_KEYS_DIR)
     args = parser.parse_args(argv)
@@ -786,7 +874,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tls_paths = {k: str(v) for k, v in tls.items()}
     results = run_checks(args.device, args.endpoint, tls_paths)
-    if not args.ingest and not args.alerts and not args.cancel:
+    if not (args.ingest or args.alerts or args.cancel or args.low_battery):
         return report(results)
 
     ingest_messages: list[tuple[str, str, dict]] = []
@@ -848,11 +936,30 @@ def main(argv: list[str] | None = None) -> int:
             if not published:
                 cancel_messages = []
 
+    low_battery_messages: list[tuple[str, str, dict]] = []
+    if args.low_battery:
+        if not all(passed for _, passed in results):
+            print(
+                "Skipping the low-battery message: an earlier check failed.",
+                file=sys.stderr,
+            )
+            results = [*results, (CHECK_LOW_BATTERY, False)]
+        else:
+            low_battery_messages = build_low_battery_messages(dtype)
+            published = run_ingest(
+                args.device, args.endpoint, tls_paths, low_battery_messages
+            )
+            results = [*results, (CHECK_LOW_BATTERY, published)]
+            if not published:
+                low_battery_messages = []
+
     code = report(results)
     if alert_messages:
         report_alerts(args.device, alert_messages)
     if cancel_messages:
         report_cancel(args.device, cancel_messages)
+    if low_battery_messages:
+        report_low_battery(args.device, low_battery_messages)
     # The ingest report stays last: its last line is the plain ingest-check command.
     if ingest_messages:
         report_ingest(args.device, ingest_messages)

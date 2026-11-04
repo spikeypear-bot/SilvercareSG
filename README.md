@@ -266,3 +266,34 @@ cancelled" to both (the nurses had been emailed). The alert item shows `status` 
 `open_pk`, and has an `expires_at` 30 days out. A press cancels every open alert from
 that wearable, so earlier test alerts that are still open get cancelled (and emailed)
 too.
+
+### Device problems (watchdog)
+
+Every 5 minutes the `silvercare-watchdog` Lambda checks every assigned device
+(`docs/features/watchdog.md`): no heartbeat for 15 minutes (**Device offline**),
+battery below 20 % and not charging (**Low battery**), or a wearable off the wrist for
+2 hours between 08:00 and 22:00 SGT (**Wearable not worn**). Each is emailed to the ops
+subscribers and the resident's caregivers ("SilverCare device problem: …"); nurses see
+it only in the portal. When the problem clears, the alert resolves itself with no
+email. If 5 or more devices go offline in one run (e.g. the simulator stopped), ops get
+one summary email instead of one per device; caregivers still get their own.
+
+Live check, with an assigned device the simulator isn't sending for (a simulator
+heartbeat with a normal battery would overwrite the test one):
+
+```sh
+make smoke-test DEVICE=wearable-0002 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) LOW_BATTERY=1
+```
+
+Within 5 minutes, "SilverCare device problem: Low battery - wearable-0002 (res-0002)"
+reaches the ops subscribers and `res-0002`'s caregivers, and no nurse. Run the plain
+smoke test (normal battery) and the alert resolves at the next run (the item shows
+`status` `resolved`, `resolved_by_role` `system`), with no email. If no further
+heartbeat comes, the device is reported offline about 15 minutes after the last one.
+If runs fail for 15 minutes in a row, the `silvercare-watchdog-errors` alarm emails ops.
+
+Device-problem emails come from their own topic, `silvercare-ops-devices` (encrypted;
+`silvercare-ops` carries only CloudWatch alarms). After the deploy that adds it, every
+ops subscriber gets one more AWS "Subscription Confirmation" email: confirm it, or
+device problems reach caregivers only. The `silvercare-watchdog-not-running` alarm
+emails ops if the watchdog hasn't run for 15 minutes.

@@ -6,6 +6,14 @@ was read, retried on a lost race at most MAX_ATTEMPTS times in total. It also re
 the device's entries after the write (or as read, for a duplicate), which the vitals
 check in `telemetry` uses (docs/features/vitals-alerts.md, criterion 7). `add_message`
 returns the outcome only.
+
+`worn_false_since` (docs/features/watchdog.md, criterion 9): on a wearable's
+`MSG#status` item, the `ts` of the newest entry since which `worn` has been false. When
+a wearable `status` becomes the newest entry: `worn` false and no `worn_false_since`
+yet -> set to that entry's `ts`; `worn` false and already set -> kept; `worn` true ->
+removed. A status that is stored but isn't the newest keeps the value as read. It is
+part of the PutItem (the write replaces the whole item), not of the `by-message`
+projection. Other items never have it.
 """
 
 from __future__ import annotations
@@ -22,6 +30,11 @@ MAX_ATTEMPTS = 3
 # device-raised alerts, which reach the dashboard as alerts, and the "I'm OK" cancel
 # (docs/features/alert-cancel.md, criterion 4), which shows as cancelled alerts.
 UNWATCHED_MESSAGES = frozenset({"fall", "vitals_alert", "alert_cancel"})
+
+# Watchdog criterion 9: tracked on wearable status items only.
+WORN_MESSAGE = "status"
+WORN_DEVICE_TYPE = "wearable"
+WORN_FALSE_SINCE = "worn_false_since"
 
 STORED = "stored"
 DUPLICATE = "duplicate"
@@ -54,12 +67,39 @@ def merge_entries(
     return STORED, kept
 
 
+def worn_false_since(
+    device_type: str,
+    message: str,
+    previous: Any,
+    entries: list[dict[str, Any]],
+    entry: dict[str, Any],
+) -> str | None:
+    """The item's worn_false_since after adding `entry` (watchdog criterion 9).
+
+    `previous` is the value read from the item (None if absent), `entries` the kept
+    list after the merge (newest first). None means the attribute is not written.
+    """
+    if message != WORN_MESSAGE or device_type != WORN_DEVICE_TYPE:
+        return None
+    kept = previous if isinstance(previous, str) else None
+    if not entries or entries[0].get("message_id") != entry.get("message_id"):
+        # Stored, but not the newest: the current state hasn't changed.
+        return kept
+    worn = entry.get("worn")
+    if worn is True:
+        return None
+    if worn is False:
+        return kept if kept is not None else entry["ts"]
+    return kept
+
+
 def build_item(
     device_id: str,
     device_type: str,
     message: str,
     entries: list[dict[str, Any]],
     version: int,
+    worn_false_since: str | None = None,
 ) -> dict[str, Any]:
     """The full item for PutItem (attributes from docs/data-model.md)."""
     item: dict[str, Any] = {
@@ -72,6 +112,8 @@ def build_item(
     }
     if message not in UNWATCHED_MESSAGES:
         item["watch_type"] = message
+    if worn_false_since is not None:
+        item[WORN_FALSE_SINCE] = worn_false_since
     return item
 
 
@@ -111,7 +153,16 @@ def add_message_with_entries(
         if entries is None:
             return outcome, None
 
-        item = build_item(device_id, device_type, message, entries, read_version + 1)
+        since = worn_false_since(
+            device_type,
+            message,
+            current.get(WORN_FALSE_SINCE) if current else None,
+            entries,
+            entry,
+        )
+        item = build_item(
+            device_id, device_type, message, entries, read_version + 1, since
+        )
         try:
             client.put_item(
                 TableName=table_name,

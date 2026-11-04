@@ -60,24 +60,36 @@ go stale. The `family` group is removed (docs/features/alert-routing.md, 2026-11
 family members get caregiver accounts. Until Track B deletes the group, the API refuses
 it (`403`). Lambdas without a caller are marked *backend*.
 
+**ops** (Cognito group `ops`, created by Track B; docs/features/watchdog.md) sees **only
+device problems**, for every resident: pattern 9 (and 12 for one resident) filtered
+server-side to `alert_type IN (device_offline, battery_low, not_worn)` (a
+`FilterExpression` in the API, never in the browser), with a response built from only
+`pk` (as `resident_id`), `sk`, `alert_id`, `alert_type`, `severity`, `device_id`,
+`event_ts`, `status`, `details`, `acknowledged_at` / `acknowledged_by_role` /
+`resolved_at` / `resolved_by_role` (`acknowledged_by` only as "the ops team" or the
+caregiver's name, as for the other roles). ops get `403` on health alerts and on the
+resident profile, photo, and latest-readings patterns (8, 10, 11, 12 for health alerts,
+18, 19) unless Track B later agrees otherwise. Nurses see device problems in the portal
+through pattern 9 (staff already read every alert); they get no device-problem email.
+
 | # | Who / what | Query | Table / index | Key condition | Frequency |
 |---|---|---|---|---|---|
 | 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container). `device-health` reads no registry |
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | as pattern 1 for `vitals`, assigned devices only (cached 5 min, including "no item") |
 | 3 | `telemetry`, `device-health`, `critical-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
-| 4 | backend: `watchdog` | Every device, assigned or not | registry `by-type` | Query `entity_type = DEVICE` | every 5 min |
-| 5 | backend: `watchdog`; staff only: dashboard | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>` (watchdog: `status`, `bed`, `motion`; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
+| 4 | backend: `watchdog` (docs/features/watchdog.md) | Every device, assigned or not (the watchdog keeps only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE`, eventually consistent, paginated | every 5 min |
+| 5 | backend: `watchdog`; staff only: dashboard | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
 | 8 | Staff only: dashboard | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
-| 9 | Staff only: dashboard | All open alerts, newest first | alerts `open` | Query `open_pk = OPEN`, descending | every 30 s per open dashboard |
+| 9 | Staff only: dashboard; backend: `watchdog` | All open alerts (and acknowledged ones, which keep `open_pk`), newest first | alerts `open` | Query `open_pk = OPEN`, descending (watchdog: eventually consistent, paginated; it uses only the three device-problem types, to keep one open alert per device and type and to find the ones to resolve) | every 30 s per open dashboard; every 5 min |
 | 10 | Resident page: staff, or caregiver after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
 | 11 | Resident page: staff, or caregiver after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (per device: wearable `vitals`, `vitals_alert`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
 | 12 | Resident page: staff, or caregiver after 13 | This resident's alerts | alerts | Query `pk = RESIDENT#<resident_id>`, descending | per page view |
 | 13 | API, caregiver | Is this user linked to this resident? | registry | GetItem `pk = USER#<sub>`, `sk = RESIDENT#<resident_id>` | every caregiver request for a resident |
 | 14 | API, caregiver | Which residents can this user see? | registry | Query `pk = USER#<sub>`, `begins_with(sk, "RESIDENT#")` | caregiver home page |
 | 15 | *(not used yet)* backend: `alert-processor` | Who is linked to this resident (to notify) | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "USER#")` | per new alert. Not used by alerts-core: it notifies through SNS email subscriptions whose filter policy matches `resident_id`, set in Terraform variables (docs/features/alerts-core.md, criteria 21 and 24), because SNS can only email confirmed subscribers |
-| 16 | Acknowledge: `nurse` only, any resident. Cancel: caregiver after 13. Resolve: staff only (docs/features/alert-routing.md; `doctor` neither acknowledges nor cancels) | Acknowledge, cancel, or resolve an alert | alerts | Acknowledge and cancel: the API sends a `status_update` to the alerts queue and `alert-processor` applies it (pattern 25; see [Status updates](#status-updates)). Resolve: UpdateItem `pk`, `sk` | per action |
+| 16 | Health alerts: acknowledge `nurse` only, any resident; cancel caregiver after 13. Device problems (docs/features/watchdog.md): acknowledge `ops`, any resident, or caregiver after 13; no cancel. Resolve: staff only (docs/features/alert-routing.md; `doctor` neither acknowledges nor cancels); device problems are resolved by the `watchdog` | Acknowledge, cancel, or resolve an alert | alerts | Acknowledge and cancel: the API sends a `status_update` to the alerts queue and `alert-processor` applies it (pattern 25; see [Status updates](#status-updates)). Resolve: UpdateItem `pk`, `sk`; the watchdog's resolve is a `status_update` too (`system` / `resolved`) | per action |
 | 17 | Staff only, seed script | Add or edit a resident, assign a device, link a user | registry | PutItem / UpdateItem / DeleteItem | rare |
 | 18 | Resident page: staff, or caregiver after 13 | This resident's profile and thresholds | registry | BatchGetItem `RESIDENT#<resident_id>` / `PROFILE` and `THRESHOLDS#<resident_id>` / `THRESHOLDS` | per page view |
 | 19 | Resident page: staff, or caregiver after 13 | This resident's photo | S3 `silvercare-photos-<account_id>` | API returns a presigned GET URL for `photo_key`, valid 5 min | per page view |
@@ -85,8 +97,9 @@ it (`403`). Lambdas without a caller are marked *backend*.
 | 21 | backend: `alert-processor` | A wearable's newest vitals, to add to a fall alert | latest | GetItem `pk = DEVICE#<device_id>`, `sk = MSG#vitals` (uses `entries[0]`) | per fall alert |
 | 22 | backend: `alert-processor` | Re-read an alert that already exists (a redelivered message) | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent | per redelivered alert message |
 | 23 | backend: `alert-processor` | Escalation (warnings from assigned devices): mark the check queued; 300 s later read the alert's `status` and mark it escalated (docs/features/escalation.md, alert-routing.md). Critical and unassigned alerts only `SET escalated_at` after the nurse email sent at once | alerts | UpdateItem `SET escalation_queued_at` with `attribute_not_exists(escalation_queued_at)`; GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; UpdateItem `SET escalated_at` with `attribute_not_exists(escalated_at)` | per stored alert (one GetItem, up to two UpdateItems) |
-| 24 | backend: `alert-processor` | Resident cancel: this resident's alerts from one device that are `open` or `acknowledged` (or already `cancelled` but without `status_notified_at`, a retry), up to the press (docs/features/alert-cancel.md, criterion 8; alert-routing.md, criterion 10) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk <= "ALERT#<changed_at>#~"` (alerts at exactly `changed_at` included, later ones not), strongly consistent, `FilterExpression` `device_id = :device AND (#status IN (:open, :acknowledged) OR (#status = :new AND attribute_not_exists(status_notified_at)))`, paginated; then per target a conditional UpdateItem (`#status IN (:open, :acknowledged)`) and `SET status_notified_at` with `attribute_not_exists(status_notified_at)` | per `alert_cancel` (rare) |
-| 25 | backend: `alert-processor` | Nurse acknowledge or caregiver cancel of one alert (a `status_update` from Track B's API) | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; conditional UpdateItem (acknowledge `#status = :open`; cancel `#status IN (:open, :acknowledged)`); `SET status_notified_at` with `attribute_not_exists(status_notified_at)` | per acknowledge or caregiver cancel |
+| 24 | backend: `alert-processor` | Resident cancel: this resident's alerts from one device that are `open` or `acknowledged` (or already `cancelled` but without `status_notified_at`, a retry), up to the press, except device problems (docs/features/alert-cancel.md, criterion 8; alert-routing.md, criterion 10; watchdog.md, criterion 14a) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk <= "ALERT#<changed_at>#~"` (alerts at exactly `changed_at` included, later ones not), strongly consistent, `FilterExpression` `device_id = :device AND (#status IN (:open, :acknowledged) OR (#status = :new AND attribute_not_exists(status_notified_at))) AND NOT alert_type IN (:offline, :battery, :not_worn)`, paginated; then per target a conditional UpdateItem (`#status IN (:open, :acknowledged)`) and `SET status_notified_at` with `attribute_not_exists(status_notified_at)` | per `alert_cancel` (rare) |
+| 25 | backend: `alert-processor` | Acknowledge or cancel of one alert (a `status_update` from Track B's API: nurse or caregiver for health alerts, ops or caregiver for device problems), or the watchdog's resolve of a device problem | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; then the role/type rule (else `not_allowed`); conditional UpdateItem (acknowledge `#status = :open`; cancel and resolve `#status IN (:open, :acknowledged)`); `SET status_notified_at` with `attribute_not_exists(status_notified_at)` (not for a resolve, which emails nobody) | per acknowledge, caregiver cancel, or resolve |
+| 26 | backend: `watchdog` | `worn_false_since` of the wearables whose newest `status` has `worn = false` (docs/features/watchdog.md, criterion 2) | latest | BatchGetItem `pk = DEVICE#<device_id>`, `sk = MSG#status` (up to 100 keys per call, `UnprocessedKeys` retried), eventually consistent, projecting `pk`, `worn_false_since` | every 5 min, only for wearables off the wrist |
 
 No pattern uses `Scan`.
 
@@ -253,6 +266,7 @@ types = 160 items, each with at most 5 entries. This is the busiest table.
 | `latest_ts` | `2026-10-18T03:12:00.000Z` | `ts` of `entries[0]` |
 | `version` | `412` | optimistic lock, +1 on every write |
 | `watch_type` | `vitals` | on `vitals`, `status`, `bed`, and `motion` items; not on `fall`, `vitals_alert`, or `alert_cancel`, which makes `by-message` sparse |
+| `worn_false_since` | `2026-11-04T01:00:00.000Z` | wearable `MSG#status` items only (docs/features/watchdog.md, criterion 9): the `ts` of the newest entry since which `worn` has been false. Kept by `device-health` when a wearable `status` becomes the newest entry: `worn` false and none yet → set to that entry's `ts`; `worn` false and set → kept; `worn` true → removed. A status that isn't the newest keeps it as read. Read by the `watchdog` (pattern 26) for the not-worn check. Not in the `by-message` projection |
 
 Example `vitals` item (2 of 5 entries shown):
 
@@ -330,27 +344,30 @@ gets enough write capacity for every vitals write.
 | `pk` | `RESIDENT#res-0003` | |
 | `sk` | `ALERT#2026-10-18T03:14:07.360Z#6f1c2e0a-5b3d-5e8f-9a47-000000000001` | `ALERT#<event_ts>#<alert_id>` |
 | `alert_id` | `6f1c2e0a-5b3d-5e8f-9a47-000000000001` | UUID v5 of `"<event_ts>\|<alert_type>\|<severity>\|<device_id>"` (docs/features/vitals-alerts.md, criterion 2; items stored before vitals alerts have the older ID without `severity`): deterministic, so retries can't duplicate, and opaque, so the key doesn't reveal the type of health event |
-| `alert_type` | `fall` | `fall`, `hr_high`, `hr_low`, `spo2_low`, `skin_temp_high`, `skin_temp_low` (docs/features/vitals-alerts.md) |
-| `severity` | `critical` | `critical` (falls, device `vitals_alert`) or `warning` (the cloud vitals check). Items stored before vitals alerts have none; they are all falls (critical) |
+| `alert_type` | `fall` | health alerts: `fall`, `hr_high`, `hr_low`, `spo2_low`, `skin_temp_high`, `skin_temp_low` (docs/features/vitals-alerts.md); device problems: `device_offline`, `battery_low`, `not_worn` (docs/features/watchdog.md) |
+| `severity` | `critical` | `critical` (falls, device `vitals_alert`) or `warning` (the cloud vitals check; always for device problems). Items stored before vitals alerts have none; they are all falls (critical) |
 | `device_id` | `wearable-0007` | |
 | `event_ts` | `2026-10-18T03:14:07.360Z` | see below |
 | `received_at` | `2026-10-18T03:14:07.410Z` | when the IoT rule received the triggering message (from the alert message) |
 | `created_at` | `2026-10-18T03:14:07.900Z` | when `alert-processor` stored the item |
-| `status` | `open` | `open`, `acknowledged` (by a nurse), `cancelled` (the wearable "I'm OK" cancel, docs/features/alert-cancel.md, or a caregiver in the portal, docs/features/alert-routing.md), `resolved`. Anything but `open` stops escalation. Only `alert-processor` changes `open` to `acknowledged`, or `open` / `acknowledged` to `cancelled`, through a [status update](#status-updates) |
+| `status` | `open` | `open`, `acknowledged` (health alerts by a nurse; device problems by ops or a caregiver), `cancelled` (health alerts only: the wearable "I'm OK" cancel, docs/features/alert-cancel.md, or a caregiver in the portal, docs/features/alert-routing.md), `resolved` (device problems: by the watchdog when the problem cleared, docs/features/watchdog.md). Anything but `open` stops escalation. Only `alert-processor` changes `open` to `acknowledged`, or `open` / `acknowledged` to `cancelled` or (device problems) `resolved`, through a [status update](#status-updates) |
 | `source_message_id` | `c2a1d4f0-8b6e-4f0a-a3c9-7e15d2b9f804` | for message-triggered alerts |
-| `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals). Vitals warning: `metric`, `value`, `limit`, `direction`, `previous_value`, e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above", "previous_value": 125}`. Vitals critical: `metric`, `value`, `limit`, `direction`, `held_s` (`hr_low` `value` 0 = no pulse) |
-| `notified_at` | `2026-10-18T03:14:08.300Z` | set once, after the SNS email was published; guards against a second email on redelivery. Absent for unassigned alerts |
+| `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals). Vitals warning: `metric`, `value`, `limit`, `direction`, `previous_value`, e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above", "previous_value": 125}`. Vitals critical: `metric`, `value`, `limit`, `direction`, `held_s` (`hr_low` `value` 0 = no pulse). Device problems (docs/features/watchdog.md, criteria 8, 8a): `device_offline` `{"last_seen": "<ts>"}` plus `"grouped": true` when the watchdog raised 5 or more in one run; `battery_low` `{"battery_pct": 15}` (integer 0-100); `not_worn` `{"since": "<ts>"}` |
+| `notified_at` | `2026-10-18T03:14:08.300Z` | set once, after the caregiver SNS email was published (device problems too); guards against a second email on redelivery. Absent for unassigned alerts |
+| `ops_notified_at` | `2026-11-04T02:00:01.200Z` | device problems only (docs/features/watchdog.md, criterion 13): set once, after the email to the ops topic (`silvercare-ops-devices`) was published, with `attribute_not_exists(ops_notified_at)`. Absent on grouped offline alerts (the watchdog emailed ops one summary instead) |
 | `notification` | `skipped_unassigned` | only on unassigned alerts (`pk = RESIDENT#unassigned`): no caregiver is emailed (the nurses are, at once) |
 | `escalation_queued_at` | `2026-10-18T03:14:08.350Z` | set once, after the delayed escalation check was sent to the alerts queue (docs/features/escalation.md, criterion 3); guards against queuing a second check on redelivery. Only on warnings from assigned devices (since docs/features/alert-routing.md); absent on critical and unassigned alerts, suppressed alerts, and alerts stored before escalation |
 | `escalated_at` | `2026-10-18T03:14:08.700Z` | the nurses were emailed: set once, after the nurse email was published, at once (critical and unassigned alerts) or after the 5-minute wait (warnings, escalation criterion 5); docs/features/alert-routing.md, criterion 2. Guards against a second nurse email. `status` stays `open` |
-| `acknowledged_by`, `acknowledged_at` | nurse `sub`, timestamp | only nurses acknowledge (docs/features/alert-routing.md; the nurse account is shared, so emails and the portal say "the care centre nurse"). Set by `alert-processor` from a `status_update`: `by` and `changed_at`. Kept when the alert is later cancelled |
+| `acknowledged_by`, `acknowledged_at` | user `sub`, timestamp | health alerts: only nurses acknowledge (docs/features/alert-routing.md; the nurse account is shared, so emails and the portal say "the care centre nurse"); device problems: ops or a caregiver (docs/features/watchdog.md). Set by `alert-processor` from a `status_update`: `by` and `changed_at`. Kept when the alert is later cancelled or resolved |
+| `acknowledged_by_role` | `ops` | device problems only: `ops` or `caregiver`, who acknowledged (watchdog criterion 14a). Emails say "the ops team" for ops (no person's name) and the caregiver's masked name. Absent on nurse acknowledges of health alerts. Kept when resolved |
 | `ack_note` | `Synthetic note: ambulance on the way.` | the nurse's optional note at acknowledge: free text, 1-500 characters, newlines allowed. Emailed to the resident's caregivers and shown in the portal to everyone who can see the alert; never logged, not in the S3 archive. Kept when the alert is later cancelled; deleted with the item |
 | `cancelled_at` | `2026-11-03T02:00:05.000Z` | the update's `changed_at`: for the resident's "I'm OK" press, when the cloud received it (the `alert_cancel`'s `received_at`, server time, not the device's `ts`); for a caregiver, the API's time. Only on cancelled alerts |
 | `cancelled_by_role` | `resident` | who cancelled: `resident` (the wearable button) or `caregiver` (the portal). Only on cancelled alerts |
 | `cancelled_by` | caregiver `sub` | the caregiver who cancelled; absent when the resident cancelled. The user's name (`by_name`) is never stored |
 | `status_notified_at` | `2026-11-03T02:00:06.100Z` | set once, after the follow-up email(s) for the current `status` (`acknowledged` or `cancelled`) were published, or when nobody is emailed (an unassigned acknowledge) (docs/features/alert-cancel.md, criterion 10); an item with the new `status` but without it gets its follow-up on a retry. A cancel of an acknowledged alert REMOVEs the acknowledge's value, so the cancel's follow-up is tracked on its own |
-| `resolved_by`, `resolved_at` | staff `sub`, timestamp | |
-| `open_pk` | `OPEN` | present until resolved or cancelled; removing it takes the alert out of the `open` index |
+| `resolved_by`, `resolved_at` | staff `sub`, timestamp | `resolved_at` is the resolve's `changed_at`. A watchdog resolve (device problems) has no `resolved_by` |
+| `resolved_by_role` | `system` | who resolved: `system` (the watchdog, when the device problem cleared; docs/features/watchdog.md, criterion 11) |
+| `open_pk` | `OPEN` | present until resolved or cancelled (an acknowledged alert keeps it, so the watchdog still sees an acknowledged device problem and resolves it); removing it takes the alert out of the `open` index |
 | `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days, or `cancelled_at` + 30 days for a cancelled alert. See [Retention](#retention) |
 
 An alert from a device with no assignment (no `DEVICE#<id>` / `ASSIGNMENT` item in the
@@ -367,10 +384,23 @@ however many times the same event is processed:
 | fall, device `vitals_alert` | `ts` of the message |
 | abnormal vitals (cloud check) | `ts` of the newest of the two abnormal `vitals` entries |
 | device offline | the device's last `status` `ts` (same outage → same key on every watchdog run) |
+| low battery | `ts` of the newest `status` (the one with the low reading) |
+| wearable not worn | the status item's `worn_false_since` |
 | possible fall | `ts` of the `bed` → `occupied: false` event |
 
+**Device problems** (docs/features/watchdog.md): the `watchdog` Lambda, every 5 minutes,
+raises `device_offline` (no `status` for more than 15 minutes; a device that never sent
+one is not checked), `battery_low` (`battery_pct` below 20, not charging; `null` never),
+and `not_worn` (wearable `worn = false`, not charging, `worn_false_since` at least 2 hours
+ago, only between 08:00 and 22:00 SGT) for **assigned** devices; an offline device is not
+checked for battery or worn. At most one open alert per device and type (pattern 9). It
+resolves an open one when it clears (back online, battery at or above 20 or charging,
+worn again or charging, or the device is no longer assigned to that resident) with a
+`system` / `resolved` [status update](#status-updates). A not-worn alert stays open
+overnight until the wearable is worn or charged.
+
 **Repeats** (docs/features/vitals-alerts.md, criteria 17-20): before storing any alert
-except a fall, `alert-processor` runs pattern 7 for the 30 minutes up to its
+except a fall or a device problem, `alert-processor` runs pattern 7 for the 30 minutes up to its
 `event_ts`, alerts at the same `event_ts` included. If an alert with the same `alert_type`, the same `severity`, and a
 different `alert_id` is there (for `unassigned`, also the same `device_id`), the new
 one is **suppressed**: not stored, archived, or emailed, only logged (IDs and outcome
@@ -396,6 +426,18 @@ docs/features/vitals-alerts.md): hold back a repeat (pattern 7, not for falls); 
 `attribute_not_exists(notified_at)`; then route it to the nurses (below). No
 `expires_at` until the alert is resolved or cancelled.
 
+Device problems (docs/features/watchdog.md, criteria 12-14) skip the repeat check (the
+watchdog keeps one open alert per device and type), the fall enrichment, and the nurse
+routing: store and archive as above, then the caregiver email (same as above, then
+`notified_at`; not for `unassigned`), then the ops email to `silvercare-ops-devices` (encrypted; `silvercare-ops` carries only alarms) unless
+`details.grouped` is true, then `SET ops_notified_at` with
+`attribute_not_exists(ops_notified_at)`. Each step is skipped if its timestamp is set; a
+failed Publish fails the record. Both emails have the subject `SilverCare device
+problem: <label> - <device_id> (<resident_id>)` and a body with the type, device,
+resident, and one line (`Last heartbeat:` / `Battery:` / `Not worn since:`), no health
+readings. No nurse email, no escalation. The log line has `nurses = none` and `ops =
+emailed` or `grouped`.
+
 **Escalation** (docs/features/escalation.md, changed by docs/features/alert-routing.md
 on 2026-11-04): last, `alert-processor` routes the alert to the nurses by resident and
 the stored item's `severity` (no `severity`, i.e. a fall stored before vitals alerts,
@@ -406,6 +448,7 @@ counts as critical):
 | assigned, `critical` | at once | at once | none |
 | assigned, `warning` | at once | after 5 min if still `open` | `DelaySeconds = 300` |
 | `unassigned`, any severity | nobody | at once | none |
+| device problem (`device_offline`, `battery_low`, `not_worn`; not routed by this table) | at once (not for `unassigned`) | never (portal only); ops (`silvercare-ops-devices`) at once instead, unless grouped | none |
 
 - **At once** (critical or unassigned): if the item has no `escalated_at`, publish the
   nurse email (the caregiver email plus `Sent to the care centre at once: critical
@@ -434,12 +477,15 @@ duplicate is accepted, a missing one isn't. The alert's log line has `nurses` =
 ### Status updates
 
 docs/features/alert-cancel.md, criteria 6-14, changed by docs/features/alert-routing.md
-(2026-11-04), criteria 9-15. A third message kind on the `silvercare-alerts` queue
-(with alert messages and escalation checks), sent without delay. `critical-alert` sends
-one for every wearable `alert_cancel`; **Track B's API** sends one when a nurse presses
-acknowledge or a caregiver presses cancel. This is the contract that API uses; it needs
-only `sqs:SendMessage` on `silvercare-alerts` in its role, and it doesn't update the
-alert item itself (so the follow-up email rules live in one place).
+(2026-11-04), criteria 9-15, and docs/features/watchdog.md, criteria 10-11 and 14a. A
+third message kind on the `silvercare-alerts` queue (with alert messages and escalation
+checks), sent without delay. `critical-alert` sends one for every wearable
+`alert_cancel`; the `watchdog` sends one (`system` / `resolved`) when a device problem
+clears; **Track B's API** sends one when a nurse acknowledges a health alert, a caregiver
+cancels one, or ops or a caregiver acknowledges a device problem. This is the contract
+that API uses; it needs only `sqs:SendMessage` on `silvercare-alerts` in its role, and it
+doesn't update the alert item itself (so the follow-up email rules live in one place).
+The `system` role is sent only by the watchdog, never by Track B's API.
 
 `alert-processor` trusts every `status_update` it receives, so **the API must check
 before sending**:
@@ -449,6 +495,16 @@ before sending**:
 - a nurse acknowledge needs the caller's current group to be `nurse` (else `403`); a
   caregiver cancel needs `caregiver` (else `403`) and the link to the resident
   (pattern 13, else `404`; never for `unassigned`); `doctor` and `family` get `403`;
+- device problems (docs/features/watchdog.md, criterion 14a): an `ops` acknowledge needs
+  the caller's current group to be `ops` (any resident); a caregiver acknowledge needs
+  `caregiver` and the link (pattern 13). Both only for the three device-problem types
+  (`device_offline`, `battery_low`, `not_worn`); a cancel or a nurse acknowledge only
+  for health alerts;
+- check in this order, for every acknowledge and cancel: (1) the caller's current group
+  (else `403`); (2) for a caregiver, the link to the resident, pattern 13 (else `404`;
+  never for `unassigned`); (3) GetItem of the alert (pattern 25; missing → `404`);
+  (4) the type rule above (else `409`). For `ops`, any alert that is not a device
+  problem gets `404`, not `409`, so ops can't learn that a health alert exists;
 - take the note from the request body: change `\r\n` to `\n`, trim it, then check it
   with the same rules as `alert-processor` (`note` row below); if it fails, return
   `400` without echoing the note. A note that fails in `alert-processor` instead ends
@@ -492,33 +548,67 @@ A nurse acknowledge from Track B (synthetic values):
 
 A caregiver cancel has `"by_role": "caregiver"`, `"new_status": "cancelled"`, the
 caregiver's `sub` as `by`, their `name` claim as `by_name`, an alert target, and no
-`note` key.
+`note` key. A caregiver acknowledge of a device problem is the same with
+`"new_status": "acknowledged"`; an ops acknowledge has `"by_role": "ops"`,
+`"new_status": "acknowledged"`, the user's `sub`, `"by_name": null`, and no `note` key.
+The watchdog's resolve (synthetic values):
+
+```json
+{
+  "kind": "status_update",
+  "schema_version": 1,
+  "resident_id": "res-0001",
+  "new_status": "resolved",
+  "changed_at": "2026-11-04T02:05:00.000Z",
+  "by_role": "system",
+  "by": null,
+  "by_name": null,
+  "target": { "alert_id": "6f1c2e0a-5b3d-5e8f-9a47-000000000002", "event_ts": "2026-11-04T01:40:00.000Z" }
+}
+```
 
 | `by_role` | `new_status` | `target` | `by` | `by_name` | `note` |
 |---|---|---|---|---|---|
 | `resident` | `cancelled` | `{"device_id"}` | `null` | `null` | absent |
 | `caregiver` | `cancelled` | `{"alert_id", "event_ts"}` | Cognito `sub` | `name` claim, 1-100 characters | absent |
+| `caregiver` | `acknowledged` | `{"alert_id", "event_ts"}` | Cognito `sub` | `name` claim, 1-100 characters | absent |
 | `nurse` | `acknowledged` | `{"alert_id", "event_ts"}` | Cognito `sub` | `null` | optional |
+| `ops` | `acknowledged` | `{"alert_id", "event_ts"}` | Cognito `sub` | `null` | absent |
+| `system` | `resolved` | `{"alert_id", "event_ts"}` | `null` | `null` | absent |
+
+`resolved` is valid only from `system`, and `system` only with `resolved`.
+
+**Which role may change which type** (docs/features/watchdog.md, criterion 14a), checked
+by `alert-processor` after reading the target (it can't be checked earlier):
+
+| Alert type | Allowed |
+|---|---|
+| device problems (`device_offline`, `battery_low`, `not_worn`) | `ops` or `caregiver` `acknowledged`; `system` `resolved` |
+| health alerts (every other type) | `nurse` `acknowledged`; `resident` or `caregiver` `cancelled` |
+
+Anything else (e.g. a nurse acknowledging a low battery, a caregiver cancelling one, ops
+acknowledging a fall): nothing changes, no email, outcome `not_allowed`, not a failure.
 
 | Field | Rules |
 |---|---|
 | `kind` | `status_update` |
 | `schema_version` | `1` |
 | `resident_id` | `res-NNNN`, or `unassigned` |
-| `new_status` | `cancelled` or `acknowledged`, per the table above |
+| `new_status` | `cancelled`, `acknowledged`, or `resolved`, per the table above |
 | `changed_at` | ISO 8601 UTC with ms and `Z`: for a resident cancel, when the IoT rule received the `alert_cancel` (`received_at`, server time, so a wrong device clock can't move the Query bound or the expiry); the API's time for a caregiver cancel or nurse acknowledge |
-| `by_role` | `resident` (wearable cancel), `caregiver`, or `nurse` (Track B). `staff`, `family`, or anything else is invalid |
-| `by` | `null` for `resident`; the caller's Cognito `sub` (a lowercase UUID) for `caregiver` / `nurse`, from the verified token |
-| `by_name` | only for `caregiver`: the `name` claim of the verified token, 1-100 characters, not only spaces, no control characters. Used only to build the masked name in the email; never stored, logged, or emailed in full. `null` for `resident` and `nurse` |
+| `by_role` | `resident` (wearable cancel), `caregiver`, `nurse`, or `ops` (Track B), `system` (the watchdog only). `staff`, `family`, or anything else is invalid |
+| `by` | `null` for `resident` and `system`; the caller's Cognito `sub` (a lowercase UUID) for `caregiver` / `nurse` / `ops`, from the verified token |
+| `by_name` | only for `caregiver`: the `name` claim of the verified token, 1-100 characters, not only spaces, no control characters. Used only to build the masked name in the email; never stored, logged, or emailed in full. `null` for every other role |
 | `note` | only for `nurse`, optional: absent or `null` means no note; else a string of 1-500 characters, not only whitespace, no control or other non-printing characters (Unicode category C, e.g. bidi overrides, zero-width spaces, and the line/paragraph separators U+2028/U+2029) except newline (`\n`). Each line is emailed quoted with `> `. Stored as `ack_note`, emailed to caregivers, never logged. A cancel must not have the key |
 | `target` | `{"device_id"}` (every open or acknowledged alert from that device up to `changed_at`) or `{"alert_id", "event_ts"}` (one alert) |
 
 - Any other combination or an unknown field is invalid: it fails the record and ends
   in `silvercare-alerts-dlq` (where `by_name` and `note` can stay up to 14 days).
 - `alert-processor` (no repeat check) finds the targets (pattern 24 for a device target,
-  pattern 25 for an alert target). A cancel applies to `open` or `acknowledged` alerts,
-  an acknowledge only to `open` ones. None: outcome `no_open_alerts` (device target) or
-  `not_open` (alert target), not a failure.
+  which leaves out device problems, so "I'm OK" never cancels them; pattern 25 for an
+  alert target, then the role/type rule above). A cancel and a resolve apply to `open`
+  or `acknowledged` alerts, an acknowledge only to `open` ones. None: outcome
+  `no_open_alerts` (device target) or `not_open` (alert target), not a failure.
 - For each, an UpdateItem conditional on the status it may change from:
   - cancel: `#status IN (:open, :acknowledged)`; sets `status = cancelled`,
     `cancelled_at`, `cancelled_by_role`, `cancelled_by` (caregiver only), `expires_at =
@@ -526,8 +616,13 @@ caregiver's `sub` as `by`, their `name` claim as `by_name`, an alert target, and
     `status_notified_at` (an acknowledge's). Keeps `acknowledged_at`, `acknowledged_by`,
     and `ack_note`;
   - acknowledge: `#status = :open`; sets `status = acknowledged`, `acknowledged_at`,
-    `acknowledged_by`, and `ack_note` if there is a note; keeps `open_pk` until
-    resolved.
+    `acknowledged_by`, and `ack_note` if there is a note (plus `acknowledged_by_role`
+    `ops` / `caregiver` for a device problem); keeps `open_pk` until resolved;
+  - resolve (`system`, device problems): `#status IN (:open, :acknowledged)`; sets
+    `status = resolved`, `resolved_at` (`changed_at`), `resolved_by_role = system`,
+    `expires_at = changed_at + 30 days`, and REMOVEs `open_pk`. Keeps the acknowledge's
+    fields. **No follow-up email** and no `status_notified_at`; an alert already
+    resolved (or missing) ends `not_open`.
   A failed condition skips that alert without an email.
 - Then the follow-up (one email per alert, then `SET status_notified_at` with
   `attribute_not_exists(status_notified_at)`):
@@ -539,11 +634,17 @@ caregiver's `sub` as `by`, their `name` claim as `by_name`, an alert target, and
     acknowledged alert adds `It had been acknowledged by the care centre nurse at ...`;
   - acknowledge: caregivers only, `... acknowledged by the care centre nurse at ...`,
     plus `Message from the care centre:` and the note if there is one. Unassigned:
-    nobody is emailed, and `status_notified_at` is still set.
+    nobody is emailed, and `status_notified_at` is still set;
+  - device-problem acknowledge (ops or caregiver): the caregivers (`silvercare-alerts`,
+    `resident_id` attribute; not for `unassigned`) **and** ops (`silvercare-ops-devices`), no
+    nurses. Subject `SilverCare update: <label> - <device_id> (<resident_id>)
+    acknowledged`; first line `The device problem below was acknowledged by the ops team
+    at <time> SGT.` or `... by Ta* Me* Li** (caregiver) at ...`, then the device-problem
+    lines (type, device, resident, detail line).
   An unassigned alert's follow-up adds `Device: <device_id>`, or `Device: invalid`. An
   item that already has the new `status` from the same kind of update (the resident;
-  or the same caregiver or nurse `sub`) but no `status_notified_at` gets its follow-up
-  on a retry; a duplicate is accepted, a missing one isn't.
+  or the same caregiver, nurse, or ops `sub`) but no `status_notified_at` gets its
+  follow-up on a retry; a duplicate is accepted, a missing one isn't.
 - The log line per alert has `by_role` and, for an acknowledge, `has_note`; never
   `by`, `by_name`, or `note`.
 - A cancelled or acknowledged alert's escalation check ends `not_escalated`
@@ -609,6 +710,7 @@ read of up to 4 KB per second, or two eventually consistent ones.
 | latest reads (write rule step 1) | ~0.5/s × 1 RCU ≈ **0.5 RCU** |
 | `by-message` index writes | vitals 0.33/s + status/bed/motion 0.15/s, 1 WCU each ≈ **0.5 WCU** |
 | registry reads | cached in Lambdas; dashboards ≈ **< 1 RCU** |
+| `watchdog` (every 5 min) | eventually consistent Queries of `by-type` (~40 devices), `by-message` `status` (~40 items, a few KB), and `open`, plus one BatchGetItem for wearables off the wrist: a few RCU per run, about 1 run per 300 s ≈ **< 0.1 RCU** on average |
 | alerts | rare writes (plus up to two escalation UpdateItems per alert: `escalated_at` at once for critical and unassigned alerts, or `escalation_queued_at` and `escalated_at` for warnings; and two per alert a status update changes); one strongly consistent Query per non-fall alert (repeat check) and per `alert_cancel` (pattern 24, rare), one strongly consistent GetItem per escalation check, per acknowledge, and per caregiver cancel; dashboard polling ≈ **< 1 RCU** |
 
 Provisioned (fixed, no auto scaling):
@@ -674,7 +776,9 @@ critical-alert and `silvercare-iot-rules`.
 | Latest device `vitals_alert`s | 5 per device | write rule |
 | Latest `alert_cancel`s ("I'm OK" presses) | 5 per wearable | write rule |
 | Nurse acknowledge notes (`ack_note` on the alert item) | deleted with the alert: 30 days after resolve or cancel (an acknowledged alert that is never resolved keeps it, see below); never in the S3 `alerts/` copy | TTL `expires_at` |
-| Status updates in `silvercare-alerts` (normally seconds; up to 4 days while retried) and `silvercare-alerts-dlq` (a Track B caregiver cancel carries the user's full name, `by_name`; a nurse acknowledge may carry the `note`) | up to 4 days in the queue, 14 days in the DLQ | SQS message retention |
+| Status updates in `silvercare-alerts` (normally seconds; up to 4 days while retried) and `silvercare-alerts-dlq` (a Track B caregiver cancel, and a caregiver acknowledge of a device problem, carry the user's full name, `by_name`; a nurse acknowledge may carry the `note`) | up to 4 days in the queue, 14 days in the DLQ | SQS message retention |
+| Device-problem alerts (`device_offline`, `battery_low`, `not_worn`; docs/features/watchdog.md) | open (or acknowledged) until the watchdog resolves them; resolved (or, for any cancelled one, cancelled) → 30 days after `resolved_at` / `cancelled_at`. An alert for a device that never recovers stays open until it is resolved by unassigning the device (the next watchdog run then resolves it) | TTL `expires_at` (the S3 `alerts/` copy stays, Open decision #4) |
+| `worn_false_since` (wearable `MSG#status` item) | while the wearable is off the wrist: overwritten or removed by `device-health` with the next newest status, gone when the item is replaced or removed (e.g. the device is unassigned or moved) | write rule |
 | Suppressed repeat alerts | not kept (log line with IDs and outcome only, 30 days) | — |
 
 Point-in-time recovery keeps deleted and TTL-expired items restorable for up to 35
