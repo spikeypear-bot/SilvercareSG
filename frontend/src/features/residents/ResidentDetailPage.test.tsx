@@ -739,6 +739,8 @@ describe('nurse alert actions', () => {
     const { user } = await renderLoaded('res-0003', NURSE_D)
     const row = () => historyRows()[0]
 
+    // Acknowledge opens the note form; its submit button has the same name (no note).
+    await user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     await user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     expect(within(row()).getByText('Acknowledged')).toBeInTheDocument()
     expect(row()).toHaveTextContent('Acknowledged by the care centre nurse, just now')
@@ -1141,6 +1143,7 @@ describe('privacy', () => {
     const log = vi.spyOn(console, 'log')
 
     const nurse = await renderLoaded('res-0003', NURSE_D)
+    await nurse.user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     await nurse.user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     await nurse.user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
     nurse.unmount()

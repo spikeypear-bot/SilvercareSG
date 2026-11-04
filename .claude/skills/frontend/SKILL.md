@@ -61,6 +61,9 @@ accessibility matters.
   IDs), page titles, or `console.log`.
 - No third-party analytics, fonts, or scripts that receive user data without the user
   deciding it.
+- A field the backend also validates (e.g. a note) copies the backend's code, not a
+  doc's summary of it, and its test uses the backend's own cases: U+2028/U+2029 are
+  category Zl/Zp, not C, so a `\p{C}` check alone lets them through.
 - When a screen starts showing new personal data (a note, another user's name), update
   that feature spec's Privacy section in the same change: data touched, retention, and
   what must not be logged.

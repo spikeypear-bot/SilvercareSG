@@ -137,8 +137,8 @@ unassigned devices go to the care centre nurse at once.
     the caregiver view shows the 2 demo residents linked to the signed-in demo account (the
     same 2 for every caregiver user).
 22. Statuses and alert severities are always shown with an icon **and** a text label,
-    never colour alone. In the caregiver view the alerts timeline is inside an
-    `aria-live="polite"` region. The staff dashboards instead have one screen-reader
+    never colour alone. Every view, the caregiver view included (changed by
+    `docs/features/alert-actions-ui.md`, criterion 16), has one screen-reader
     announcer per page, fed from the alert data (new alerts, escalations, nurse
     actions); their alert lists are not live regions, so countdowns aren't read out.
 23. `npm run lint`, `npm run test`, and `npm run build` pass in `frontend/`.
@@ -244,8 +244,9 @@ Both the nurse and doctor dashboards have:
 - The stat tiles are toggle buttons that choose the panel below: Open alerts (the
   default), Devices offline, Wearables low on battery, or Residents.
 - Open alerts inbox: open and acknowledged alerts, critical pinned to the top, then
-  newest first. Each row has "Acknowledge" (open alerts) and "Resolve" buttons, which
-  record the nurse's display name and the time in local state. Resolved alerts move to
+  newest first. Each row has "Acknowledge" (open alerts; opens the optional note form
+  of `docs/features/alert-actions-ui.md`) and "Resolve" buttons, which change local
+  state; resolve shows the nurse's display name. Resolved alerts move to
   a collapsed "Resolved since this page opened" list.
 - Devices offline panel (empty: "All devices are online.") and low-battery panel,
   lowest first (empty: "No wearables are below 20%.").
@@ -273,9 +274,10 @@ Both the nurse and doctor dashboards have:
   and time; "Sent to the care centre nurse at once" while a critical alert (or one from
   an unassigned device) is open, explaining who else was alerted; and, once
   acknowledged, "Acknowledged by the care centre nurse, <time>" with the nurse's note
-  if there is one (main's rule: everyone who can see the alert sees the note). Display
-  only: no acknowledge, resolve, or cancel buttons (the caregiver Cancel button is
-  Track B's).
+  if there is one (main's rule: everyone who can see the alert sees the note). Each
+  alert also shows its lifecycle label and its cancel or resolve line, and an open or
+  acknowledged alert has a "Cancel alert" button with a confirmation step (local state
+  only; `docs/features/alert-actions-ui.md`). No acknowledge or resolve buttons.
 - Loading: skeleton cards with "Loading your residents' information". Empty: `EmptyState` "No residents are linked to your account
   yet. Your care provider can link you." Error: as the staff dashboards.
 

@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Bell, CircleArrowUp, CircleCheckBig, CircleX, Timer, UserCheck, type LucideIcon } from 'lucide-react'
 import { Button } from '../../components/Button'
 import { RelativeTime } from '../../components/RelativeTime'
@@ -6,12 +6,17 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { cx } from '../../lib/cx'
 import { useNow } from '../../lib/useNow'
 import type { Resident, ResidentAlert } from '../../types/dashboard'
+import { AckNoteForm } from './AckNoteForm'
 import { ALERT_TYPE_LABELS } from './labels'
 import { ResidentLine } from './ResidentLine'
 import { isOnOpenList, sentToNurseAtOnce } from './stats'
 
 export interface AlertActions {
-  onAcknowledge: () => void
+  /**
+   * Acknowledges with the nurse's optional note (normalised, `undefined` for none). Called
+   * only when the note form is submitted, never when it is cancelled.
+   */
+  onAcknowledge: (ackNote: string | undefined) => void
   onResolve: () => void
 }
 
@@ -44,13 +49,31 @@ export function AlertRow({
   showSentAtOnce = true,
 }: AlertRowProps) {
   const resolveRef = useRef<HTMLButtonElement>(null)
+  const acknowledgeRef = useRef<HTMLButtonElement>(null)
+  // Acknowledge opens the note form first (docs/features/alert-actions-ui.md, criterion 1).
+  const [noteOpen, setNoteOpen] = useState(false)
+  const returnFocusToAcknowledge = useRef(false)
   const typeLabel = ALERT_TYPE_LABELS[alert.alert_type]
   const context = `${typeLabel}, ${resident?.name ?? 'Unknown resident'}`
+  const canAcknowledge = alert.status === 'open'
 
-  function acknowledge() {
-    actions?.onAcknowledge()
+  useEffect(() => {
+    if (!noteOpen && returnFocusToAcknowledge.current) {
+      returnFocusToAcknowledge.current = false
+      acknowledgeRef.current?.focus()
+    }
+  }, [noteOpen])
+
+  function submitNote(ackNote: string | undefined) {
+    setNoteOpen(false)
+    actions?.onAcknowledge(ackNote)
     // The Acknowledge button goes away; keep focus in the row.
     resolveRef.current?.focus()
+  }
+
+  function cancelNote() {
+    returnFocusToAcknowledge.current = true
+    setNoteOpen(false)
   }
 
   return (
@@ -80,23 +103,15 @@ export function AlertRow({
         <EscalationStatus escalatesAt={alert.escalates_at} />
       )}
       <AcknowledgedLines alert={alert} now={now} />
-      {alert.status === 'cancelled' && alert.cancelled_at && (
-        <p className="text-base text-slate-700">
-          {alert.cancelled_by_role === 'caregiver'
-            ? `Cancelled by ${alert.cancelled_by ?? 'a caregiver'} (caregiver), `
-            : 'Cancelled by the resident ("I\'m OK"), '}
-          <RelativeTime iso={alert.cancelled_at} now={now} />
-        </p>
-      )}
-      {alert.status === 'resolved' && alert.resolved_by && alert.resolved_at && (
-        <p className="text-base text-slate-700">
-          Resolved by {alert.resolved_by}, <RelativeTime iso={alert.resolved_at} now={now} />
-        </p>
+      <CancelledLine alert={alert} now={now} />
+      <ResolvedLine alert={alert} now={now} />
+      {actions && isOnOpenList(alert) && canAcknowledge && noteOpen && (
+        <AckNoteForm context={context} onSubmit={submitNote} onCancel={cancelNote} />
       )}
       {actions && isOnOpenList(alert) && (
         <div className="flex flex-wrap gap-2 pt-1">
-          {alert.status === 'open' && (
-            <Button variant="secondary" onClick={acknowledge}>
+          {canAcknowledge && !noteOpen && (
+            <Button ref={acknowledgeRef} variant="secondary" onClick={() => setNoteOpen(true)}>
               <UserCheck className="size-5" aria-hidden="true" />
               Acknowledge<span className="sr-only">: {context}</span>
             </Button>
@@ -118,13 +133,40 @@ const LIFECYCLE: Record<ResidentAlert['status'], { label: string; Icon: LucideIc
   resolved: { label: 'Resolved', Icon: CircleCheckBig },
 }
 
-function LifecycleLabel({ alert }: { alert: ResidentAlert }) {
+/** Open / Acknowledged / Cancelled / Resolved, as an icon and text (never colour alone). */
+export function LifecycleLabel({ alert }: { alert: ResidentAlert }) {
   const { label, Icon } = LIFECYCLE[alert.status]
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-sm font-medium text-slate-800">
       <Icon className="size-4 shrink-0" aria-hidden="true" />
       {label}
     </span>
+  )
+}
+
+/**
+ * "Cancelled by the resident ("I'm OK"), <time>" or "Cancelled by <name> (caregiver),
+ * <time>" on a cancelled alert; nothing otherwise.
+ */
+export function CancelledLine({ alert, now }: { alert: ResidentAlert; now: Date }) {
+  if (alert.status !== 'cancelled' || !alert.cancelled_at) return null
+  return (
+    <p className="text-base text-slate-700">
+      {alert.cancelled_by_role === 'caregiver'
+        ? `Cancelled by ${alert.cancelled_by || 'a caregiver'} (caregiver), `
+        : 'Cancelled by the resident ("I\'m OK"), '}
+      <RelativeTime iso={alert.cancelled_at} now={now} />
+    </p>
+  )
+}
+
+/** "Resolved by <name>, <time>" on a resolved alert; nothing otherwise. */
+export function ResolvedLine({ alert, now }: { alert: ResidentAlert; now: Date }) {
+  if (alert.status !== 'resolved' || !alert.resolved_by || !alert.resolved_at) return null
+  return (
+    <p className="text-base text-slate-700">
+      Resolved by {alert.resolved_by}, <RelativeTime iso={alert.resolved_at} now={now} />
+    </p>
   )
 }
 

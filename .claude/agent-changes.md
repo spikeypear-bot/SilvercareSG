@@ -5,6 +5,12 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** the `alert-actions-ui` note check (spec and code by Claude) followed the
+  data-model summary "Unicode category C, e.g. ... U+2028/U+2029", but those two are
+  categories Zl/Zp, so the form let them through while `alert-processor` refuses them;
+  Claude's own new tests caught it. **Changed:** `.claude/skills/frontend/SKILL.md`:
+  a field the backend also validates copies the backend's code and its test cases.
+
 - **Problem:** renaming `FamilyView` to `CaregiverView`, Claude ran a Python edit script
   and an `rm` of the originals on separate lines of one shell call; the script failed,
   the `rm` still ran, and `FamilyView.test.tsx` (never read by the main session) was

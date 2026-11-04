@@ -280,10 +280,13 @@ describe('recent alerts', () => {
     expect(item).not.toHaveTextContent('Info')
   })
 
-  it('the timeline is a polite live region in each card', async () => {
-    await renderLoaded()
+  it('has one page announcer and no live region around the timelines (alert-actions-ui, criterion 16)', async () => {
+    const { container } = await renderLoaded()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(container.querySelectorAll('[aria-live]')).toHaveLength(1)
     screen.getAllByRole('article').forEach((card) => {
-      expect(recentAlerts(card)).toHaveAttribute('aria-live', 'polite')
+      expect(recentAlerts(card)).not.toHaveAttribute('aria-live')
+      expect(card.querySelector('[aria-live]')).toBeNull()
     })
   })
 
@@ -323,7 +326,6 @@ describe('recent alerts', () => {
     expect(within(item).getByText('Critical')).toBeInTheDocument()
     const line = within(item).getByText('Sent to the care centre nurse at once')
     expect(line.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
-    expect(line.closest('[aria-live="polite"]')).not.toBeNull()
   })
 
   it.each([
@@ -387,7 +389,7 @@ describe('recent alerts', () => {
     expect(item).not.toHaveTextContent(/Acknowledged by|Message from the care centre|Synthetic stray note/)
   })
 
-  it('has no Acknowledge, Resolve, or Cancel buttons, and no buttons in any card', async () => {
+  it('has no Acknowledge or Resolve buttons; the only button per alert is "Cancel alert"', async () => {
     const data = withAlerts((d) => [
       alertFor(d, 'res-0005', { escalated_at: new Date().toISOString() }),
       alertFor(d, 'res-0002', {
@@ -398,8 +400,12 @@ describe('recent alerts', () => {
       }),
     ])
     await renderLoaded(data)
-    expect(screen.queryAllByRole('button', { name: /Acknowledge|Resolve|Cancel/ })).toEqual([])
-    screen.getAllByRole('article').forEach((card) => expect(within(card).queryAllByRole('button')).toEqual([]))
+    expect(screen.queryAllByRole('button', { name: /Acknowledge|Resolve/ })).toEqual([])
+    screen.getAllByRole('article').forEach((card) =>
+      within(card)
+        .getAllByRole('button')
+        .forEach((button) => expect(button).toHaveAccessibleName(/^Cancel alert: /)),
+    )
   })
 })
 
@@ -441,6 +447,126 @@ describe('status comes from the data (criteria 19, 22)', () => {
   })
 })
 
+// --- caregiver cancel (alert-actions-ui, criteria 10-16) ---------------------
+
+describe('caregiver cancel', () => {
+  const INACTIVITY = 'Inactivity, Test Resident B'
+  const cancelButton = (context: string) => screen.getByRole('button', { name: `Cancel alert: ${context}` })
+  const itemFor = (context: string) => cancelButton(context).closest('li') as HTMLElement
+  const announcer = () => screen.getByRole('status')
+
+  it('each open or acknowledged alert has "Cancel alert" naming the alert; cancelled and resolved have none', async () => {
+    const data = withAlerts((d) => [
+      alertFor(d, 'res-0002', { alert_id: 'a-open', alert_type: 'inactivity', severity: 'warning' }),
+      alertFor(d, 'res-0002', {
+        alert_id: 'a-ack',
+        alert_type: 'low_battery',
+        severity: 'warning',
+        status: 'acknowledged',
+        acknowledged_at: new Date(Date.now() - 60_000).toISOString(),
+      }),
+      alertFor(d, 'res-0005', {
+        alert_id: 'a-cancelled',
+        status: 'cancelled',
+        cancelled_at: new Date(Date.now() - 60_000).toISOString(),
+        cancelled_by_role: 'resident',
+      }),
+      alertFor(d, 'res-0005', {
+        alert_id: 'a-resolved',
+        alert_type: 'hr_high',
+        status: 'resolved',
+        resolved_by: 'Care centre nurse',
+        resolved_at: new Date(Date.now() - 60_000).toISOString(),
+      }),
+    ])
+    await renderLoaded(data)
+    expect(cancelButton(INACTIVITY)).toBeInTheDocument()
+    expect(cancelButton('Low battery, Test Resident B')).toBeInTheDocument()
+    expect(within(cardFor('Test Resident E')).queryAllByRole('button')).toEqual([])
+    // Lifecycle as text, and the lines for each state.
+    const items = timelineItems(cardFor('Test Resident E'))
+    const cancelledItem = items.find((i) => i.textContent?.includes('Fall detected')) as HTMLElement
+    const resolvedItem = items.find((i) => i.textContent?.includes('High heart rate')) as HTMLElement
+    expect(within(cancelledItem).getByText('Cancelled')).toBeInTheDocument()
+    expect(cancelledItem).toHaveTextContent(`Cancelled by the resident ("I'm OK"), 1 min ago`)
+    expect(within(resolvedItem).getByText('Resolved')).toBeInTheDocument()
+    expect(resolvedItem).toHaveTextContent('Resolved by Care centre nurse, 1 min ago')
+    expect(within(itemFor('Low battery, Test Resident B')).getByText('Acknowledged')).toBeInTheDocument()
+    expect(within(itemFor(INACTIVITY)).getByText('Open')).toBeInTheDocument()
+  })
+
+  it('"Cancel alert" asks to confirm first, with focus on "Keep alert", and changes nothing yet', async () => {
+    const { user } = await renderLoaded()
+    const item = itemFor(INACTIVITY)
+    await user.click(cancelButton(INACTIVITY))
+    const prompt = within(item).getByRole('group', { name: /^Cancel this alert\?/ })
+    expect(prompt).toHaveTextContent(
+      "Cancel this alert? It will no longer be escalated to the care centre nurse. This resident's caregivers, and the care centre nurse if they were alerted, will be emailed that you cancelled it.",
+    )
+    expect(within(prompt).getByRole('button', { name: `Keep alert: ${INACTIVITY}` })).toHaveFocus()
+    expect(within(prompt).getByRole('button', { name: `Yes, cancel alert: ${INACTIVITY}` })).toBeInTheDocument()
+    expect(within(item).getByText('Open')).toBeInTheDocument()
+    expect(item).not.toHaveTextContent('Cancelled by')
+  })
+
+  it('"Keep alert" closes the confirmation, changes nothing, and returns focus to "Cancel alert"', async () => {
+    const { user } = await renderLoaded()
+    await user.click(cancelButton(INACTIVITY))
+    await user.click(screen.getByRole('button', { name: `Keep alert: ${INACTIVITY}` }))
+    expect(screen.queryByRole('group', { name: /^Cancel this alert\?/ })).not.toBeInTheDocument()
+    expect(cancelButton(INACTIVITY)).toHaveFocus()
+    expect(within(itemFor(INACTIVITY)).getByText('Open')).toBeInTheDocument()
+    expect(announcer()).toBeEmptyDOMElement()
+  })
+
+  it('"Yes, cancel alert" cancels it as the caregiver, moves focus to "Recent alerts", and announces it', async () => {
+    const { user } = await renderLoaded()
+    const card = cardFor('Test Resident B')
+    await user.click(cancelButton(INACTIVITY))
+    await user.click(screen.getByRole('button', { name: `Yes, cancel alert: ${INACTIVITY}` }))
+    const [item] = timelineItems(card)
+    expect(item).toHaveTextContent('Inactivity')
+    expect(within(item).getByText('Cancelled')).toBeInTheDocument()
+    expect(item).toHaveTextContent('Cancelled by Test Caregiver A (caregiver), just now')
+    expect(within(item).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(card).getByRole('heading', { level: 3, name: 'Recent alerts' })).toHaveFocus()
+    expect(announcer()).toHaveTextContent('Alert cancelled: Inactivity, Test Resident B.')
+    // The other alert is untouched.
+    expect(cancelButton('Possible fall, Test Resident B')).toBeInTheDocument()
+  })
+
+  it('cancelling an acknowledged alert keeps the acknowledge line and note', async () => {
+    const note = 'Synthetic note: the care centre is calling.'
+    const data = withAlerts((d) => [
+      alertFor(d, 'res-0002', {
+        status: 'acknowledged',
+        acknowledged_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+        ack_note: note,
+      }),
+    ])
+    const { user } = await renderLoaded(data)
+    await user.click(cancelButton('Fall detected, Test Resident B'))
+    await user.click(screen.getByRole('button', { name: 'Yes, cancel alert: Fall detected, Test Resident B' }))
+    const [item] = timelineItems(cardFor('Test Resident B'))
+    expect(item).toHaveTextContent('Acknowledged by the care centre nurse, 2 min ago')
+    expect(within(item).getByText(note)).toBeInTheDocument()
+    expect(item).toHaveTextContent('Cancelled by Test Caregiver A (caregiver), just now')
+  })
+
+  it('stores nothing in the browser and logs nothing when cancelling', async () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const log = vi.spyOn(console, 'log')
+    const { user } = await renderLoaded()
+    await user.click(cancelButton(INACTIVITY))
+    await user.click(screen.getByRole('button', { name: `Yes, cancel alert: ${INACTIVITY}` }))
+    expect(setItem).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
+    expect(window.location.href).not.toMatch(/res-|Test|alert/)
+    setItem.mockRestore()
+    log.mockRestore()
+  })
+})
+
 // --- accessibility ---------------------------------------------------------
 
 describe('accessibility', { timeout: 30_000 }, () => {
@@ -467,6 +593,14 @@ describe('accessibility', { timeout: 30_000 }, () => {
       }),
     ])
     const { container } = await renderLoaded(data)
+    expect(await axeViolations(container)).toEqual([])
+  })
+
+  it('has no axe violations with the cancel confirmation open, and after cancelling', async () => {
+    const { user, container } = await renderLoaded()
+    await user.click(screen.getByRole('button', { name: 'Cancel alert: Inactivity, Test Resident B' }))
+    expect(await axeViolations(container)).toEqual([])
+    await user.click(screen.getByRole('button', { name: 'Yes, cancel alert: Inactivity, Test Resident B' }))
     expect(await axeViolations(container)).toEqual([])
   })
 

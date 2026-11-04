@@ -1,5 +1,6 @@
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { axeViolations } from '../../test/axe'
 import { demoDataFor } from '../../test/dashboardMock'
 import type { ResidentAlert } from '../../types/dashboard'
 import { AcknowledgedLines, AlertRow } from './AlertRow'
@@ -63,7 +64,11 @@ describe('AlertRow', () => {
     const onResolve = vi.fn()
     renderRow({ actions: { onAcknowledge, onResolve } })
     await user.click(screen.getByRole('button', { name: 'Acknowledge: Possible fall, Test Resident H' }))
+    // Acknowledge only opens the note form; submitting it (same name) acknowledges.
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Acknowledge: Possible fall, Test Resident H' }))
     expect(onAcknowledge).toHaveBeenCalledTimes(1)
+    expect(onAcknowledge).toHaveBeenCalledWith(undefined)
     await user.click(screen.getByRole('button', { name: 'Resolve: Possible fall, Test Resident H' }))
     expect(onResolve).toHaveBeenCalledTimes(1)
   })
@@ -670,5 +675,130 @@ describe('AcknowledgedLines', () => {
     renderLines(baseAlert({ status: 'acknowledged', acknowledged_at: acknowledgedAt, ack_note: 'Synthetic note' }))
     expect(screen.getByText('Message from the care centre:')).toBeInTheDocument()
     expect(screen.getByText('Synthetic note')).toHaveClass('whitespace-pre-line')
+  })
+})
+
+describe('acknowledge note form (alert-actions-ui, criteria 1-7)', () => {
+  const CONTEXT = 'Possible fall, Test Resident H'
+  const ackButton = () => screen.getByRole('button', { name: `Acknowledge: ${CONTEXT}` })
+  const field = () => screen.getByRole('textbox', { name: "Note for the resident's caregivers (optional)" })
+
+  function setup() {
+    const user = userEvent.setup()
+    const onAcknowledge = vi.fn()
+    const onResolve = vi.fn()
+    renderRow({ actions: { onAcknowledge, onResolve } })
+    return { user, onAcknowledge, onResolve }
+  }
+
+  it('Acknowledge opens the form with the field focused, the hint, and both buttons; Resolve stays', async () => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    const form = screen.getByRole('form', { name: `Acknowledge: ${CONTEXT}` })
+    expect(field()).toHaveFocus()
+    expect(field()).toHaveAttribute('maxLength', '500')
+    expect(field()).toHaveAccessibleDescription(
+      "Emailed to this resident's caregivers and shown to them in the portal.",
+    )
+    expect(within(form).getByRole('button', { name: `Acknowledge: ${CONTEXT}` })).toHaveAttribute('type', 'submit')
+    expect(within(form).getByRole('button', { name: /^Cancel/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Resolve: ${CONTEXT}` })).toBeInTheDocument()
+    // The opening button is replaced by the form's own submit button.
+    expect(screen.getAllByRole('button', { name: `Acknowledge: ${CONTEXT}` })).toHaveLength(1)
+  })
+
+  it('Cancel closes the form without acknowledging and returns focus to Acknowledge', async () => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    await user.type(field(), 'Synthetic draft')
+    await user.click(screen.getByRole('button', { name: /^Cancel/ }))
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    expect(screen.queryByRole('form')).not.toBeInTheDocument()
+    expect(ackButton()).toHaveFocus()
+    expect(screen.getByRole('listitem')).not.toHaveTextContent('Synthetic draft')
+  })
+
+  it('submitting an empty or whitespace-only note acknowledges with no note', async () => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    await user.type(field(), '   ')
+    await user.click(ackButton())
+    expect(onAcknowledge).toHaveBeenCalledExactlyOnceWith(undefined)
+    expect(screen.queryByRole('form')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Resolve: ${CONTEXT}` })).toHaveFocus()
+  })
+
+  it('submitting a note passes it normalised (CRLF to LF, trimmed)', async () => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    fireEvent.change(field(), { target: { value: '  Synthetic note: on the way.\r\nAbout 8 minutes.  ' } })
+    await user.click(ackButton())
+    expect(onAcknowledge).toHaveBeenCalledExactlyOnceWith('Synthetic note: on the way.\nAbout 8 minutes.')
+  })
+
+  it('shows "N of 500 characters" only from 400 characters, linked to the field', async () => {
+    const { user } = setup()
+    await user.click(ackButton())
+    fireEvent.change(field(), { target: { value: 'a'.repeat(399) } })
+    expect(screen.queryByText(/of 500 characters/)).not.toBeInTheDocument()
+    fireEvent.change(field(), { target: { value: 'a'.repeat(400) } })
+    const count = screen.getByText('400 of 500 characters')
+    expect(field().getAttribute('aria-describedby')?.split(' ')).toContain(count.id)
+    fireEvent.change(field(), { target: { value: 'a'.repeat(500) } })
+    expect(screen.getByText('500 of 500 characters')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['a tab', 'Synthetic\tnote'],
+    ['a zero-width space', 'Synthetic\u200bnote'],
+    ['a bidi override', 'Synthetic \u202enote'],
+  ])('refuses %s with an inline error, focus in the field, and no acknowledge', async (_, value) => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    fireEvent.change(field(), { target: { value } })
+    await user.click(ackButton())
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    const error = screen.getByText('Remove hidden or control characters from the note.')
+    expect(field()).toHaveAttribute('aria-invalid', 'true')
+    expect(field().getAttribute('aria-describedby')?.split(' ')).toContain(error.id)
+    expect(field()).toHaveFocus()
+    // Editing clears the error.
+    await user.type(field(), 'x')
+    expect(screen.queryByText('Remove hidden or control characters from the note.')).not.toBeInTheDocument()
+    expect(field()).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('an acknowledged alert has no Acknowledge button, so no form', () => {
+    renderRow({
+      alert: baseAlert({ status: 'acknowledged', acknowledged_at: NOW.toISOString() }),
+      actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() },
+    })
+    expect(screen.queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('form')).not.toBeInTheDocument()
+  })
+
+  it('never shows a Cancel alert button (cancel is for caregivers only)', () => {
+    renderRow({ actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() } })
+    expect(screen.queryByRole('button', { name: /Cancel alert/ })).not.toBeInTheDocument()
+  })
+
+  it('has no axe violations with the form open and showing an error', async () => {
+    const { user } = setup()
+    await user.click(ackButton())
+    fireEvent.change(field(), { target: { value: 'Synthetic\tnote' } })
+    await user.click(ackButton())
+    expect(screen.getByText('Remove hidden or control characters from the note.')).toBeInTheDocument()
+    // The rendered container, as the other axe tests do (a lone row has no page landmarks).
+    expect(await axeViolations(screen.getByRole('listitem').closest('ul') as HTMLElement)).toEqual([])
+  }, 30_000)
+})
+
+describe('CancelledLine and ResolvedLine (used by AlertRow and the caregiver view)', () => {
+  it('a caregiver cancel with an empty name falls back to "a caregiver"', () => {
+    renderRow({
+      alert: baseAlert({ status: 'cancelled', cancelled_at: NOW.toISOString(), cancelled_by_role: 'caregiver', cancelled_by: '' }),
+    })
+    expect(screen.getByRole('listitem')).toHaveTextContent('Cancelled by a caregiver (caregiver), just now')
   })
 })

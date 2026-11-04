@@ -52,6 +52,18 @@ const openRows = () => {
 }
 const announcer = () => screen.getByRole('status')
 const ackButton = (context: string) => screen.getByRole('button', { name: `Acknowledge: ${context}` })
+/**
+ * Acknowledge opens the note form (docs/features/alert-actions-ui.md); its submit button
+ * has the same accessible name, so the second click submits with no note.
+ */
+async function acknowledge(user: ReturnType<typeof userEvent.setup>, context: string) {
+  await user.click(ackButton(context))
+  await user.click(ackButton(context))
+}
+function acknowledgeNow(context: string) {
+  fireEvent.click(ackButton(context))
+  fireEvent.click(ackButton(context))
+}
 const resolveButton = (context: string) => screen.getByRole('button', { name: `Resolve: ${context}` })
 const rowFor = (context: string) => resolveButton(context).closest('li') as HTMLElement
 const residentCards = () => screen.queryAllByRole('article')
@@ -337,7 +349,7 @@ describe('acknowledge', () => {
 
   it('records "Acknowledged by the care centre nurse" (no name), removes the button, and keeps focus on Resolve', async () => {
     const { user } = await renderLoaded()
-    await user.click(ackButton(C))
+    await acknowledge(user, C)
 
     expect(screen.queryByRole('button', { name: `Acknowledge: ${C}` })).not.toBeInTheDocument()
     const row = rowFor(C)
@@ -350,15 +362,45 @@ describe('acknowledge', () => {
     await waitFor(() => expect(resolveButton(C)).toHaveFocus())
   })
 
-  it('announces the acknowledgement', async () => {
+  it('acknowledging with a note shows it in the row, but never announces it (alert-actions-ui, criterion 7)', async () => {
     const { user } = await renderLoaded()
     await user.click(ackButton(C))
+    await user.type(
+      screen.getByRole('textbox', { name: "Note for the resident's caregivers (optional)" }),
+      'Synthetic note: ambulance on the way.',
+    )
+    await user.click(ackButton(C))
+    const row = rowFor(C)
+    expect(row).toHaveTextContent('Acknowledged by the care centre nurse, just now')
+    expect(within(row).getByText('Message from the care centre:')).toBeInTheDocument()
+    expect(within(row).getByText('Synthetic note: ambulance on the way.')).toBeInTheDocument()
+    expect(announcer()).toHaveTextContent(`Acknowledged: ${C}.`)
+    expect(announcer()).not.toHaveTextContent('Synthetic note')
+  })
+
+  it('cancelling the note form leaves the alert open and announces nothing', async () => {
+    const { user } = await renderLoaded()
+    await user.click(ackButton(C))
+    await user.click(within(screen.getByRole('form', { name: `Acknowledge: ${C}` })).getByRole('button', { name: /^Cancel/ }))
+    expect(within(rowFor(C)).getByText('Open')).toBeInTheDocument()
+    expect(ackButton(C)).toHaveFocus()
+    expect(announcer()).toBeEmptyDOMElement()
+  })
+
+  it('never shows a "Cancel alert" button to a nurse (cancel is for caregivers)', async () => {
+    await renderLoaded()
+    expect(screen.queryAllByRole('button', { name: /Cancel alert/ })).toEqual([])
+  })
+
+  it('announces the acknowledgement', async () => {
+    const { user } = await renderLoaded()
+    await acknowledge(user, C)
     await waitFor(() => expect(announcer()).toHaveTextContent(`Acknowledged: ${C}.`))
   })
 
   it('keeps the alert in the inbox and in the open count', async () => {
     const { user } = await renderLoaded()
-    await user.click(ackButton(C))
+    await acknowledge(user, C)
     expect(openRows()).toHaveLength(12)
     expect(tileValue('Open alerts')).toBe('12')
     expect(openRows()[0]).toBe(rowFor(C)) // still pinned first
@@ -368,7 +410,7 @@ describe('acknowledge', () => {
     const { user } = await renderLoaded()
     const H = 'Possible fall, Test Resident H'
     expect(within(rowFor(H)).getByRole('timer')).toBeInTheDocument()
-    await user.click(ackButton(H))
+    await acknowledge(user, H)
     expect(within(rowFor(H)).queryByRole('timer')).not.toBeInTheDocument()
     expect(rowFor(H)).not.toHaveTextContent('Escalated to the care centre nurse')
     expect(rowFor(H)).toHaveTextContent('Acknowledged by the care centre nurse')
@@ -376,7 +418,7 @@ describe('acknowledge', () => {
 
   it('reads "the care centre nurse" whatever the user\'s display name, even none', async () => {
     const { user } = await renderLoaded(demoDataFor('staff'), { ...TEST_USERS.nurse, name: '' })
-    await user.click(ackButton(C))
+    await acknowledge(user, C)
     expect(rowFor(C)).toHaveTextContent('Acknowledged by the care centre nurse, just now')
     expect(rowFor(C)).not.toHaveTextContent('Staff member')
   })
@@ -458,7 +500,7 @@ describe('resolve', () => {
 
   it('acknowledge then resolve, newest resolution listed first', async () => {
     const { user } = await renderLoaded()
-    await user.click(ackButton(C))
+    await acknowledge(user, C)
     await user.click(resolveButton(C))
     await user.click(resolveButton('Possible fall, Test Resident H'))
     const details = screen.getByText('Resolved since this page opened (2)').closest('details') as HTMLElement
@@ -672,7 +714,7 @@ describe('escalation countdown (fake clock)', () => {
     tick(180_000)
     expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
     // fireEvent, not user-event: user-event's internal delays stall under fake timers.
-    fireEvent.click(ackButton(H))
+    acknowledgeNow(H)
     expect(announcer()).toHaveTextContent(`Acknowledged: ${H}.`)
     expect(rowFor(H)).not.toHaveTextContent('Escalated to the care centre nurse')
   })
@@ -700,7 +742,7 @@ describe('escalation countdown (fake clock)', () => {
   it('acknowledging before the deadline means no escalation announcement', async () => {
     await renderAtNow()
     tick(140_000)
-    fireEvent.click(ackButton(H))
+    acknowledgeNow(H)
     expect(announcer()).toHaveTextContent(`Acknowledged: ${H}.`)
     const announced = announcer().textContent
     tick(5 * 60_000)
@@ -741,12 +783,12 @@ describe('escalation countdown (fake clock)', () => {
   it('acknowledging a different alert does not reset or repeat the countdown announcement', async () => {
     await renderAtNow()
     tick(10_000)
-    fireEvent.click(ackButton('Fall detected, Test Resident C'))
+    acknowledgeNow('Fall detected, Test Resident C')
     expect(within(rowFor(H)).getByRole('timer')).toHaveTextContent(/^Escalates to the care centre nurse in 2:20$/)
     tick(140_000)
     expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
     const announced = announcer().textContent
-    fireEvent.click(ackButton('Fall detected, Test Resident Q'))
+    acknowledgeNow('Fall detected, Test Resident Q')
     expect(announcer()).toHaveTextContent('Acknowledged: Fall detected, Test Resident Q.')
     expect(announcer().textContent).not.toBe(announced)
     const afterAck = announcer().textContent
