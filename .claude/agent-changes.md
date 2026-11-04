@@ -5,6 +5,14 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** in `possible-fall`, a back-in-bed resolve used the bedroom unit's data
+  without checking the unit was still the alert's resident's, and "I'm OK" used a
+  5-minute cached device → resident lookup, so after a reassignment one resident's data
+  could close (and email about) another's alert (found by privacy-reviewer).
+  **Changed:** `.claude/skills/feature-spec/SKILL.md`: checklist item on device
+  reassignment for anything acting on alerts with device data. (Fix: resident check in
+  the watchdog, uncached lookup for `alert_cancel`.)
+
 - **Problem:** for `watchdog`, Claude offered the user only "unencrypted ops topic" or
   "paid KMS key"; privacy-reviewer pointed out the free option (a separate `aws/sns`
   topic for Lambda emails, alarms on their own topic). **Changed:**

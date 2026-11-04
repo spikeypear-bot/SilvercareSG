@@ -15,6 +15,8 @@ Alert types and severities:
     skin_temp_high, skin_temp_low         warning (the device sends no skin temperature)
     device_offline, battery_low, not_worn warning (device problems, raised by the
                                           watchdog; docs/features/watchdog.md)
+    possible_fall                         critical (raised by the watchdog;
+                                          docs/features/possible-fall.md)
 
 Vitals `details` are {metric, value, limit, direction} plus `previous_value` for a
 warning or `held_s` for a critical alert. `metric` and `direction` must match the
@@ -26,6 +28,10 @@ Device-problem `details` (docs/features/watchdog.md, criteria 8, 8a, 12):
 `device_offline` {last_seen, optional grouped}, `battery_low` {battery_pct},
 `not_worn` {since}; `last_seen` and `since` are ISO 8601 ms Z timestamps,
 `battery_pct` an integer 0-100, `grouped` a boolean.
+
+Possible fall (docs/features/possible-fall.md, criterion 9), a critical health alert
+raised by the watchdog: `details` {out_of_bed_since (ISO 8601 ms Z), wearable
+(not_worn, no_recent_status, or no_wearable), optional test_mode (only true)}.
 
 Escalation checks (docs/features/escalation.md, criterion 1) are a second message kind
 on the same queue, sent by alert-processor itself with a 300 s delay (warnings from
@@ -53,9 +59,14 @@ criteria 10 and 14a, add the ops and caregiver acknowledge and the system resolv
     caregiver  acknowledged  alert target   by Cognito sub  by_name 1-100  no note
     nurse      acknowledged  alert target   by Cognito sub  by_name null   note optional
     ops        acknowledged  alert target   by Cognito sub  by_name null   no note
-    system     resolved      alert target   by null         by_name null   no note
+    system     resolved      alert target   by null         by_name null   no note,
+                                                                           reason optional
 
 `resolved` comes only from `system` (the watchdog) and `system` only with `resolved`.
+A `system` update may have an optional `reason`, only "back_in_bed" (the possible-fall
+resolve, docs/features/possible-fall.md, criterion 7); a device-problem resolve has no
+`reason` key. Every other role's update must not have the key. Whether the reason fits
+the alert's type is checked by alert-processor after reading the target.
 Which role may change which alert type (device problems or health alerts) depends on
 the stored alert, so alert-processor checks it after reading the target, not here.
 
@@ -121,8 +132,11 @@ STATUS_UPDATE_FIELDS = (
     "by_name",
     "target",
 )
-# Optional: absent or null means no note (alert-routing criterion 9).
-STATUS_UPDATE_OPTIONAL_FIELDS = ("note",)
+# Optional: absent or null means no note (alert-routing criterion 9); `reason` only on
+# a system update (possible-fall criterion 7).
+STATUS_UPDATE_OPTIONAL_FIELDS = ("note", "reason")
+REASON_BACK_IN_BED = "back_in_bed"
+REASONS = frozenset({REASON_BACK_IN_BED})
 STATUS_CANCELLED = "cancelled"
 STATUS_ACKNOWLEDGED = "acknowledged"
 STATUS_RESOLVED = "resolved"
@@ -195,6 +209,12 @@ DEVICE_PROBLEM_DETAILS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     NOT_WORN: (("since",), ()),
 }
 
+# Possible fall (docs/features/possible-fall.md, criterion 9).
+POSSIBLE_FALL = "possible_fall"
+WEARABLE_STATES = frozenset({"not_worn", "no_recent_status", "no_wearable"})
+POSSIBLE_FALL_REQUIRED = ("out_of_bed_since", "wearable")
+POSSIBLE_FALL_OPTIONAL = ("test_mode",)
+
 # Vitals alert_type -> (metric, direction).
 VITALS_TYPES: dict[str, tuple[str, str]] = {
     "hr_high": ("hr_bpm", "above"),
@@ -215,6 +235,7 @@ TYPE_SEVERITIES: dict[str, frozenset[str]] = {
     DEVICE_OFFLINE: frozenset({SEVERITY_WARNING}),
     BATTERY_LOW: frozenset({SEVERITY_WARNING}),
     NOT_WORN: frozenset({SEVERITY_WARNING}),
+    POSSIBLE_FALL: frozenset({SEVERITY_CRITICAL}),
 }
 ALERT_TYPES = frozenset(TYPE_SEVERITIES)
 
@@ -267,6 +288,7 @@ class StatusUpdate:
     alert_id: str | None = None
     event_ts: str | None = None
     note: str | None = None
+    reason: str | None = None
 
 
 def _reject_constant(value: str) -> Any:
@@ -373,11 +395,37 @@ def _check_device_problem_details(alert_type: str, details: dict) -> str | None:
     return None
 
 
+def _check_possible_fall_details(details: dict) -> str | None:
+    """Possible-fall criterion 9: out_of_bed_since a timestamp, wearable one of three
+    values, optional test_mode only true; nothing else."""
+    if set(details) - set(POSSIBLE_FALL_REQUIRED) - set(POSSIBLE_FALL_OPTIONAL):
+        return "unknown_field:details"
+    for name in POSSIBLE_FALL_REQUIRED:
+        if name not in details:
+            return f"missing:details.{name}"
+    if type(details["out_of_bed_since"]) is not str:
+        return "wrong_type:details.out_of_bed_since"
+    if parse_ts(details["out_of_bed_since"]) is None:
+        return "invalid:details.out_of_bed_since"
+    if type(details["wearable"]) is not str:
+        return "wrong_type:details.wearable"
+    if details["wearable"] not in WEARABLE_STATES:
+        return "invalid:details.wearable"
+    if "test_mode" in details:
+        if type(details["test_mode"]) is not bool:
+            return "wrong_type:details.test_mode"
+        if details["test_mode"] is not True:
+            return "invalid:details.test_mode"
+    return None
+
+
 def _check_details(alert_type: str, severity: str, details: Any) -> str | None:
     if not isinstance(details, dict):
         return "wrong_type:details"
     if alert_type == "fall":
         return _check_fall_details(details)
+    if alert_type == POSSIBLE_FALL:
+        return _check_possible_fall_details(details)
     if alert_type in DEVICE_PROBLEM_TYPES:
         return _check_device_problem_details(alert_type, details)
     return _check_vitals_details(alert_type, severity, details)
@@ -588,6 +636,12 @@ def _check_role_rules(body: dict, target: dict[str, str]) -> str | None:
             return "invalid:note"
     elif "note" in body:
         return "invalid:note"
+    if "reason" in body:
+        # Possible-fall criterion 7: only on a system update, only back_in_bed.
+        if by_role != ROLE_SYSTEM:
+            return "invalid:reason"
+        if type(body["reason"]) is not str or body["reason"] not in REASONS:
+            return "invalid:reason"
     return None
 
 
@@ -643,6 +697,7 @@ def validate_status_update(body: dict) -> StatusUpdate | Rejection:
         alert_id=target.get("alert_id"),
         event_ts=target.get("event_ts"),
         note=body.get("note"),
+        reason=body.get("reason"),
     )
 
 

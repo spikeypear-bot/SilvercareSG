@@ -1,5 +1,7 @@
-# Watchdog: device problems (docs/features/watchdog.md, Track A4a; watchdog in
-# docs/decisions/0001-iot-rule-routing.md). An EventBridge schedule rule invokes the
+# Watchdog: device problems (docs/features/watchdog.md, Track A4a) and possible fall at
+# night (docs/features/possible-fall.md, Track A4b: also reads the newest bed and motion
+# entries from latest by-message, and TEST_MODE items from registry by-type); watchdog
+# in docs/decisions/0001-iot-rule-routing.md. An EventBridge schedule rule invokes the
 # watchdog Lambda every 5 minutes. Each run reads every assigned device (registry
 # by-type), every device's newest status (latest by-message), and every open alert
 # (alerts open), plus worn_false_since for wearables off the wrist (BatchGetItem on
@@ -105,13 +107,13 @@ module "watchdog" {
   source = "./modules/python-lambda"
 
   function_name = local.watchdog_function_name
-  description   = "Every 5 minutes: raises device offline, low battery, and not-worn alerts and resolves the ones that cleared."
+  description   = "Every 5 minutes: raises device offline, low battery, not-worn, and possible-fall-at-night alerts and resolves the ones that cleared."
   handler       = "handler.lambda_handler"
   zip_path      = data.archive_file.watchdog.output_path
   zip_hash      = data.archive_file.watchdog.output_base64sha256
   layers        = [local.powertools_layer_arn]
   memory_size   = 128
-  # A run takes seconds (three paginated Queries, one BatchGetItem, a few sends); well
+  # A run takes seconds (six paginated Queries, one BatchGetItem, a few sends); well
   # under the 5-minute schedule.
   timeout = 60
 

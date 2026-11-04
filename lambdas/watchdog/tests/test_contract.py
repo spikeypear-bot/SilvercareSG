@@ -69,3 +69,48 @@ def test_resolve_message_is_accepted_by_alert_processor(ap_message):
 
     assert isinstance(result, ap_message.StatusUpdate), result
     assert (result.new_status, result.by_role) == ("resolved", "system")
+
+
+# ---- possible fall (docs/features/possible-fall.md, criteria 4, 7, 9) ----
+
+
+def possible_fall_problem(details_extra: dict | None = None) -> checks.Problem:
+    vacated = ago(minutes=25)
+    details = {"out_of_bed_since": vacated, "wearable": "no_recent_status"}
+    details.update(details_extra or {})
+    return checks.Problem(
+        checks.POSSIBLE_FALL,
+        device("bedroom-0001"),
+        vacated,
+        details,
+        None,
+        checks.SEVERITY_CRITICAL,
+    )
+
+
+@pytest.mark.parametrize("extra", [{}, {"test_mode": True}])
+def test_possible_fall_message_is_accepted_by_alert_processor(ap_message, extra):
+    body = checks.encode(checks.alert_message(possible_fall_problem(extra), NOW))
+
+    result = ap_message.parse_message(body)
+
+    assert isinstance(result, ap_message.Alert), result
+    assert (result.alert_type, result.severity) == ("possible_fall", "critical")
+
+
+@pytest.mark.parametrize("wearable", ["not_worn", "no_recent_status", "no_wearable"])
+def test_each_wearable_state_is_accepted_by_alert_processor(ap_message, wearable):
+    problem = possible_fall_problem({"wearable": wearable})
+
+    result = ap_message.parse_message(checks.encode(checks.alert_message(problem, NOW)))
+
+    assert isinstance(result, ap_message.Alert), result
+
+
+def test_back_in_bed_resolve_is_accepted_by_alert_processor(ap_message):
+    alert = open_alert(checks.POSSIBLE_FALL, "bedroom-0001")
+
+    result = ap_message.parse_message(checks.encode(checks.resolve_message(alert, NOW)))
+
+    assert isinstance(result, ap_message.StatusUpdate), result
+    assert result.reason == "back_in_bed"

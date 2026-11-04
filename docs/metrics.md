@@ -364,8 +364,18 @@ conditions and thresholds are decided under Open decision #2 (alerting rules). W
 component raises each one is in `docs/decisions/0001-iot-rule-routing.md`.
 
 - **Confirmed fall:** a wearable `fall` event.
-- **Possible fall:** bedroom `bed` → `occupied: false`, then `motion: false` and no
-  `occupied: true` within N minutes, at night. Stronger when the wearable is not worn.
+- **Possible fall (built in docs/features/possible-fall.md):** every 5 minutes the
+  `watchdog` checks every assigned bedroom unit that is not offline: a **critical**
+  `possible_fall` when its newest `bed` entry is `occupied: false`, vacated between
+  22:00 and 06:59:59 SGT, at least 20 minutes ago, its newest `motion` entry is
+  `motion: false` (or there is none), and the resident's wearable is not worn (no
+  wearable, no `status` in the last 15 minutes, or a recent one with `worn: false`; a
+  recent `worn: true` from any of the resident's wearables means no alert). Times are
+  the entry's `ts`, or `received_at` when `clock_skew` is true. Emailed to caregivers
+  and nurses at once; resolved automatically, with a follow-up email, when the newest
+  `bed` entry is `occupied: true` again; the wearable's "I'm OK" also cancels it. A
+  developer can put one unit in test mode for live checks (any time counts as night,
+  2-minute wait, expires after 2 hours).
 - **Abnormal vitals (cloud check, built in docs/features/vitals-alerts.md):**
   `telemetry` compares every wearable `vitals` message with the resident's thresholds
   (their `THRESHOLDS` item in the registry, per limit, else the defaults: heart rate

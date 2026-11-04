@@ -99,6 +99,11 @@ detectors, and resolves them with a `status_update` (`system` / `resolved`), so
 `alert-processor` stays the only writer of alert items. `device-health` only records
 `worn_false_since`.
 
+Amended 2026-11-04 (`docs/features/possible-fall.md`): the watchdog also raises the
+possible fall at night from the newest `bed` and `motion` entries (`by-message`
+index), as a critical alert on the same queue, and resolves it with a `system` /
+`resolved` status update (`reason = back_in_bed`) when the resident is back in bed.
+
 Responsibilities:
 
 - **`device-health`**: validate, add the `status` to the device's latest 5 (the newest

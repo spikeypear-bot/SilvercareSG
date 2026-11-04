@@ -111,9 +111,10 @@ def _queue_critical_alert(msg: ValidMessage) -> str:
 
 
 def _queue_cancel(msg: ValidMessage) -> None:
-    """Look up the resident and send the status_update for a wearable alert_cancel."""
+    """Look up the resident (uncached) and send the status_update for a wearable
+    alert_cancel."""
     resident_id = registry.resident_for_device(
-        dynamodb_client(), os.environ["REGISTRY_TABLE"], msg.device_id
+        dynamodb_client(), os.environ["REGISTRY_TABLE"], msg.device_id, fresh=True
     )
     update = alerts.build_cancel_update(msg, resident_id)
     alerts.send_status_update(sqs_client(), os.environ["ALERTS_QUEUE_URL"], update)

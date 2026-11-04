@@ -47,6 +47,10 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
       never logs request bodies.
 - [ ] A changed delay, retry, or timeout is rechecked against the other timings it
       interacts with (stale cutoffs, visibility timeout × receive count, DLQ alarms).
+- [ ] Anything that acts on a resident's alert using **device** data (a resolve, a
+      cancel, a follow-up) says what happens after the device is reassigned: data from
+      the new resident must not close or be emailed about the old resident's alert,
+      including through cached device → resident lookups.
 - [ ] Live checks (smoke tests against AWS) don't rely on shared data teammates can
       change (e.g. thresholds: use values that fail any sensible limit), and space out
       messages whose order matters (sent together, they run in parallel).
