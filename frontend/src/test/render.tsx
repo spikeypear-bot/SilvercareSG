@@ -28,6 +28,8 @@ interface AuthOptions {
   user?: AuthUser
   signOut?: () => Promise<void>
   path?: string
+  /** Route pattern `ui` is mounted at, e.g. '/residents/:id' so `useParams` works. Default '*'. */
+  route?: string
 }
 
 /** Renders `ui` as a signed-in user with a fixed auth context (no AuthProvider). */
@@ -46,7 +48,8 @@ export function renderWithAuth(ui: ReactElement, options: AuthOptions = {}) {
       <MemoryRouter initialEntries={[options.path ?? '/']}>
         <Routes>
           <Route path="/login" element={<p>Login screen</p>} />
-          <Route path="*" element={ui} />
+          {options.route && !['*', '/'].includes(options.route) && <Route path="/" element={<p>Dashboard screen</p>} />}
+          <Route path={options.route ?? '*'} element={ui} />
         </Routes>
         <LocationDisplay />
       </MemoryRouter>

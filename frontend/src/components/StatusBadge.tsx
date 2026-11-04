@@ -1,4 +1,4 @@
-import { CircleCheck, Info, OctagonAlert, TriangleAlert, type LucideIcon } from 'lucide-react'
+import { CircleCheck, OctagonAlert, TriangleAlert, type LucideIcon } from 'lucide-react'
 import type { AlertSeverity, ResidentStatus } from '../types/dashboard'
 import { cx } from '../lib/cx'
 
@@ -12,7 +12,6 @@ const TONES: Record<BadgeTone, { label: string; Icon: LucideIcon; className: str
     className: 'bg-amber-50 text-amber-900 ring-amber-300',
   },
   urgent: { label: 'Urgent', Icon: OctagonAlert, className: 'bg-rose-50 text-rose-800 ring-rose-200' },
-  info: { label: 'Info', Icon: Info, className: 'bg-sky-50 text-sky-900 ring-sky-200' },
   warning: { label: 'Warning', Icon: TriangleAlert, className: 'bg-amber-50 text-amber-900 ring-amber-300' },
   critical: { label: 'Critical', Icon: OctagonAlert, className: 'bg-rose-50 text-rose-800 ring-rose-200' },
 }
