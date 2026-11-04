@@ -125,6 +125,30 @@ in the S3 history bucket, which is written in batches of up to 5 minutes. Leave 
   `infra/devices/csr/<id>.csr`, run `make device-keys DEVICE=<id>`, commit the new CSR,
   and merge. The plan shows that device's certificate as replaced, which is expected.
 
+### Simulator
+
+`simulator/` plays all 40 devices with normal data: vitals every minute, status every
+5 minutes, and bed and motion events on a daily routine, each resident with their own
+baseline from `scripts/seed-data.json` (`docs/features/simulator-core.md`).
+
+```sh
+make simulate-dry-run ARGS="--instant --duration 24h"   # a whole day at once, no AWS
+make simulate ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) ARGS="--duration 30m"
+```
+
+**Before a live run, seed the registry with `scripts/seed.py`** (see "Seeding the
+registry") and wait 5 minutes. The cloud checks readings against the thresholds stored
+in the registry; without the seed, two simulated residents (`wearable-0004` and
+`wearable-0011`) fall outside the default limits and trigger warning emails to the
+nurses.
+
+A live run uses the same keys as the smoke test and prints one summary line a minute.
+Stop it with Ctrl+C (or let `--duration` end it). It costs about US$2 a month if left
+running all the time, so stop it when you're done. If the terminal was closed while it
+ran, check with `docker compose ps` and stop leftovers with `docker compose down`.
+Useful options: `--start-at 21:55` (start the routine at that time of day, to see
+bedtime in minutes), `--devices wearable-0001,bedroom-0001`, `--random-seed N`.
+
 ## Alerts
 
 A wearable `fall` or `vitals_alert` (a critical reading on the device, including no

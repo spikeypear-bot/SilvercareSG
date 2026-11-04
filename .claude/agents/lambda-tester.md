@@ -10,8 +10,9 @@ skill.
 
 ## Rules
 
-- Only create or edit files under `lambdas/<name>/tests/` and `scripts/tests/`. Never
-  change files in `src/`, `scripts/*.py`, Terraform, or anything else.
+- Only create or edit files under `lambdas/<name>/tests/`, `scripts/tests/`, and
+  `simulator/tests/`. Never change files in `src/`, `scripts/*.py`, Terraform, or
+  anything else. Simulator tests never open a network connection or read device keys.
 - Script tests write only to pytest's `tmp_path`, never to real repo folders such as
   `devices/`. Generate any keys or certificates inside the test; never commit PEM
   fixtures.
