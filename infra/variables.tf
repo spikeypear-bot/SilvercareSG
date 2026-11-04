@@ -6,7 +6,7 @@
 # created).
 #
 # Labels are the keys everywhere and appear in resource addresses in the public plan
-# comment, so they must not be people's names (e.g. "family-c1", not a first name).
+# comment, so they must not be people's names (e.g. "caregiver-c1", not a first name).
 
 variable "subscriber_emails" {
   description = "Label => email address of every alert, nurse, or ops email subscriber. Sensitive: never a for_each key."

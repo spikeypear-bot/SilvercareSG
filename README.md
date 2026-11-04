@@ -147,24 +147,30 @@ privately with the rest of `secrets/`:
 
 ```json
 {
-  "subscriber_emails": { "family-c1": "you@example.com", "ops-1": "you@example.com", "nurse-1": "you@example.com" },
-  "alert_subscribers": { "family-c1": { "resident_ids": ["res-0001"] } },
+  "subscriber_emails": { "caregiver-c1": "you@example.com", "ops-1": "you@example.com", "nurse-1": "you@example.com" },
+  "alert_subscribers": { "caregiver-c1": { "resident_ids": ["res-0001"] } },
   "ops_subscribers": ["ops-1"],
   "nurse_subscribers": ["nurse-1"]
 }
 ```
 
 CI can't read `secrets/`. A repo admin copies the values into GitHub (Settings →
-Secrets and variables → Actions), each as compact JSON:
+Secrets and variables → Actions), each as compact JSON. Copy only the **value** of
+each key, not the key itself or the file's outer braces (otherwise the plan fails with
+"string required, but have object"):
 
-| Name | Kind | Value |
+| Name | Kind | Value (example) |
 |---|---|---|
-| `SUBSCRIBER_EMAILS` | secret | `subscriber_emails` (label → email) |
-| `ALERT_SUBSCRIBERS` | variable | `alert_subscribers` (label → resident IDs) |
-| `OPS_SUBSCRIBERS` | variable | `ops_subscribers` (labels that get DLQ alarm emails) |
-| `NURSE_SUBSCRIBERS` | variable | `nurse_subscribers` (labels that get escalated alerts for every resident) |
+| `SUBSCRIBER_EMAILS` | secret | the value of `subscriber_emails`, label → email: `{"caregiver-c1":"you@example.com","ops-1":"you@example.com","nurse-1":"you@example.com"}` |
+| `ALERT_SUBSCRIBERS` | variable | the value of `alert_subscribers`, label → resident IDs: `{"caregiver-c1":{"resident_ids":["res-0001"]}}` |
+| `OPS_SUBSCRIBERS` | variable | the value of `ops_subscribers`, labels that get DLQ alarm emails: `["ops-1"]` |
+| `NURSE_SUBSCRIBERS` | variable | the value of `nurse_subscribers`, labels that get critical, unassigned, and escalated alerts for every resident: `["nurse-1"]` |
 
-- Labels appear in the public plan comment: use `family-c1`, `ops-1`, never names.
+Renaming a label (e.g. `family-c1` → `caregiver-c1`) shows in the plan as a 🔴 destroy
+of the old email subscription and a ➕ create of the new one: expected, nothing else is
+lost, but the address has to confirm the new subscription.
+
+- Labels appear in the public plan comment: use `caregiver-c1`, `ops-1`, never names.
 - Use team addresses, not real family members': emails are stored in the Terraform
   state, which developers can read.
 - The next deploy creates one subscription per label. Each address gets an AWS
