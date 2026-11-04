@@ -34,7 +34,9 @@ device's newest entry, runs the cloud check (vitals-alerts criteria 7-11): look 
 resident (registry.py) and their thresholds (thresholds.py, both cached), compare the
 newest two entries (vitals_check.py), and send a warning per finding. A failed send
 raises, so Lambda's async retry runs it again. `device_health_handler` reads no
-registry and raises no alerts.
+registry and raises no alerts; for a wearable it also keeps `worn_false_since` on the
+MSG#status item, which the watchdog reads (latest_store.py; docs/features/watchdog.md,
+criterion 9).
 
 Invalid messages are logged with a reason code and dropped without raising, so they
 aren't retried (and raise no alert). AWS errors are raised, so Lambda's async retry

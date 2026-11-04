@@ -17,6 +17,10 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
   https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html.
 - Region: ap-southeast-1
 - Encrypt every data store at rest (KMS or AWS-managed keys) and enforce TLS in transit.
+  CloudWatch alarms can't publish to an SNS topic encrypted with `aws/sns`, but Lambdas
+  can: give alarms their own topic and send data-carrying emails through a separate
+  `aws/sns` topic (free) rather than leaving one shared topic unencrypted or paying for a
+  customer-managed key.
 - IAM: follow the `iam-policy` skill (one role per Lambda, no `*` actions or resources).
 - Tag every resource: `project = "silvercare"`, `managed_by = "terraform"`
 - Pin provider versions in `required_providers`, and set `required_version` for Terraform

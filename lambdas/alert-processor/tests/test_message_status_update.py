@@ -260,10 +260,170 @@ def test_resident_cancel_with_a_note_key_is_rejected_even_null(note):
 # ---- caregiver row ----
 
 
-def test_caregiver_acknowledge_is_rejected_as_invalid_new_status():
+# ---- watchdog rows (docs/features/watchdog.md, criteria 10 and 14a) ----
+
+
+def test_caregiver_acknowledge_with_alert_target_and_name_is_valid():
+    result = parse(caregiver_cancel_message(new_status="acknowledged"))
+
+    assert result == StatusUpdate(
+        resident_id=RESIDENT,
+        new_status="acknowledged",
+        changed_at=CHANGED_AT,
+        changed_dt=message.parse_ts(CHANGED_AT),
+        by_role="caregiver",
+        by=CAREGIVER_SUB,
+        by_name=CAREGIVER_NAME,
+        alert_id=ALERT_ID,
+        event_ts=EVENT_TS,
+    )
+
+
+@pytest.mark.parametrize("by_name", [None, "", " ", "x" * 101, 42])
+def test_caregiver_acknowledge_without_a_valid_by_name_is_rejected(by_name):
+    body = caregiver_cancel_message(new_status="acknowledged", by_name=by_name)
+
+    assert parse(body) == Rejection("invalid:by_name")
+
+
+def test_caregiver_acknowledge_with_device_target_is_rejected():
+    body = caregiver_cancel_message(
+        new_status="acknowledged", target={"device_id": DEVICE}
+    )
+
+    assert parse(body) == Rejection("invalid:target")
+
+
+@pytest.mark.parametrize("note", [None, NOTE])
+def test_caregiver_acknowledge_with_a_note_key_is_rejected(note):
     body = caregiver_cancel_message(new_status="acknowledged")
+    body["note"] = note
+
+    assert parse(body) == Rejection("invalid:note")
+
+
+def test_caregiver_acknowledge_for_unassigned_is_rejected():
+    body = caregiver_cancel_message(new_status="acknowledged", resident_id="unassigned")
+
+    assert parse(body) == Rejection("invalid:resident_id")
+
+
+def test_caregiver_resolve_is_rejected_as_invalid_new_status():
+    body = caregiver_cancel_message(new_status="resolved")
 
     assert parse(body) == Rejection("invalid:new_status")
+
+
+def ops_ack(**overrides):
+    return (
+        caregiver_cancel_message(
+            new_status="acknowledged", by_role="ops", by=NURSE_SUB, by_name=None
+        )
+        | overrides
+    )
+
+
+def test_ops_acknowledge_with_alert_target_is_valid():
+    result = parse(ops_ack())
+
+    assert isinstance(result, StatusUpdate)
+    assert (result.by_role, result.new_status, result.by) == (
+        "ops",
+        "acknowledged",
+        NURSE_SUB,
+    )
+    assert result.by_name is None
+    assert result.note is None
+
+
+@pytest.mark.parametrize("new_status", ["cancelled", "resolved"])
+def test_ops_only_acknowledges(new_status):
+    assert parse(ops_ack(new_status=new_status)) == Rejection("invalid:new_status")
+
+
+@pytest.mark.parametrize("by", [None, "", "not-a-sub", NURSE_SUB.upper()])
+def test_ops_acknowledge_without_a_sub_is_rejected(by):
+    assert parse(ops_ack(by=by)) == Rejection("invalid:by")
+
+
+@pytest.mark.parametrize("by_name", ["Test Ops Gamma", ""])
+def test_ops_acknowledge_with_a_by_name_is_rejected(by_name):
+    assert parse(ops_ack(by_name=by_name)) == Rejection("invalid:by_name")
+
+
+@pytest.mark.parametrize("note", [None, NOTE])
+def test_ops_acknowledge_with_a_note_key_is_rejected(note):
+    assert parse(ops_ack(note=note)) == Rejection("invalid:note")
+
+
+def test_ops_acknowledge_with_device_target_is_rejected():
+    assert parse(ops_ack(target={"device_id": DEVICE})) == Rejection("invalid:target")
+
+
+def test_unassigned_ops_acknowledge_is_valid():
+    assert isinstance(parse(ops_ack(resident_id="unassigned")), StatusUpdate)
+
+
+def system_resolve(**overrides):
+    return (
+        caregiver_cancel_message(
+            new_status="resolved", by_role="system", by=None, by_name=None
+        )
+        | overrides
+    )
+
+
+def test_system_resolve_with_alert_target_is_valid():
+    result = parse(system_resolve())
+
+    assert result == StatusUpdate(
+        resident_id=RESIDENT,
+        new_status="resolved",
+        changed_at=CHANGED_AT,
+        changed_dt=message.parse_ts(CHANGED_AT),
+        by_role="system",
+        by=None,
+        by_name=None,
+        alert_id=ALERT_ID,
+        event_ts=EVENT_TS,
+    )
+
+
+@pytest.mark.parametrize("new_status", ["cancelled", "acknowledged"])
+def test_system_only_resolves(new_status):
+    body = system_resolve(new_status=new_status)
+
+    assert parse(body) == Rejection("invalid:new_status")
+
+
+@pytest.mark.parametrize(
+    "build",
+    [cancel_message, caregiver_cancel_message, nurse_ack_message, ops_ack],
+    ids=["resident", "caregiver", "nurse", "ops"],
+)
+def test_resolved_comes_only_from_system(build):
+    assert parse(build(new_status="resolved")) == Rejection("invalid:new_status")
+
+
+@pytest.mark.parametrize("by", [NURSE_SUB, "", "system"])
+def test_system_resolve_with_a_by_is_rejected(by):
+    assert parse(system_resolve(by=by)) == Rejection("invalid:by")
+
+
+@pytest.mark.parametrize("by_name", ["Test System", ""])
+def test_system_resolve_with_a_by_name_is_rejected(by_name):
+    assert parse(system_resolve(by_name=by_name)) == Rejection("invalid:by_name")
+
+
+@pytest.mark.parametrize("note", [None, NOTE])
+def test_system_resolve_with_a_note_key_is_rejected(note):
+    assert parse(system_resolve(note=note)) == Rejection("invalid:note")
+
+
+def test_system_resolve_with_device_target_is_rejected():
+    body = system_resolve(target={"device_id": DEVICE})
+
+    assert parse(body) == Rejection("invalid:target")
 
 
 def test_caregiver_cancel_with_device_target_is_rejected():
