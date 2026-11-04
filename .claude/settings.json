@@ -31,8 +31,6 @@
       "Bash(npm run build *)"
     ],
     "deny": [
-      "Bash(git commit *)",
-      "Bash(git push *)",
       "Bash(terraform apply *)",
       "Bash(terraform destroy *)",
       "Bash(aws *)",
