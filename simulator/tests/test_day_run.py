@@ -122,8 +122,12 @@ def test_no_message_at_or_after_the_end_of_the_duration(day_run):
 SUMMARY_RE = re.compile(
     r"^(?P<sgt>\d\d:\d\d) SGT routine (?P<routine>\d\d:\d\d) \| connected (\d+)/(\d+)"
     r" \| sent vitals (?P<vitals>\d+) status (?P<status>\d+) bed (?P<bed>\d+)"
-    r" motion (?P<motion>\d+) \| dropped (\d+) \| failed (\d+)$"
+    r" motion (?P<motion>\d+) fall (?P<fall>\d+) vitals_alert (?P<vitals_alert>\d+)"
+    r" alert_cancel (?P<alert_cancel>\d+) \| dropped (\d+) \| failed (\d+)$"
 )
+
+
+KINDS = ("vitals", "status", "bed", "motion", "fall", "vitals_alert", "alert_cancel")
 
 
 def test_one_summary_line_per_minute_on_stderr(day_run):
@@ -140,14 +144,17 @@ def test_summary_counts_add_up_to_the_printed_messages(day_run):
     summed = Counter()
     for line in day_run.stderr.splitlines()[1:-1]:
         match = SUMMARY_RE.fullmatch(line)
-        for kind in ("vitals", "status", "bed", "motion"):
+        for kind in KINDS:
             summed[kind] += int(match[kind])
-    assert summed == printed
+    assert +summed == printed
+    for kind in ("fall", "vitals_alert", "alert_cancel"):
+        assert printed[kind] == 0  # no scenarios in this run
     total = day_run.stderr.splitlines()[-1]
     assert total == (
         f"total 24:00:00 | connected 40/40 | sent vitals {printed['vitals']}"
         f" status {printed['status']} bed {printed['bed']}"
-        f" motion {printed['motion']} | dropped 0 | failed 0"
+        f" motion {printed['motion']} fall 0 vitals_alert 0 alert_cancel 0"
+        " | dropped 0 | failed 0"
     )
 
 

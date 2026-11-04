@@ -23,7 +23,7 @@ MAX_PAYLOAD_BYTES = 8 * 1024
 
 # Messages each device type may send (Messages, Summary).
 ALLOWED = {
-    "wearable": {"vitals", "fall", "status"},
+    "wearable": {"vitals", "vitals_alert", "fall", "alert_cancel", "status"},
     "bedroom": {"motion", "bed", "status"},
 }
 # The IoT rules add these; a payload that has any of them is dropped.
@@ -40,6 +40,10 @@ FIELDS = {
         "activity_pct",
         "accel_g",
     },
+    ("wearable", "vitals_alert"): {"metric", "value", "limit", "direction", "held_s"},
+    ("wearable", "fall"): {"confidence", "peak_g", "still_s", "accel_window"},
+    # Envelope only: any other field rejects the message.
+    ("wearable", "alert_cancel"): set(),
     ("wearable", "status"): {"battery_pct", "worn", "charging", "fw_version"},
     ("bedroom", "status"): {"battery_pct", "fw_version"},
     ("bedroom", "motion"): {"motion"},
@@ -119,6 +123,82 @@ def _vitals(payload: dict, out: list[str]) -> None:
             out.append(f"accel_g.{axis}: out of range")
 
 
+# vitals_alert (docs/metrics.md, wearable -> vitals_alert): the fixed device limits.
+ALERT_LIMITS = {"hr_bpm": {45, 130}, "spo2_pct": {88}}
+# hr_bpm 0 = no pulse while worn; otherwise the vitals ranges.
+VALUE_OK = {
+    "hr_bpm": lambda v: v == 0 or 20 <= v <= 250,
+    "spo2_pct": lambda v: 50 <= v <= 100,
+}
+FALL_WINDOW_FIELDS = {"hz", "start_offset_ms", "samples"}
+FALL_SAMPLES = 50
+
+
+def _vitals_alert(payload: dict, out: list[str]) -> None:
+    metric = payload.get("metric")
+    if metric not in ALERT_LIMITS:
+        out.append("metric: not hr_bpm or spo2_pct")
+        return
+    value = payload.get("value")
+    if not is_int(value):
+        out.append("value: not an integer")
+    elif not VALUE_OK[metric](value):
+        out.append("value: out of range")
+    limit = payload.get("limit")
+    if not is_int(limit):
+        out.append("limit: not an integer")
+    elif limit not in ALERT_LIMITS[metric]:
+        out.append("limit: not a device limit of the metric")
+    direction = payload.get("direction")
+    if direction not in ("above", "below"):
+        out.append("direction: not above or below")
+    elif direction == "above" and metric == "spo2_pct":
+        out.append("direction: spo2_pct is only below")
+    elif direction == "above" and is_int(value) and value == 0:
+        out.append("direction: value 0 is only below")
+    _int_in(payload, "held_s", 10, 600, False, out)
+
+
+def _number_in(payload: dict, name: str, low: float, high: float, out: list[str]):
+    value = payload.get(name)
+    if not is_number(value):
+        out.append(f"{name}: not a number")
+    elif not low <= value <= high:
+        out.append(f"{name}: out of range")
+
+
+def _fall(payload: dict, out: list[str]) -> None:
+    _number_in(payload, "confidence", 0.0, 1.0, out)
+    _number_in(payload, "peak_g", 0.0, 16.0, out)
+    _int_in(payload, "still_s", 0, 600, False, out)
+    window = payload.get("accel_window")
+    if not isinstance(window, dict) or set(window) != FALL_WINDOW_FIELDS:
+        out.append(
+            "accel_window: not an object with exactly hz, start_offset_ms, samples"
+        )
+        return
+    if not is_int(window["hz"]) or window["hz"] != 25:
+        out.append("accel_window.hz: not integer 25")
+    offset = window["start_offset_ms"]
+    if not is_int(offset) or offset != -1000:
+        out.append("accel_window.start_offset_ms: not integer -1000")
+    samples = window["samples"]
+    if not isinstance(samples, list) or len(samples) != FALL_SAMPLES:
+        out.append("accel_window.samples: not a list of 50 samples")
+        return
+    for sample in samples:
+        if (
+            not isinstance(sample, list)
+            or len(sample) != 3
+            or not all(is_number(v) for v in sample)
+        ):
+            out.append("accel_window.samples: a sample is not [x, y, z] numbers")
+            return
+        if not all(-16 <= v <= 16 for v in sample):
+            out.append("accel_window.samples: an axis is out of range")
+            return
+
+
 def problems(topic: str, payload: Any) -> list[str]:
     out: list[str] = []
     match = TOPIC_RE.fullmatch(topic) if isinstance(topic, str) else None
@@ -146,6 +226,10 @@ def problems(topic: str, payload: Any) -> list[str]:
     _envelope(payload, out)
     if (dtype, message) == ("wearable", "vitals"):
         _vitals(payload, out)
+    elif (dtype, message) == ("wearable", "vitals_alert"):
+        _vitals_alert(payload, out)
+    elif (dtype, message) == ("wearable", "fall"):
+        _fall(payload, out)
     elif (dtype, message) == ("wearable", "status"):
         _int_in(payload, "battery_pct", 0, 100, False, out)
         _bool(payload, "worn", out)

@@ -59,7 +59,7 @@ def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
-def _accel(rng: random.Random) -> dict:
+def accel_sample(rng: random.Random) -> dict:
     """One sample: gravity in a random wrist orientation (mostly face up), with a
     magnitude in 0.9-1.1 g."""
     x, y, z = rng.gauss(0, 0.3), rng.gauss(0, 0.3), 1.0
@@ -88,7 +88,7 @@ def vitals_values(
         temp += TEMP_ASLEEP_TENTHS
     low, high = ACTIVITY_RANGE[phase]
     activity = rng.randint(low, high)
-    accel = _accel(rng)
+    accel = accel_sample(rng)
     hr_null = rng.random() < NULL_RATE
     temp_null = rng.random() < NULL_RATE
     spo2_null = rng.random() < (SPO2_NULL_RATE_OUT if phase == OUT else NULL_RATE)
@@ -135,3 +135,55 @@ def bed(epoch_ms: int, message_id: str, occupied: bool) -> dict:
 
 def motion(epoch_ms: int, message_id: str, detected: bool) -> dict:
     return {**envelope(epoch_ms, message_id), "motion": detected}
+
+
+# ---- alert messages (docs/features/simulator-alert-scenarios.md) ----
+
+FALL_WINDOW_HZ = 25
+FALL_WINDOW_START_OFFSET_MS = -1000
+
+
+def fall(
+    epoch_ms: int,
+    message_id: str,
+    confidence: float,
+    peak_g: float,
+    still_s: int,
+    samples: list[list[float]],
+) -> dict:
+    """A `fall`; epoch_ms is the time of the impact."""
+    return {
+        **envelope(epoch_ms, message_id),
+        "confidence": confidence,
+        "peak_g": peak_g,
+        "still_s": still_s,
+        "accel_window": {
+            "hz": FALL_WINDOW_HZ,
+            "start_offset_ms": FALL_WINDOW_START_OFFSET_MS,
+            "samples": samples,
+        },
+    }
+
+
+def vitals_alert(
+    epoch_ms: int,
+    message_id: str,
+    metric: str,
+    value: int,
+    limit: int,
+    direction: str,
+    held_s: int,
+) -> dict:
+    return {
+        **envelope(epoch_ms, message_id),
+        "metric": metric,
+        "value": value,
+        "limit": limit,
+        "direction": direction,
+        "held_s": held_s,
+    }
+
+
+def alert_cancel(epoch_ms: int, message_id: str) -> dict:
+    # Envelope only: the contract rejects an alert_cancel with any other field.
+    return envelope(epoch_ms, message_id)
