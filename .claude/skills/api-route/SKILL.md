@@ -42,9 +42,15 @@ Follow `lambda-python`, plus:
 2. Check the group. Return 403 if it's missing.
 3. Check the caller's link to the requested resident. Return 404 (not 403) if there's no
    link, so callers can't probe which resident IDs exist.
-4. Validate the path, query, and body.
+4. Validate the path, query, and body. Accept only the body keys the route documents
+   (400 for any other) and build the item from the validated values, never by copying
+   the body. Take the actor for any `*_by` field (`acknowledged_by`, `updated_by`,
+   `linked_by`, ...) from the `sub` claim and store the `sub`, plus that user's Cognito
+   `name` in `*_by_name`; ignore any actor sent in the body.
 5. Return only the fields this role may see. Build the response explicitly; never return
-   raw DynamoDB items.
+   raw DynamoDB items. Return `*_by` actors as the stored `*_by_name` (copied from the
+   user's Cognito `name` at write time, so it survives account deletion), never the
+   `sub`.
 6. Errors are `{"error": {"code": "...", "message": "..."}}` with the right status code.
    No stack traces or internal details.
 

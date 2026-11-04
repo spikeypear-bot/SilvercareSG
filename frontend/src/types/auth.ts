@@ -1,8 +1,15 @@
-/** Cognito groups the app knows about (see docs/features/sign-in.md). */
-export type CognitoGroup = 'doctor' | 'nurse' | 'caregiver' | 'family'
+/**
+ * Cognito groups the app knows about (see docs/features/sign-in.md). `family` is not one:
+ * it was removed (docs/features/alert-routing.md, family members are caregivers), so a
+ * user still in only that group gets the no-access screen, as the API refuses it.
+ */
+export type CognitoGroup = 'doctor' | 'nurse' | 'caregiver'
 
-/** Which main page a signed-in user sees. Decided from groups; the API enforces access. */
-export type AppView = 'staff' | 'family' | 'no-access'
+/**
+ * Which main page a signed-in user sees. Decided from groups; the API enforces access.
+ * `family` is the caregiver view (`CaregiverView`, "My residents"), which caregivers get.
+ */
+export type AppView = 'nurse' | 'doctor' | 'family' | 'no-access'
 
 /** The signed-in user's own profile, from Cognito attributes and the ID token. */
 export interface AuthUser {

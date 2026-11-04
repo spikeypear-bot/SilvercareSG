@@ -9,6 +9,7 @@ import { StatusBadge } from '../../components/StatusBadge'
 import { formatClockTime, formatExactTime } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
 import type { Resident, ResidentAlert, VitalsReading } from '../../types/dashboard'
+import { AcknowledgedLines, EscalatedText } from './AlertRow'
 import { BatteryLevel, BedroomStatusText, WearableStatusText } from './DeviceStatus'
 import { DashboardError, LoadingStatus } from './DashboardStates'
 import {
@@ -20,18 +21,23 @@ import {
 } from './labels'
 import { MainLayout } from './MainLayout'
 import { Sparkline } from './Sparkline'
+import { sentToNurseAtOnce } from './stats'
 import { useDashboardData } from './useDashboardData'
 
 const MAX_RECENT_ALERTS = 5
 
-export function FamilyView() {
+/**
+ * The caregiver view (`/` for the `caregiver` group): the residents linked to the account.
+ * Alerts are display only, with no actions (the caregiver Cancel button is Track B's).
+ */
+export function CaregiverView() {
   const { data, loading, error, retry } = useDashboardData('family')
 
   let content: ReactNode
   if (error) {
     content = <DashboardError onRetry={retry} />
   } else if (loading || !data) {
-    content = <FamilySkeleton />
+    content = <CaregiverSkeleton />
   } else if (data.residents.length === 0) {
     content = (
       <EmptyState title="No residents are linked to your account yet. Your care provider can link you." />
@@ -51,7 +57,7 @@ export function FamilyView() {
     )
   }
 
-  return <MainLayout title="My family">{content}</MainLayout>
+  return <MainLayout title="My residents">{content}</MainLayout>
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +176,11 @@ function ResidentOverview({ resident, alerts }: { resident: Resident; alerts: Re
                     <span className="text-sm text-slate-600">
                       <RelativeTime iso={alert.event_ts} now={now} />
                     </span>
+                    {/* Explains the routing to the caregiver, who isn't the nurse. */}
+                    {alert.status === 'open' && alert.escalated_at && sentToNurseAtOnce(alert) && (
+                      <EscalatedText atOnce />
+                    )}
+                    <AcknowledgedLines alert={alert} now={now} />
                   </li>
                 ))}
               </ol>
@@ -217,10 +228,10 @@ function VitalTile({
   )
 }
 
-function FamilySkeleton() {
+function CaregiverSkeleton() {
   return (
     <div aria-busy="true" className="grid gap-6 lg:grid-cols-2">
-      <LoadingStatus label="Loading your family's information" />
+      <LoadingStatus label="Loading your residents' information" />
       {[0, 1].map((i) => (
         <Card key={i} className="flex flex-col gap-5 p-6">
           <div className="flex items-center gap-4">

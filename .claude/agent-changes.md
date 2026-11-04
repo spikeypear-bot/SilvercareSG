@@ -5,6 +5,20 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** renaming `FamilyView` to `CaregiverView`, Claude ran a Python edit script
+  and an `rm` of the originals on separate lines of one shell call; the script failed,
+  the `rm` still ran, and `FamilyView.test.tsx` (never read by the main session) was
+  lost and had to be recreated by the frontend-tester. **Changed:**
+  `.claude/skills/local-dev/SKILL.md` (`make lint` row): never put a delete after a
+  script in the same call; create, check, then delete separately.
+
+- **Problem:** while adapting the frontend to `alert-routing`, Claude exported a helper
+  (`sentToNurseAtOnce`) from `AlertRow.tsx` (lint `only-export-components`, found by
+  frontend-tester), and the resident page began showing `ack_note` and caregiver names
+  without its spec's Privacy section saying so (privacy-reviewer, low). **Changed:**
+  `.claude/skills/frontend/SKILL.md`: component files export only components; new
+  personal data on a screen updates that spec's Privacy section in the same change.
+
 - **Problem:** in `possible-fall`, a back-in-bed resolve used the bedroom unit's data
   without checking the unit was still the alert's resident's, and "I'm OK" used a
   5-minute cached device → resident lookup, so after a reassignment one resident's data
@@ -50,6 +64,12 @@ a wasted step. Newest first. Review these in the diff before committing.
   log request bodies. **Changed:** `.claude/skills/feature-spec/SKILL.md`: the
   sender-checks item now includes both.
 
+- **Problem:** on two merges of `main` into `frontend-views`, Claude's proposed access
+  patterns (21/22, then 24/25) clashed with numbers main's alerting branches had taken,
+  and each merge meant renumbering docs, specs, and code comments. **Changed:**
+  `.claude/skills/data-model/SKILL.md` step 2: number after `origin/main`'s highest,
+  refer to unmerged patterns by name in code, and on a clash keep main's number.
+
 ## 2026-11-03
 
 - **Problem:** the live `--alerts` check (spec by Claude) sent heart rates 125/128 at
@@ -68,6 +88,11 @@ a wasted step. Newest first. Review these in the diff before committing.
   checks it must make before sending (privacy-reviewer, low). **Changed:**
   `.claude/skills/feature-spec/SKILL.md`: contracts other components send state the
   sender's checks.
+
+- **Problem:** while resolving the merge, Claude edited 11 files with Python scripts on
+  the Windows host, and text-mode writes turned their LF line endings into CRLF, against
+  `.gitattributes`. **Changed:** `.claude/skills/local-dev/SKILL.md`: keep LF; on
+  Windows open files with `newline=''` or in binary, or use Edit/Write.
 
 - **Problem:** the `escalation` spec (written by Claude) let caregivers acknowledge
   without saying what others see about who acknowledged (privacy-reviewer, medium), and
@@ -138,6 +163,48 @@ a wasted step. Newest first. Review these in the diff before committing.
   line endings; it overwrote three uncommitted edits, which had to be redone.
   **Changed:** `.claude/skills/local-dev/SKILL.md`: fix CRLF per file, never suggest
   bulk checkout or reset while anything is uncommitted.
+
+## 2026-11-01
+
+- **Problem:** twice the screen-reader text lost a space between JSX elements in a flex
+  row ("Wearable· id", "12%· Low"), and a charging state was shown only by a hidden
+  icon. The tester caught both. **Changed:** `.claude/skills/frontend/SKILL.md`: states
+  need text, not just colour or a hidden icon; one-phrase text goes in one inline element.
+
+- **Problem:** Claude added staff use of patterns 4, 5, and 8 for the devices view
+  without saying which fields the route returns, though the indexes project more
+  (`photo_key`, `worn`, ...). The privacy reviewer caught it. **Changed:**
+  `.claude/skills/data-model/SKILL.md` step 2: for a user-facing route, note the exact
+  fields returned and the projected attributes dropped.
+
+- **Problem:** twice a frontend test run gave wrong counts (21 worker errors; 25 of 26
+  files) because it overlapped another run: the tester's tests with its lint, and
+  Claude's run with the tester's. **Changed:** `.claude/skills/frontend/SKILL.md`: run
+  the checks one after another, never alongside another test run.
+
+- **Problem:** Claude's proposed pattern 21 (doctor edits thresholds) used `UpdateItem`
+  without `attribute_exists(pk)`, so it could create orphan items for mistyped or
+  offboarded residents; it also didn't reject unknown body keys or say the actor is
+  returned as a name. The privacy reviewer caught it. **Changed:**
+  `.claude/skills/data-model/SKILL.md` (updates to existing items use
+  `attribute_exists(pk)`) and `.claude/skills/api-route/SKILL.md` (accept only
+  documented body keys and build the item; return `*_by` as a name, never the `sub`).
+
+- **Problem:** four "live region is quiet" assertions used `toHaveTextContent('')`,
+  which passes for any text, so they tested nothing. **Changed:**
+  `.claude/agents/frontend-tester.md`: use `toBeEmptyDOMElement()` for emptiness.
+
+- **Problem:** escalation announcements ran inside alert rows, so they were lost while
+  the nurse viewed another panel. The tester caught it. **Changed:**
+  `.claude/skills/frontend/SKILL.md`: one live region per page, fed from the data, and
+  no ticking lists inside live regions.
+
+- **Problem:** the nurse dashboard's acknowledge/resolve hook took the staff name from
+  the client and was documented as the future API seam, inviting an API that trusts a
+  client-chosen actor. The privacy reviewer caught it. **Changed:**
+  `.claude/skills/api-route/SKILL.md` (handler takes `*_by` actors from the `sub` claim,
+  ignores the body) and `.claude/skills/frontend/SKILL.md` (never send who did an
+  action; a name shown early is display only).
 
 ## 2026-10-25
 

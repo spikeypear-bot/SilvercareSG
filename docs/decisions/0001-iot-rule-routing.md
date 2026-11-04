@@ -159,8 +159,15 @@ and write them to S3 in batches.
   twice; the cleaning step removes duplicates by `message_id`.
 - **Alerts** go to the same bucket under `alerts/`, written by `alert-processor`.
 - **Bucket:** all public access blocked, `BucketOwnerEnforced`, SSE-S3, TLS-only bucket
-  policy, in `ap-southeast-1`. How long history is kept is Open decision #4 (retention);
-  the lifecycle rule follows that decision.
+  policy, in `ap-southeast-1`.
+- **Retention** (decided 2026-11-01, Open decision #4):
+  - raw `telemetry/`: downsampled to daily summaries after 90 days and deleted at
+    365 days *(both proposed)*;
+  - alerts (`alerts/`) and daily summaries (`summaries/`): the resident's lifetime +
+    6 years (MOH Circular 85/2022, Licence Conditions on the Retention Periods of Patient Health Records, under the Healthcare Services Act 2020).
+  The bucket's lifecycle rule doesn't do this yet: `infra/history.tf` needs a
+  `telemetry/` expiry at 365 days, added once the daily summary job exists. See
+  Retention in `docs/data-model.md`.
 - **Cost** (US prices from memory, check `ap-southeast-1`): SQS ~1.3M sends plus
   Lambda polling, a little over the 1M free requests, about US$0.50/month; ~43,000 S3
   PUTs (5 types × one file per 5 min) about US$0.25/month; Lambda inside the free tier;
