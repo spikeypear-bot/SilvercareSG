@@ -15,7 +15,6 @@ structure, not code that exists yet. Update this file as decisions land.
   workflow, say in a line which one and why.
 - Ask me before making product decisions: what data is collected, who can see what,
   alert thresholds, retention.
-- Never run `git commit` or `git push`. I commit and push myself.
 - After fixing a bug, a reviewer finding, or a mistake I corrected, run the
   `improve-agents` skill: fix the skill, agent, or workflow that let it happen, without
   asking me, within that skill's guardrails. Changes are logged in
@@ -186,7 +185,7 @@ under Singapore's PDPA. Treat it accordingly:
   - builders: `backend-builder`, `frontend-builder` (used by `build-feature`)
   - testers: `lambda-tester`, `frontend-tester`
   - reviewers (read-only): `iac-reviewer`, `privacy-reviewer`
-- `.claude/hooks/guard.sh` blocks `git commit`/`push`, the `aws` CLI, Terraform commands
+- `.claude/hooks/guard.sh` blocks, the `aws` CLI, Terraform commands
   that change infrastructure or state, anything touching `~/.aws`, and anything touching
   device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test`).
   `.claude/hooks/format.sh` formats edited files.
@@ -197,7 +196,7 @@ under Singapore's PDPA. Treat it accordingly:
 - Feature flow, one feature at a time:
   1. Write the spec with the `feature-spec` skill → `docs/features/<name>.md`, `status: ready`
   2. Ask Claude to run the `build-feature` workflow with the feature name
-  3. Review the diff and run it locally, then commit yourself
+  3. Review the diff and run it locally
 - Before a PR, ask Claude to run the `pre-pr-check` workflow.
 
 ## Open decisions
