@@ -12,8 +12,8 @@ import checks
 import handler
 import pytest
 from botocore.exceptions import ClientError
-from checks import BATTERY_LOW, DEVICE_OFFLINE, NOT_WORN
-from conftest import LATEST_TABLE
+from checks import BATTERY_LOW, DEVICE_OFFLINE, NOT_WORN, POSSIBLE_FALL
+from conftest import ALERTS_TABLE, LATEST_TABLE, REGISTRY_TABLE
 from events import (
     ALERT_ID,
     ALERT_ID_2,
@@ -33,7 +33,7 @@ from events import (
 
 POWERTOOLS_KEYS = {"level", "location", "message", "timestamp", "service"}
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-ZERO = {DEVICE_OFFLINE: 0, BATTERY_LOW: 0, NOT_WORN: 0}
+ZERO = {DEVICE_OFFLINE: 0, BATTERY_LOW: 0, NOT_WORN: 0, POSSIBLE_FALL: 0}
 
 
 def counts(**kw) -> dict[str, int]:
@@ -99,6 +99,7 @@ def test_healthy_device_sends_nothing(aws):
         "raised": counts(),
         "resolved": counts(),
         "grouped": False,
+        "test_mode_units": 0,
     }
 
 
@@ -524,11 +525,13 @@ def test_lambda_handler_logs_one_summary_line_with_counts(aws, logs, monkeypatch
         "raised",
         "resolved",
         "grouped",
+        "test_mode_units",
     }
     assert line["devices_checked"] == 2
     assert line["raised"] == counts(battery_low=1, device_offline=1)
     assert line["resolved"] == counts(not_worn=1)
     assert line["grouped"] is False
+    assert line["test_mode_units"] == 0
     assert result["devices_checked"] == 2
 
 
@@ -735,9 +738,24 @@ def test_queries_are_eventually_consistent_on_the_three_indexes(aws, monkeypatch
 
     handler.run(NOW)
 
-    indexes = sorted(q["IndexName"] for q in spy.ops("query"))
-    assert indexes == ["by-message", "by-type", "open"]
-    assert all("ConsistentRead" not in q for q in spy.ops("query"))
+    queries = spy.ops("query")
+    reads = sorted(
+        (
+            q["TableName"],
+            q["IndexName"],
+            next(iter(q["ExpressionAttributeValues"].values()))["S"],
+        )
+        for q in queries
+    )
+    assert reads == [
+        (ALERTS_TABLE, "open", "OPEN"),
+        (LATEST_TABLE, "by-message", "bed"),
+        (LATEST_TABLE, "by-message", "motion"),
+        (LATEST_TABLE, "by-message", "status"),
+        (REGISTRY_TABLE, "by-type", "DEVICE"),
+        (REGISTRY_TABLE, "by-type", "TEST_MODE"),
+    ]
+    assert all("ConsistentRead" not in q for q in queries)
 
 
 def test_batch_get_is_split_at_100_keys(aws, monkeypatch):

@@ -342,3 +342,50 @@ def caregiver_ack_body(**overrides: Any) -> str:
 
 def resolve_body(**overrides: Any) -> str:
     return _compact(resolve_message(**overrides))
+
+
+# ---- possible fall (docs/features/possible-fall.md, criteria 7-13) ----
+
+PF_DEVICE = "bedroom-0007"
+PF_DEVICE_2 = "bedroom-0008"
+# Vacated 02:10:00 SGT; the watchdog's run 20 minutes later; back in bed at 02:45 SGT.
+PF_EVENT_TS = "2026-11-03T18:10:00.000Z"
+PF_RECEIVED_AT = "2026-11-03T18:30:00.000Z"
+PF_CHANGED_AT = "2026-11-03T18:45:00.000Z"
+PF_BED_ID = "c2a1d4f0-0000-4000-8000-0000000000b1"
+
+
+def possible_fall_message(**overrides: Any) -> dict[str, Any]:
+    """A valid watchdog possible_fall message (critical, bedroom unit). `details`
+    may be overridden; pass a field as DELETE to remove it."""
+    fields: dict[str, Any] = {
+        "alert_type": "possible_fall",
+        "severity": "critical",
+        "device_id": PF_DEVICE,
+        "event_ts": PF_EVENT_TS,
+        "received_at": PF_RECEIVED_AT,
+        "source_message_id": PF_BED_ID,
+        "details": {"out_of_bed_since": PF_EVENT_TS, "wearable": "not_worn"},
+    }
+    fields.update(overrides)
+    return alert_message(**fields)
+
+
+def possible_fall_body(**overrides: Any) -> str:
+    return _compact(possible_fall_message(**overrides))
+
+
+def back_in_bed_message(**overrides: Any) -> dict[str, Any]:
+    """The watchdog's back-in-bed resolve of the default possible fall."""
+    body = cancel_message(
+        new_status="resolved",
+        changed_at=PF_CHANGED_AT,
+        by_role="system",
+        target={"alert_id": ALERT_ID, "event_ts": PF_EVENT_TS},
+    )
+    body["reason"] = "back_in_bed"
+    return _apply(body, overrides)
+
+
+def back_in_bed_body(**overrides: Any) -> str:
+    return _compact(back_in_bed_message(**overrides))

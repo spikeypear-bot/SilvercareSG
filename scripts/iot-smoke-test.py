@@ -61,8 +61,21 @@ at the next run; and about 15 minutes after the device's last status it is repor
 offline. Use an assigned device the simulator isn't sending for. Needs no AWS
 credentials.
 
-Prints only check names, PASS / FAIL, and message IDs, never payloads, keys, or
-certificates. Exits 0 only if every check passes.
+With --possible-fall (bedroom units only; docs/features/possible-fall.md, criterion
+15), after the checks (and the other flags' messages, if given) pass it prints the
+test-mode item to create in the DynamoDB console (silvercare-registry, JSON view), with
+sk set to the current UTC time, then publishes, on one more connection as the device,
+`bed` occupied false and, 3 s later, `motion` false, and prints what to expect: about
+2-7 minutes later a "SilverCare CRITICAL alert: Possible fall" email with "Test mode:
+yes" to the caregivers and the nurses (without the item, the real rule applies: night
+only, 20 minutes). With --back-in-bed (bedroom units only) it publishes `bed` occupied
+true: within 5 minutes a "SilverCare update: Possible fall - <resident> resolved" email
+to the same people; then delete the test-mode item (it also expires after 2 hours).
+Both need no AWS credentials: the user creates and deletes the item.
+
+Prints only check names, PASS / FAIL, message IDs, and the test-mode item (device ID
+and time only), never payloads, keys, or certificates. Exits 0 only if every check
+passes.
 """
 
 from __future__ import annotations
@@ -116,6 +129,13 @@ CHECK_INGEST = "6 publish ingest test messages (PUBACK for each)"
 CHECK_ALERTS = "7 publish alert test messages (PUBACK for each)"
 CHECK_CANCEL = "8 publish cancel test messages (PUBACK for each)"
 CHECK_LOW_BATTERY = "9 publish low-battery status (PUBACK)"
+CHECK_POSSIBLE_FALL = "10 publish possible-fall test messages (PUBACK for each)"
+CHECK_BACK_IN_BED = "11 publish back-in-bed message (PUBACK)"
+
+# --possible-fall (possible-fall criterion 15): seconds between the bed and the motion
+# message, both in their ts and in real time.
+POSSIBLE_FALL_PAUSE_S = 3.0
+TEST_MODE_ENTITY = "TEST_MODE"
 
 # --low-battery (watchdog criterion 18a): below the watchdog's limit of 20 %.
 LOW_BATTERY_PCT = 10
@@ -559,6 +579,148 @@ def report_low_battery(
     )
 
 
+def build_bed_payload(
+    occupied: bool, now: datetime | None = None, message_id: str | None = None
+) -> dict:
+    """A valid synthetic bedroom `bed` message (docs/metrics.md)."""
+    payload = build_envelope(now, message_id)
+    payload["occupied"] = occupied
+    return payload
+
+
+def build_motion_payload(
+    motion: bool, now: datetime | None = None, message_id: str | None = None
+) -> dict:
+    """A valid synthetic bedroom `motion` message (docs/metrics.md)."""
+    payload = build_envelope(now, message_id)
+    payload["motion"] = motion
+    return payload
+
+
+def build_possible_fall_messages(
+    now: datetime | None = None,
+    new_id: Callable[[], str] | None = None,
+) -> list[tuple[str, str, dict]]:
+    """The --possible-fall messages in send order, as (expected result, message type,
+    payload): bed occupied false at `now`, then motion false POSSIBLE_FALL_PAUSE_S
+    later."""
+    new_id = new_id or (lambda: str(uuid.uuid4()))
+    now = now or datetime.now(UTC)
+    return [
+        ("bed empty", "bed", build_bed_payload(False, now, new_id())),
+        (
+            "no motion",
+            "motion",
+            build_motion_payload(
+                False, now + timedelta(seconds=POSSIBLE_FALL_PAUSE_S), new_id()
+            ),
+        ),
+    ]
+
+
+def build_back_in_bed_messages(
+    now: datetime | None = None,
+    new_id: Callable[[], str] | None = None,
+) -> list[tuple[str, str, dict]]:
+    """The --back-in-bed message, as (expected result, message type, payload)."""
+    new_id = new_id or (lambda: str(uuid.uuid4()))
+    return [
+        (
+            "resolves the possible fall",
+            "bed",
+            build_bed_payload(True, now, new_id()),
+        )
+    ]
+
+
+def build_test_mode_item(device_id: str, now: datetime | None = None) -> dict:
+    """The registry test-mode item for a bedroom unit, in DynamoDB JSON (the console's
+    JSON view), set at `now` (possible-fall criterion 3a)."""
+    if device_type(device_id) != "bedroom":
+        raise ValueError("test mode is for bedroom units only")
+    return {
+        "pk": {"S": f"DEVICE#{device_id}"},
+        "sk": {"S": f"TEST_MODE#{format_ts(now or datetime.now(UTC))}"},
+        "entity_type": {"S": TEST_MODE_ENTITY},
+    }
+
+
+def report_test_mode_item(
+    device_id: str, now: datetime | None = None, out: TextIO | None = None
+) -> None:
+    """Print the test-mode item to create before the possible-fall messages."""
+    out = out or sys.stdout
+    print(
+        "For a live check at any time of day, create this item now in the DynamoDB"
+        " console (silvercare-registry -> Create item -> JSON view):",
+        file=out,
+    )
+    print(f"  {json.dumps(build_test_mode_item(device_id, now))}", file=out)
+    print(
+        "It puts only this unit in test mode (any time counts as night, the wait is 2"
+        " minutes) and expires by itself 2 hours after the time in sk. Without it,"
+        " the real rule applies (vacated 22:00-07:00 SGT, 20 minutes).",
+        file=out,
+    )
+    print(
+        "Use a resident whose wearable the simulator isn't sending for (no status for"
+        " 15 minutes counts as not worn) or who has none: a worn wearable stops the"
+        " alert.",
+        file=out,
+    )
+
+
+def report_possible_fall(
+    device_id: str, messages: list[tuple[str, str, dict]], out: TextIO | None = None
+) -> None:
+    """Print the sent message IDs (no other fields) and what to expect."""
+    out = out or sys.stdout
+    print("Possible-fall messages sent (expected result):", file=out)
+    for expected, message, payload in messages:
+        print(f"  {message:<12}  {payload['message_id']}  {expected}", file=out)
+    print(
+        f"Expect, if {device_id} is assigned to a resident and in test mode, about 2-7"
+        " minutes later (2 minutes plus the next watchdog run):",
+        file=out,
+    )
+    print(
+        "  'SilverCare CRITICAL alert: Possible fall - <resident>' with 'Test mode:"
+        " yes' to the resident's caregivers and to the nurse subscribers at once;",
+        file=out,
+    )
+    print(
+        "  a possible_fall item (severity critical, open) under the resident in"
+        " silvercare-alerts; a watchdog log line with action 'raised'.",
+        file=out,
+    )
+    print(
+        "Then run the smoke test with --back-in-bed (BACK_IN_BED=1) to resolve it.",
+        file=out,
+    )
+
+
+def report_back_in_bed(
+    device_id: str, messages: list[tuple[str, str, dict]], out: TextIO | None = None
+) -> None:
+    """Print the sent message ID (no other fields) and what to expect."""
+    out = out or sys.stdout
+    print("Back-in-bed message sent (expected result):", file=out)
+    for expected, message, payload in messages:
+        print(f"  {message:<12}  {payload['message_id']}  {expected}", file=out)
+    print(
+        f"Expect within 5 minutes (the next watchdog run), if {device_id} has an open"
+        " possible fall: 'SilverCare update: Possible fall - <resident> resolved' to"
+        " the caregivers and the nurse subscribers; the item has status 'resolved',"
+        " resolved_by_role 'system', and status_notified_at.",
+        file=out,
+    )
+    print(
+        "Then delete the test-mode item (DEVICE#<unit> / TEST_MODE#...) in"
+        " silvercare-registry; it also expires by itself 2 hours after it was set.",
+        file=out,
+    )
+
+
 def ingest_check_command(
     device_id: str,
     valid_ids: Iterable[str],
@@ -832,6 +994,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="after the checks, publish a status with battery 10 %% (not charging) and print what to expect",
     )
+    parser.add_argument(
+        "--possible-fall",
+        action="store_true",
+        help="bedroom units only: print the test-mode item, then publish bed empty and no motion 3 s later",
+    )
+    parser.add_argument(
+        "--back-in-bed",
+        action="store_true",
+        help="bedroom units only: publish bed occupied (resolves an open possible fall)",
+    )
     parser.add_argument("--ca-file", type=Path, default=DEFAULT_CA_FILE)
     parser.add_argument("--keys-dir", type=Path, default=DEFAULT_KEYS_DIR)
     args = parser.parse_args(argv)
@@ -851,6 +1023,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.cancel and dtype != "wearable":
         print("error: --cancel is for wearables only", file=sys.stderr)
+        return 2
+    if args.possible_fall and dtype != "bedroom":
+        print("error: --possible-fall is for bedroom units only", file=sys.stderr)
+        return 2
+    if args.back_in_bed and dtype != "bedroom":
+        print("error: --back-in-bed is for bedroom units only", file=sys.stderr)
         return 2
     if not ENDPOINT_RE.fullmatch(args.endpoint):
         print(
@@ -874,7 +1052,14 @@ def main(argv: list[str] | None = None) -> int:
 
     tls_paths = {k: str(v) for k, v in tls.items()}
     results = run_checks(args.device, args.endpoint, tls_paths)
-    if not (args.ingest or args.alerts or args.cancel or args.low_battery):
+    if not (
+        args.ingest
+        or args.alerts
+        or args.cancel
+        or args.low_battery
+        or args.possible_fall
+        or args.back_in_bed
+    ):
         return report(results)
 
     ingest_messages: list[tuple[str, str, dict]] = []
@@ -953,7 +1138,51 @@ def main(argv: list[str] | None = None) -> int:
             if not published:
                 low_battery_messages = []
 
+    possible_fall_messages: list[tuple[str, str, dict]] = []
+    if args.possible_fall:
+        if not all(passed for _, passed in results):
+            print(
+                "Skipping the possible-fall messages: an earlier check failed.",
+                file=sys.stderr,
+            )
+            results = [*results, (CHECK_POSSIBLE_FALL, False)]
+        else:
+            # Printed before publishing, with the current UTC time (criterion 15).
+            report_test_mode_item(args.device)
+            possible_fall_messages = build_possible_fall_messages()
+            published = run_ingest(
+                args.device,
+                args.endpoint,
+                tls_paths,
+                possible_fall_messages,
+                pause_before_last_s=POSSIBLE_FALL_PAUSE_S,
+            )
+            results = [*results, (CHECK_POSSIBLE_FALL, published)]
+            if not published:
+                possible_fall_messages = []
+
+    back_in_bed_messages: list[tuple[str, str, dict]] = []
+    if args.back_in_bed:
+        if not all(passed for _, passed in results):
+            print(
+                "Skipping the back-in-bed message: an earlier check failed.",
+                file=sys.stderr,
+            )
+            results = [*results, (CHECK_BACK_IN_BED, False)]
+        else:
+            back_in_bed_messages = build_back_in_bed_messages()
+            published = run_ingest(
+                args.device, args.endpoint, tls_paths, back_in_bed_messages
+            )
+            results = [*results, (CHECK_BACK_IN_BED, published)]
+            if not published:
+                back_in_bed_messages = []
+
     code = report(results)
+    if possible_fall_messages:
+        report_possible_fall(args.device, possible_fall_messages)
+    if back_in_bed_messages:
+        report_back_in_bed(args.device, back_in_bed_messages)
     if alert_messages:
         report_alerts(args.device, alert_messages)
     if cancel_messages:
