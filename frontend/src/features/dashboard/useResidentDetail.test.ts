@@ -153,15 +153,16 @@ describe('useResidentDetail actions (local state only)', () => {
   it('resolve marks an open alert resolved, and does nothing to an already-resolved one', async () => {
     const { result, data } = await loaded()
     const open = firstWith(data, 'open')
-    act(() => result.current.resolveAlert(open.alert_id, 'Test Nurse D'))
+    act(() => result.current.resolveAlert(open.alert_id))
     expect(find(result, open.alert_id)).toMatchObject({
       status: 'resolved',
-      resolved_by: 'Test Nurse D',
       resolved_at: ACTION_TIME.toISOString(),
     })
+    // No name: the API takes the actor from the token (decided 2026-11-05).
+    expect(find(result, open.alert_id)).not.toHaveProperty('resolved_by')
 
     const history = firstWith(data, 'resolved')
-    act(() => result.current.resolveAlert(history.alert_id, 'Test Nurse D'))
+    act(() => result.current.resolveAlert(history.alert_id))
     act(() => result.current.acknowledgeAlert(history.alert_id))
     expect(find(result, history.alert_id)).toBe(history)
     expect(result.current.data?.alerts).toHaveLength(data.alerts.length)
@@ -171,7 +172,7 @@ describe('useResidentDetail actions (local state only)', () => {
     const { result, data } = await loaded('res-0002')
     const cancelled = firstWith(data, 'cancelled')
     expect(cancelled).toBeDefined()
-    act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse D'))
+    act(() => result.current.resolveAlert(cancelled.alert_id))
     act(() => result.current.acknowledgeAlert(cancelled.alert_id))
     expect(find(result, cancelled.alert_id)).toBe(cancelled)
     expect(find(result, cancelled.alert_id)).not.toHaveProperty('resolved_by')
@@ -222,7 +223,7 @@ describe('useResidentDetail actions (local state only)', () => {
     const data = demoDetail('res-0003', NOW)
     act(() => {
       result.current.acknowledgeAlert(data.alerts[0].alert_id)
-      result.current.resolveAlert(data.alerts[0].alert_id, 'Test Nurse D')
+      result.current.resolveAlert(data.alerts[0].alert_id)
       result.current.updateThresholds(data.thresholds, 'Test Doctor B')
     })
     expect(result.current).toMatchObject({ data: null, loading: true, notFound: false })

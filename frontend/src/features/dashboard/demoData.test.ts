@@ -1,13 +1,16 @@
-import type { ResidentAlert } from '../../types/dashboard'
+import type { AlertType, ResidentAlert } from '../../types/dashboard'
 import {
   DEMO_ESCALATION_DELAY_MS,
   FAMILY_LINKED_RESIDENT_IDS,
   STATUS_TEXT,
   createDemoData,
+  createResidentDetail,
 } from './demoData'
 
 const NOW = new Date('2026-10-18T02:30:00Z')
 const data = createDemoData(NOW)
+/** Written out here rather than imported, so the tests check the demo independently. */
+const DEVICE_PROBLEMS: ReadonlySet<AlertType> = new Set<AlertType>(['device_offline', 'battery_low', 'not_worn'])
 
 const isIntOrNull = (v: number | null) => v === null || Number.isInteger(v)
 const inRange = (v: number | null, min: number, max: number) => v === null || (v >= min && v <= max)
@@ -125,9 +128,16 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     })
   })
 
-  it('acknowledged alerts carry when (no name); open ones carry neither', () => {
+  it('acknowledged alerts carry when; health alerts no name, device problems the caregiver and no note', () => {
     data.alerts.forEach((a) => {
-      expect(a).not.toHaveProperty('acknowledged_by')
+      if (DEVICE_PROBLEMS.has(a.alert_type) && a.status === 'acknowledged') {
+        expect(a.acknowledged_by_role).toBe('caregiver')
+        expect(a.acknowledged_by).toMatch(/^Test Caregiver [AB]$/)
+        expect(a.ack_note).toBeUndefined()
+      } else {
+        expect(a).not.toHaveProperty('acknowledged_by')
+        expect(a).not.toHaveProperty('acknowledged_by_role')
+      }
       if (a.status === 'acknowledged') {
         expect(a.acknowledged_at).toBeDefined()
         expect(Date.parse(a.acknowledged_at as string)).toBeGreaterThanOrEqual(Date.parse(a.event_ts))
@@ -142,19 +152,49 @@ describe('status and severity are provided by the data (criterion 19)', () => {
       expect.arrayContaining([
         ['res-0007', 'hr_high'],
         ['res-0015', 'device_offline'],
-        ['res-0013', 'low_battery'],
+        ['res-0013', 'battery_low'],
       ]),
     )
   })
 
-  it('ack notes: res-0007 one line, res-0015 two lines, res-0013 none', () => {
+  it('ack notes: res-0007 (nurse, health alert) one line; the device problems res-0015 and res-0013 none', () => {
     const find = (id: string) => data.alerts.find((a) => a.resident_id === id && a.status === 'acknowledged')
     expect(find('res-0007')?.ack_note).toBe('Synthetic note: ambulance on the way, 8 minutes.')
-    const twoLine = find('res-0015')?.ack_note
-    expect(twoLine?.split('\n')).toHaveLength(2)
-    expect(twoLine).toMatch(/^Synthetic note:/)
-    expect(find('res-0013')).toBeDefined()
-    expect(find('res-0013')?.ack_note).toBeUndefined()
+    for (const id of ['res-0015', 'res-0013']) {
+      expect(find(id)).toBeDefined()
+      expect(find(id)?.ack_note).toBeUndefined()
+    }
+  })
+
+  it('every resident status follows the backend rule (docs/data-model.md, Resident status)', () => {
+    /** The rule, written independently of demoData.ts. */
+    const outside = (value: number | null, min?: number, max?: number) =>
+      value !== null && ((min !== undefined && value < min) || (max !== undefined && value > max))
+    data.residents.forEach((r) => {
+      const live = data.alerts.filter(
+        (a) => a.resident_id === r.resident_id && (a.status === 'open' || a.status === 'acknowledged'),
+      )
+      const t = createResidentDetail(r.resident_id, NOW)?.thresholds
+      const v = r.vitals[0]
+      const abnormal =
+        t !== undefined &&
+        v !== undefined &&
+        (outside(v.hr_bpm, t.hr_bpm.min, t.hr_bpm.max) ||
+          outside(v.spo2_pct, t.spo2_pct.min) ||
+          outside(v.skin_temp_c, t.skin_temp_c.min, t.skin_temp_c.max))
+      const expected = live.some((a) => a.severity === 'critical')
+        ? 'urgent'
+        : live.length > 0 || abnormal
+          ? 'attention'
+          : 'ok'
+      expect([r.resident_id, r.status]).toEqual([r.resident_id, expected])
+    })
+  })
+
+  it('a device problem alone makes a resident need attention (res-0013, acknowledged low battery)', () => {
+    const m = data.residents.find((r) => r.resident_id === 'res-0013')
+    expect(m?.status).toBe('attention')
+    expect(m?.status_text).toBe('Needs attention')
   })
 
   it('staff names are display names, never a UUID or Cognito sub', () => {
@@ -206,8 +246,8 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     expect(res7?.escalated_at).toBeDefined()
   })
 
-  it('a warning\'s escalation time is 300 s after event_ts, as escalates_at or escalated_at', () => {
-    const warnings = data.alerts.filter((a) => a.severity === 'warning')
+  it('a health warning\'s escalation time is 300 s after event_ts, as escalates_at or escalated_at', () => {
+    const warnings = data.alerts.filter((a) => a.severity === 'warning' && !DEVICE_PROBLEMS.has(a.alert_type))
     expect(warnings.length).toBeGreaterThan(0)
     warnings.forEach((a) => {
       const at = a.escalates_at ?? a.escalated_at
@@ -216,9 +256,22 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     })
   })
 
-  it('every other alert has escalated_at in the past: critical at once, warnings after 300 s', () => {
-    const others = data.alerts.filter((a) => !(a.resident_id === 'res-0008' && a.alert_type === 'possible_fall'))
-    expect(others).toHaveLength(11)
+  it('device problems are never escalated to the nurse (docs/features/watchdog.md)', () => {
+    const problems = data.alerts.filter((a) => DEVICE_PROBLEMS.has(a.alert_type))
+    expect(problems.map((a) => a.alert_type).sort()).toEqual(
+      ['battery_low', 'battery_low', 'device_offline', 'device_offline', 'not_worn'],
+    )
+    problems.forEach((a) => {
+      expect(a.escalates_at).toBeUndefined()
+      expect(a.escalated_at).toBeUndefined()
+    })
+  })
+
+  it('every other health alert has escalated_at in the past: critical at once, warnings after 300 s', () => {
+    const others = data.alerts.filter(
+      (a) => !DEVICE_PROBLEMS.has(a.alert_type) && !(a.resident_id === 'res-0008' && a.alert_type === 'possible_fall'),
+    )
+    expect(others).toHaveLength(6)
     others.forEach((a) => {
       expect(a.escalates_at).toBeUndefined()
       expect(a.escalated_at).toBeDefined()
@@ -227,12 +280,13 @@ describe('status and severity are provided by the data (criterion 19)', () => {
       expect(Date.parse(a.escalated_at as string)).toBeLessThanOrEqual(NOW.getTime())
     })
     const ackedEscalated = others.filter((a) => a.status === 'acknowledged').map((a) => a.resident_id)
-    expect(ackedEscalated.sort()).toEqual(['res-0007', 'res-0013', 'res-0015'])
+    expect(ackedEscalated).toEqual(['res-0007'])
   })
 
   it('follows the demo escalation rule for every alert, at several clock times', () => {
     /** The rule, written independently of demoData.ts. */
     function expected(a: ResidentAlert, now: Date): Pick<ResidentAlert, 'escalates_at' | 'escalated_at'> {
+      if (DEVICE_PROBLEMS.has(a.alert_type)) return {}
       if (a.severity === 'critical') return { escalated_at: new Date(Date.parse(a.event_ts) + 1_000).toISOString() }
       const at = Date.parse(a.event_ts) + 300_000
       if (a.acknowledged_at && Date.parse(a.acknowledged_at) <= at) return {}
@@ -263,9 +317,9 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     expect(data.alerts.map((a) => a.alert_type)).not.toContain('vitals')
   })
 
-  it('res-0013 low_battery and res-0002 possible_fall (410 min old) are warnings', () => {
-    const lowBattery = data.alerts.find((a) => a.resident_id === 'res-0013' && a.alert_type === 'low_battery')
-    expect(lowBattery?.severity).toBe('warning')
+  it('res-0013 battery_low and res-0002 possible_fall (410 min old) are warnings', () => {
+    const batteryLow = data.alerts.find((a) => a.resident_id === 'res-0013' && a.alert_type === 'battery_low')
+    expect(batteryLow?.severity).toBe('warning')
     const oldFall = data.alerts.find((a) => a.resident_id === 'res-0002' && a.alert_type === 'possible_fall')
     expect(oldFall?.severity).toBe('warning')
     expect(NOW.getTime() - Date.parse(oldFall?.event_ts as string)).toBe(410 * 60_000)

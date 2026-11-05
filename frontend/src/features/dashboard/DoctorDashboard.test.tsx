@@ -171,7 +171,7 @@ describe('open alerts summary', () => {
 
   it('without critical alerts, shows the newest 3', async () => {
     const data = demoDataFor('staff')
-    const alerts = [5, 1, 4, 2, 3].map((n) => alertFor(n, { alert_type: 'inactivity', severity: 'warning' }))
+    const alerts = [5, 1, 4, 2, 3].map((n) => alertFor(n, { alert_type: 'not_worn', severity: 'warning' }))
     await renderLoaded({ ...data, alerts })
     const rows = summaryRows()
     expect(rows).toHaveLength(3)
@@ -185,8 +185,8 @@ describe('open alerts summary', () => {
   it('a critical alert older than the warnings is still pinned first', async () => {
     const data = demoDataFor('staff')
     const alerts = [
-      alertFor(1, { alert_type: 'inactivity', severity: 'warning' }),
-      alertFor(2, { alert_type: 'low_battery', severity: 'warning' }),
+      alertFor(1, { alert_type: 'not_worn', severity: 'warning' }),
+      alertFor(2, { alert_type: 'battery_low', severity: 'warning' }),
       alertFor(3, { alert_type: 'possible_fall', severity: 'warning' }),
       alertFor(19, { alert_type: 'fall', severity: 'critical' }),
     ]
@@ -203,7 +203,7 @@ describe('open alerts summary', () => {
     const data = demoDataFor('staff')
     const alerts = [
       alertFor(1, { alert_type: 'fall', severity: 'critical' }),
-      alertFor(2, { alert_type: 'inactivity', severity: 'warning' }),
+      alertFor(2, { alert_type: 'not_worn', severity: 'warning' }),
     ]
     await renderLoaded({ ...data, alerts })
     expect(summaryRows()).toHaveLength(2)
@@ -214,7 +214,7 @@ describe('open alerts summary', () => {
     const data = demoDataFor('staff')
     const alerts = [
       alertFor(1, { alert_type: 'fall', severity: 'critical', status: 'resolved', resolved_by: 'Test Nurse C', resolved_at: new Date().toISOString() }),
-      alertFor(2, { alert_type: 'inactivity', severity: 'warning' }),
+      alertFor(2, { alert_type: 'not_worn', severity: 'warning' }),
     ]
     await renderLoaded({ ...data, alerts })
     expect(summaryRows()).toHaveLength(1)
@@ -232,7 +232,7 @@ describe('open alerts summary', () => {
     const cancelled = { status: 'cancelled' as const, cancelled_at: new Date().toISOString(), cancelled_by_role: 'resident' as const }
     const alerts = [
       alertFor(1, { alert_type: 'fall', severity: 'critical', ...cancelled }),
-      alertFor(2, { alert_type: 'inactivity', severity: 'warning' }),
+      alertFor(2, { alert_type: 'not_worn', severity: 'warning' }),
       alertFor(3, { alert_type: 'hr_high', severity: 'warning', ...cancelled }),
     ]
     await renderLoaded({ ...data, alerts })

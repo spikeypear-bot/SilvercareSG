@@ -5,7 +5,6 @@ import { RelativeTime } from '../../components/RelativeTime'
 import { Skeleton } from '../../components/Skeleton'
 import { useNow } from '../../lib/useNow'
 import type { DashboardData, Resident, ResidentAlert } from '../../types/dashboard'
-import { useAuth } from '../auth/useAuth'
 import { AlertAnnouncer } from './AlertAnnouncer'
 import { AlertRow } from './AlertRow'
 import { BatteryLevel, WearableStatusText } from './DeviceStatus'
@@ -49,12 +48,11 @@ export function NurseDashboard() {
 interface NurseContentProps {
   data: DashboardData
   onAcknowledge: (alertId: string) => void
-  onResolve: (alertId: string, by: string) => void
+  /** No actor: the API takes it from the token (docs/data-model.md, Track B route: resolve). */
+  onResolve: (alertId: string) => void
 }
 
 function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
-  const { user } = useAuth()
-  const staffName = user?.name || 'Staff member'
   const [panel, setPanel] = useState<StatId>('alerts')
   const residentsById = useMemo(
     () => new Map(data.residents.map((r) => [r.resident_id, r])),
@@ -75,7 +73,7 @@ function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
           residentsById={residentsById}
           announce={announce}
           onAcknowledge={onAcknowledge}
-          onResolve={(id) => onResolve(id, staffName)}
+          onResolve={onResolve}
         />
       )}
       {panel === 'offline' && <OfflineDevicesPanel residents={data.residents} />}
@@ -155,9 +153,10 @@ function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve 
             {resolved.map((alert) => (
               <li key={alert.alert_id} className="flex flex-col gap-1 py-2 text-base text-slate-700">
                 <span className="font-medium text-slate-900">{describeAlert(alert, residentsById)}</span>
-                {alert.resolved_by && alert.resolved_at && (
+                {alert.resolved_at && (
                   <span className="text-sm">
-                    Resolved by {alert.resolved_by}, <RelativeTime iso={alert.resolved_at} now={now} />
+                    {alert.resolved_by ? `Resolved by ${alert.resolved_by}, ` : 'Resolved, '}
+                    <RelativeTime iso={alert.resolved_at} now={now} />
                   </span>
                 )}
               </li>

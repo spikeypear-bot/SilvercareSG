@@ -85,15 +85,20 @@ describe('AlertRow alert types', () => {
     ['skin_temp_high', 'High skin temperature'],
     ['skin_temp_low', 'Low skin temperature'],
     ['possible_fall', 'Possible fall'],
-    ['inactivity', 'Inactivity'],
+    ['not_worn', 'Wearable not worn'],
     ['device_offline', 'Device offline'],
-    ['low_battery', 'Low battery'],
+    ['battery_low', 'Low battery'],
   ] as const)('%s shows "%s" and names the buttons with it', (type, label) => {
     renderRow({ alert: baseAlert({ alert_type: type }), actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() } })
     const row = screen.getByRole('listitem')
     expect(within(row).getByText(label)).toBeInTheDocument()
     expect(row).not.toHaveTextContent('Vitals need attention')
-    expect(screen.getByRole('button', { name: `Resolve: ${label}, Test Resident H` })).toBeInTheDocument()
+    if (['not_worn', 'device_offline', 'battery_low'].includes(type)) {
+      // Device problems: no nurse buttons (acknowledged by tech staff or caregivers, resolved by the watchdog).
+      expect(screen.queryAllByRole('button')).toEqual([])
+    } else {
+      expect(screen.getByRole('button', { name: `Resolve: ${label}, Test Resident H` })).toBeInTheDocument()
+    }
   })
 
   it('every alert type has a label', () => {
@@ -411,6 +416,83 @@ describe('AlertRow acknowledge (no actor name)', () => {
     renderRow({ alert: baseAlert({ status: 'acknowledged', acknowledged_at: NOW.toISOString() }) })
     const line = screen.getByText(/^Acknowledged by/)
     expect(line).not.toHaveTextContent(/Test Nurse/)
+  })
+})
+
+describe('AlertRow device problems (user decision 2026-11-05: nurses acknowledge health alerts only)', () => {
+  const actions = () => ({ onAcknowledge: vi.fn(), onResolve: vi.fn() })
+
+  it.each([
+    ['device_offline', 'Device offline'],
+    ['battery_low', 'Low battery'],
+    ['not_worn', 'Wearable not worn'],
+  ] as const)('an open or acknowledged %s gets no Acknowledge and no Resolve', (alert_type, label) => {
+    renderRow({ alert: baseAlert({ alert_type }), actions: actions() })
+    expect(within(screen.getByRole('listitem')).getByText(label)).toBeInTheDocument()
+    expect(screen.queryAllByRole('button')).toEqual([])
+    cleanup()
+    renderRow({
+      alert: baseAlert({ alert_type, status: 'acknowledged', acknowledged_at: NOW.toISOString(), acknowledged_by_role: 'caregiver', acknowledged_by: 'Test Caregiver A' }),
+      actions: actions(),
+    })
+    expect(screen.queryAllByRole('button')).toEqual([])
+  })
+
+  it('an ops acknowledge reads "Acknowledged by the ops team", never the care centre nurse', () => {
+    const acknowledgedAt = new Date(NOW.getTime() - 5 * 60_000).toISOString()
+    renderRow({
+      alert: baseAlert({ alert_type: 'device_offline', status: 'acknowledged', acknowledged_at: acknowledgedAt, acknowledged_by_role: 'ops' }),
+    })
+    const line = screen.getByText(/^Acknowledged by/)
+    expect(line).toHaveTextContent(/^Acknowledged by the ops team, 5 min ago/)
+    expect(line.querySelector('time')).toHaveAttribute('datetime', acknowledgedAt)
+    expect(screen.getByRole('listitem')).not.toHaveTextContent(/care centre nurse|Message from the care centre/)
+  })
+
+  it('an acknowledge role this build does not know reads "Acknowledged, <time>", never the care centre nurse', () => {
+    // Simulates a future API value: the type system doesn't allow it, the runtime must still cope.
+    const alert = { ...baseAlert({ status: 'acknowledged', acknowledged_at: NOW.toISOString() }), acknowledged_by_role: 'tech' } as unknown as ResidentAlert
+    renderRow({ alert })
+    expect(screen.getByText(/^Acknowledged,/)).toHaveTextContent(/^Acknowledged, just now/)
+    expect(screen.getByRole('listitem')).not.toHaveTextContent(/care centre nurse|tech/)
+  })
+
+  it('a resolved alert without a resolver name reads "Resolved, <time>" (a watchdog resolve, or a resolve made on this page)', () => {
+    renderRow({ alert: baseAlert({ alert_type: 'battery_low', status: 'resolved', resolved_at: NOW.toISOString() }) })
+    expect(screen.getByText(/^Resolved,/)).toHaveTextContent(/^Resolved, just now/)
+    expect(screen.getByRole('listitem')).not.toHaveTextContent('Resolved by')
+  })
+
+  it('an open health alert still gets Acknowledge and Resolve', () => {
+    renderRow({ alert: baseAlert({ alert_type: 'spo2_low' }), actions: actions() })
+    expect(screen.getByRole('button', { name: 'Acknowledge: Low blood oxygen, Test Resident H' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Resolve: Low blood oxygen, Test Resident H' })).toBeInTheDocument()
+  })
+
+  it('a caregiver acknowledge reads "Acknowledged by <name> (caregiver)", never the care centre nurse', () => {
+    const acknowledgedAt = new Date(NOW.getTime() - 3 * 60_000).toISOString()
+    renderRow({
+      alert: baseAlert({
+        alert_type: 'battery_low',
+        status: 'acknowledged',
+        acknowledged_at: acknowledgedAt,
+        acknowledged_by_role: 'caregiver',
+        acknowledged_by: 'Test Caregiver B',
+      }),
+    })
+    const line = screen.getByText(/^Acknowledged by/)
+    expect(line).toHaveTextContent(/^Acknowledged by Test Caregiver B \(caregiver\), 3 min ago/)
+    expect(line.querySelector('time')).toHaveAttribute('datetime', acknowledgedAt)
+    expect(screen.getByRole('listitem')).not.toHaveTextContent(/care centre nurse|Message from the care centre/)
+  })
+
+  it('a caregiver acknowledge without a name falls back to "a caregiver"; a deleted account reads "Former caregiver"', () => {
+    const fields = { alert_type: 'not_worn', status: 'acknowledged', acknowledged_at: NOW.toISOString(), acknowledged_by_role: 'caregiver' } as const
+    renderRow({ alert: baseAlert(fields) })
+    expect(screen.getByText(/^Acknowledged by/)).toHaveTextContent(/^Acknowledged by a caregiver \(caregiver\)/)
+    cleanup()
+    renderRow({ alert: baseAlert({ ...fields, acknowledged_by: 'Former caregiver' }) })
+    expect(screen.getByText(/^Acknowledged by/)).toHaveTextContent(/^Acknowledged by Former caregiver \(caregiver\)/)
   })
 })
 

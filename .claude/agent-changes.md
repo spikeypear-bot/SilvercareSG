@@ -3,6 +3,18 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-05
+
+- **Problem:** two skills told builders the frontend sends the Cognito access token to
+  the API, but the API needs the `name` claim, which only the ID token has (user's
+  correction). **Changed:** `.claude/skills/cognito-auth/SKILL.md` (API authorizer) and
+  `.claude/skills/frontend/SKILL.md` (API calls): send the ID token via `getApiToken()`.
+- **Problem:** Lambda test fixtures created every GSI with `ProjectionType: ALL`, so a
+  handler reading an attribute the real index doesn't project could never fail a test
+  (user's correction). **Changed:** `.claude/skills/lambda-test/SKILL.md` (conftest
+  rules): fixtures mirror each index's projection from `infra/dynamodb.tf` via
+  `tf_projection()`, never `ALL`.
+
 ## 2026-11-04
 
 - **Problem:** renaming `FamilyView` to `CaregiverView`, Claude ran a Python edit script

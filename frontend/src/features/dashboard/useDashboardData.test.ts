@@ -129,6 +129,42 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     expect(result.current.acknowledgeAlert).toHaveLength(1)
   })
 
+  const openDeviceProblem = (data: DashboardData) =>
+    data.alerts.find((a) => a.status === 'open' && a.alert_type === 'battery_low') as ResidentAlert
+
+  it("the nurse's acknowledge leaves an open device problem unchanged (nurses acknowledge health alerts only)", async () => {
+    const { result, data } = await loaded()
+    const target = openDeviceProblem(data)
+    act(() => result.current.acknowledgeAlert(target.alert_id))
+    expect(find(result, target.alert_id)).toBe(target)
+  })
+
+  it('a caregiver acknowledge: open device problem -> acknowledged, with at, role, and the display name', async () => {
+    const { result, data } = await loaded()
+    const target = openDeviceProblem(data)
+    act(() => result.current.acknowledgeDeviceProblem(target.alert_id, 'Test Caregiver A'))
+    const after = find(result, target.alert_id)
+    expect(after).toEqual({
+      ...target,
+      status: 'acknowledged',
+      acknowledged_at: ACTION_TIME.toISOString(),
+      acknowledged_by_role: 'caregiver',
+      acknowledged_by: 'Test Caregiver A',
+    })
+    expect(after).not.toHaveProperty('ack_note')
+  })
+
+  it('a caregiver acknowledge leaves a health alert, or a device problem no longer open, unchanged', async () => {
+    const { result, data } = await loaded()
+    const health = firstWith(data, 'open')
+    const acked = data.alerts.find((a) => a.status === 'acknowledged' && a.alert_type === 'battery_low') as ResidentAlert
+    expect(health.alert_type).toBe('possible_fall')
+    act(() => result.current.acknowledgeDeviceProblem(health.alert_id, 'Test Caregiver A'))
+    act(() => result.current.acknowledgeDeviceProblem(acked.alert_id, 'Test Caregiver B'))
+    expect(find(result, health.alert_id)).toBe(health)
+    expect(find(result, acked.alert_id)).toBe(acked)
+  })
+
   it('acknowledge leaves every other alert untouched (same objects)', async () => {
     const { result, data } = await loaded()
     const target = firstWith(data, 'open')
@@ -154,7 +190,7 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
   it('acknowledge is a no-op on a resolved alert', async () => {
     const { result, data } = await loaded()
     const target = firstWith(data, 'open')
-    act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
+    act(() => result.current.resolveAlert(target.alert_id))
     const resolved = find(result, target.alert_id)
     act(() => result.current.acknowledgeAlert(target.alert_id))
     expect(find(result, target.alert_id)).toBe(resolved)
@@ -162,41 +198,54 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     expect(resolved).not.toHaveProperty('acknowledged_at')
   })
 
-  it('resolve: open -> resolved, with by and at', async () => {
+  it('resolve: open -> resolved, with at and no name (the actor comes from the token)', async () => {
     const { result, data } = await loaded()
     const target = firstWith(data, 'open')
-    act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
-    expect(find(result, target.alert_id)).toEqual({
+    act(() => result.current.resolveAlert(target.alert_id))
+    const after = find(result, target.alert_id)
+    expect(after).toEqual({
       ...target,
       status: 'resolved',
-      resolved_by: 'Test Nurse A',
       resolved_at: ACTION_TIME.toISOString(),
     })
+    expect(after).not.toHaveProperty('resolved_by')
+  })
+
+  it('resolveAlert takes only the alert ID', async () => {
+    const { result } = await loaded()
+    expect(result.current.resolveAlert).toHaveLength(1)
+  })
+
+  it('resolve leaves a device problem unchanged (only the watchdog resolves those)', async () => {
+    const { result, data } = await loaded()
+    for (const target of data.alerts.filter((a) => ['device_offline', 'battery_low', 'not_worn'].includes(a.alert_type))) {
+      act(() => result.current.resolveAlert(target.alert_id))
+      expect(find(result, target.alert_id)).toBe(target)
+    }
   })
 
   it('resolve: acknowledged -> resolved, keeping the acknowledgement and its note', async () => {
     const { result, data } = await loaded()
     const acked = firstWith(data, 'acknowledged')
     expect(acked.ack_note).toBeDefined()
-    act(() => result.current.resolveAlert(acked.alert_id, 'Test Nurse A'))
+    act(() => result.current.resolveAlert(acked.alert_id))
     expect(find(result, acked.alert_id)).toMatchObject({
       status: 'resolved',
       ack_note: acked.ack_note,
       acknowledged_at: acked.acknowledged_at,
-      resolved_by: 'Test Nurse A',
       resolved_at: ACTION_TIME.toISOString(),
     })
   })
 
-  it('resolving twice keeps the first resolver', async () => {
+  it('resolving twice keeps the first resolve time', async () => {
     const { result, data } = await loaded()
     const target = data.alerts[0]
-    act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
+    act(() => result.current.resolveAlert(target.alert_id))
     const first = find(result, target.alert_id)
     vi.setSystemTime(new Date(ACTION_TIME.getTime() + 60_000))
-    act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse D'))
+    act(() => result.current.resolveAlert(target.alert_id))
     expect(find(result, target.alert_id)).toBe(first)
-    expect(first.resolved_by).toBe('Test Nurse A')
+    expect(first.resolved_at).toBe(ACTION_TIME.toISOString())
   })
 
   describe('a cancelled alert ("I\'m OK")', () => {
@@ -220,7 +269,7 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
 
     it('resolve is a no-op: same object, still cancelled, no resolved_by/at', async () => {
       const { result, cancelled } = await loadedWithCancelled()
-      act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse A'))
+      act(() => result.current.resolveAlert(cancelled.alert_id))
       const after = find(result, cancelled.alert_id)
       expect(after).toBe(cancelled)
       expect(after.status).toBe('cancelled')
@@ -238,7 +287,7 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
 
     it('resolving it leaves every other alert untouched (same objects)', async () => {
       const { result, data, cancelled } = await loadedWithCancelled()
-      act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse A'))
+      act(() => result.current.resolveAlert(cancelled.alert_id))
       alertsOf(result).forEach((a, i) => expect(a).toBe(data.alerts[i]))
     })
   })
@@ -246,7 +295,7 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
   it('resolve leaves every other alert untouched', async () => {
     const { result, data } = await loaded()
     const target = data.alerts[1]
-    act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
+    act(() => result.current.resolveAlert(target.alert_id))
     expect(alertsOf(result)).toHaveLength(data.alerts.length)
     alertsOf(result).forEach((a, i) => {
       if (a.alert_id !== target.alert_id) expect(a).toBe(data.alerts[i])
@@ -256,7 +305,7 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
   it('an unknown alert ID changes nothing', async () => {
     const { result, data } = await loaded()
     act(() => result.current.acknowledgeAlert('alert-test-missing'))
-    act(() => result.current.resolveAlert('alert-test-missing', 'Test Nurse A'))
+    act(() => result.current.resolveAlert('alert-test-missing'))
     alertsOf(result).forEach((a, i) => expect(a).toBe(data.alerts[i]))
   })
 
@@ -266,7 +315,7 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     const { result } = renderHook(() => useDashboardData('staff', loader))
     const data = demoDataFor('staff', NOW)
     act(() => result.current.acknowledgeAlert(data.alerts[0].alert_id))
-    act(() => result.current.resolveAlert(data.alerts[0].alert_id, 'Test Nurse A'))
+    act(() => result.current.resolveAlert(data.alerts[0].alert_id))
     expect(result.current).toMatchObject({ data: null, loading: true, error: false })
 
     await act(async () => pending.resolve(data))

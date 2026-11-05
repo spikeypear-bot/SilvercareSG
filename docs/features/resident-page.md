@@ -16,7 +16,7 @@ from synthetic demo data, and actions change local state only.
 
 | Group | Can see | Can do |
 |---|---|---|
-| nurse | every (demo) resident's page | acknowledge and resolve alerts in the alert history (local state only) |
+| nurse | every (demo) resident's page | acknowledge health alerts (not device problems) and resolve alerts in the alert history (local state only) |
 | doctor | every (demo) resident's page | edit the vitals thresholds (local state only); no alert actions |
 | caregiver | a "This page is for care staff." screen with a link back to their dashboard | nothing on this page |
 | family | the no-access screen: the group is removed (docs/features/alert-routing.md, 2026-11-04; family members get caregiver accounts) | nothing |
@@ -28,10 +28,14 @@ from synthetic demo data, and actions change local state only.
   showing them a linked resident's page needs the link check (pattern 13), which is
   out of scope.
 - The UI only hides things. When the API exists it enforces the groups:
-  - acknowledge (pattern 16) is `nurse` only, and cancel is a linked caregiver only
+  - acknowledge (pattern 16): health alerts by `nurse` only; device problems by tech
+    staff (`ops`, not in Cognito yet) or a linked caregiver (user's decision 2026-11-05,
+    as `docs/data-model.md`). Cancel is a linked caregiver only, health alerts only
     (docs/features/alert-routing.md, 2026-11-04);
   - resolve (pattern 16) is open to any staff member: "nurses resolve alerts" is
-    workflow, shown in the UI only (decided 2026-11-01);
+    workflow, shown in the UI only (decided 2026-11-01); health alerts only, with a
+    required note, sent as a `status_update` (decided 2026-11-05; device problems are
+    resolved only by the watchdog);
   - changing thresholds (pattern 26) is doctor only.
 
 ## Acceptance criteria
@@ -55,7 +59,8 @@ from synthetic demo data, and actions change local state only.
 ### Sections
 
 5. **Header:** name, resident ID, home ID, status badge with its sentence, and the
-   wearable's worn/charging state.
+   wearable's worn/charging state. The status comes from the backend (rule in
+   `docs/data-model.md`, Resident status); the page only displays it.
 6. **Devices** (pattern 10): wearable and bedroom sensor, each with device ID,
    Online/Offline (icon and text), battery (`battery_pct`, or "Mains powered" when the
    bedroom sensor's is `null`), last seen as a relative time, and firmware. A missing
@@ -76,7 +81,8 @@ from synthetic demo data, and actions change local state only.
    - "Acknowledged by the care centre nurse, <time>" (no name: the nurse account is
      shared, docs/features/alert-routing.md), kept after a later cancel, followed by the
      nurse's note if there is one ("Message from the care centre:" and the note, as
-     plain text with its line breaks)
+     plain text with its line breaks); for a device problem a caregiver acknowledged,
+     "Acknowledged by <name> (caregiver), <time>" (no note)
    - "Resolved by …" (name looked up by the API on read; "Former staff member" once
      the account is deleted)
    - for a cancelled alert, "Cancelled by the resident ("I'm OK"), <time>", or
@@ -89,11 +95,13 @@ from synthetic demo data, and actions change local state only.
      care centre nurse in m:ss" to the API's computed `escalates_at` (300 s,
      `docs/features/escalation.md`, alert-routing.md)
    Empty: "No alerts for this resident in the last 30 days."
-9. Nurses get Acknowledge (open alerts) and Resolve (open and acknowledged alerts)
-   buttons in the alert history; cancelled and resolved alerts have none. Acknowledge
-   records the time (shown as the care centre nurse); resolve records the signed-in
-   user's display name and the time; resolving
-   moves focus to the section heading. Doctors see no alert buttons.
+9. Nurses get Acknowledge (open health alerts) and Resolve (open and acknowledged
+   health alerts) buttons in the alert history; device problems, cancelled, and
+   resolved alerts have none (user's decisions 2026-11-05). Acknowledge
+   records the time (shown as the care centre nurse); resolve records the time, shown
+   as "Resolved, <time>" (no name: the API takes the actor from the token); resolving
+   moves focus to the section heading. Doctors see no alert buttons. The required
+   resolve note box comes with the alert-actions UI (on `frontend-views`).
 10. **Vitals thresholds** (pattern 18): heart rate min/max, SpO2 min, skin temperature
     min/max, and "Last changed by <name>, <time>". Nurses see them read-only with "Only
     doctors can change thresholds."
@@ -137,7 +145,8 @@ from synthetic demo data, and actions change local state only.
   - 26: doctor changes thresholds; `attribute_exists(pk)`; exact body keys; the
     token's group claim, with up to 60 minutes' delay after removal accepted
   - 27: threshold change history
-  Pattern 16 now has `attribute_exists(pk)`.
+  Pattern 16's resolve is a `status_update` applied by `alert-processor` (decided
+  2026-11-05; it was a direct UpdateItem with `attribute_exists(pk)`).
 - **Demo data:**
   - Latest 5 per device and message type, built from the dashboard data so the two
     agree.
@@ -187,7 +196,8 @@ display only, as on the dashboards. Alert emails and escalation are backend feat
   thresholds, plus the signed-in staff member's display name (shown for actions they
   take). In the alert history: the care centre nurse's acknowledge note (`ack_note`,
   free text that may hold health or logistics details) and the names of caregivers who
-  cancelled an alert (`cancelled_by`, looked up by the API; never a `sub`). Resolver
+  cancelled an alert (`cancelled_by`) or acknowledged a device problem
+  (`acknowledged_by`), both looked up by the API, never a `sub`. Resolver
   names are looked up the same way; the shared nurse account's Cognito `name` is "Care
   centre nurse", so a nurse's resolve names no individual nurse (no special case in the
   app). The same acknowledge line and note are also shown to the resident's caregivers

@@ -31,7 +31,8 @@ frontend/src/
   components, not `@apply`.
 - **Config** from `import.meta.env.VITE_*` (API URL, user pool ID, client ID). Everything
   in the bundle is public, so no secrets.
-- **API calls** only go through `lib/api.ts`, which attaches the access token and turns
+- **API calls** only go through `lib/api.ts`, which attaches the ID token (`getApiToken()`
+  in `lib/auth.ts`; not the access token, which lacks the `name` claim) and turns
   error responses into typed errors. Never send who did an action (name, email, sub):
   the server takes it from the token. A name shown before the response is display only.
 - **Role-based views:** route guards read the user's groups. This only decides what to

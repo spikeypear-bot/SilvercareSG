@@ -29,7 +29,9 @@ const ACTOR_NAME = /^(Test .+|Former staff member)$/
 /** A synthetic caregiver name or the "Former caregiver" placeholder. */
 const CAREGIVER_NAME = /^(Test Caregiver [A-Z]|Former caregiver)$/
 /** History alert types that come from the wearable. */
-const WEARABLE_TYPES = new Set<ResidentAlert['alert_type']>(['low_battery', 'hr_high', 'fall'])
+const WEARABLE_TYPES = new Set<ResidentAlert['alert_type']>(['battery_low', 'hr_high', 'fall', 'not_worn'])
+/** Device problems: acknowledged by a caregiver (no note), never cancelled. */
+const DEVICE_PROBLEMS = new Set<ResidentAlert['alert_type']>(['device_offline', 'battery_low', 'not_worn'])
 
 /** History alerts: those not in the dashboard data (which holds the open-list ones). */
 function historyOf(list: ResidentDetail[]): ResidentAlert[] {
@@ -131,18 +133,29 @@ describe('createResidentDetail', () => {
     expect(history.some((a) => a.status === 'cancelled')).toBe(true)
   })
 
-  it('no alert, open or history, has an acknowledged_by key (acknowledges have no name)', () => {
+  it('health alerts have no acknowledged_by key (the nurse has no name); acknowledged device problems name the caregiver', () => {
     const all = details.flatMap((d) => d.alerts)
     expect(all.length).toBeGreaterThan(0)
-    all.forEach((a) => expect(a, a.alert_id).not.toHaveProperty('acknowledged_by'))
-    expect(all.some((a) => a.acknowledged_at)).toBe(true)
+    all.forEach((a) => {
+      if (DEVICE_PROBLEMS.has(a.alert_type) && a.acknowledged_at) {
+        expect(a.acknowledged_by_role, a.alert_id).toBe('caregiver')
+        expect(a.acknowledged_by, a.alert_id).toMatch(CAREGIVER_NAME)
+      } else {
+        expect(a, a.alert_id).not.toHaveProperty('acknowledged_by')
+        expect(a, a.alert_id).not.toHaveProperty('acknowledged_by_role')
+      }
+    })
+    expect(all.some((a) => a.acknowledged_at && !DEVICE_PROBLEMS.has(a.alert_type))).toBe(true)
+    expect(all.some((a) => a.acknowledged_at && DEVICE_PROBLEMS.has(a.alert_type))).toBe(true)
   })
 
-  it('resolved history alerts have resolved_by/at in order, some acknowledged first', () => {
+  it('resolved history alerts have resolved_at in order (a staff name only on health alerts), some acknowledged first', () => {
     const resolved = historyOf(details).filter((a) => a.status === 'resolved')
     expect(resolved.length).toBeGreaterThan(0)
     resolved.forEach((a) => {
-      expect(a.resolved_by).toMatch(ACTOR_NAME)
+      // Device problems are resolved by the watchdog (`system`): no name.
+      if (DEVICE_PROBLEMS.has(a.alert_type)) expect(a, a.alert_id).not.toHaveProperty('resolved_by')
+      else expect(a.resolved_by).toMatch(ACTOR_NAME)
       expect(a.resolved_at).toBeDefined()
       const event = Date.parse(a.event_ts)
       const resolvedAt = Date.parse(a.resolved_at!)
@@ -163,12 +176,12 @@ describe('createResidentDetail', () => {
     expect(resolved.some((a) => !a.acknowledged_at)).toBe(true)
   })
 
-  it('ack notes: only on acknowledged history alerts, exactly when (i + k) is even, all synthetic', () => {
+  it('ack notes: only on acknowledged history health alerts, exactly when (i + k) is even, all synthetic', () => {
     const mismatches: string[] = []
     const history = historyOf(details)
     history.forEach((a) => {
       const { i, k } = historyIndex(a.alert_id)
-      const expectNote = a.acknowledged_at !== undefined && (i + k) % 2 === 0
+      const expectNote = a.acknowledged_at !== undefined && !DEVICE_PROBLEMS.has(a.alert_type) && (i + k) % 2 === 0
       if ((a.ack_note !== undefined) !== expectNote) mismatches.push(`${a.alert_id} ack_note ${a.ack_note}`)
       if (a.ack_note !== undefined) expect(a.ack_note).toBe('Synthetic note: the care centre is calling the resident.')
     })
@@ -216,7 +229,7 @@ describe('createResidentDetail', () => {
     expect(new Set(cancelled.map((a) => a.cancelled_by_role))).toEqual(new Set(['resident', 'caregiver']))
   })
 
-  it('history status follows the rule: wearable and (i + k) % 4 === 1 → resident cancel; else (i + k) % 5 === 3 → caregiver cancel; else resolved', () => {
+  it('history status follows the rule: device problems resolved; else wearable and (i + k) % 4 === 1 → resident cancel; else (i + k) % 5 === 3 → caregiver cancel; else resolved', () => {
     const mismatches: string[] = []
     details.forEach((d) => {
       historyOf([d]).forEach((a) => {
@@ -224,8 +237,14 @@ describe('createResidentDetail', () => {
         expect(i).toBe(IDS.indexOf(d.resident.resident_id))
         const fromWearable = a.device_id === d.wearable!.device_id
         expect(fromWearable, a.alert_id).toBe(WEARABLE_TYPES.has(a.alert_type))
-        const expected =
-          fromWearable && (i + k) % 4 === 1 ? 'cancelled resident' : (i + k) % 5 === 3 ? 'cancelled caregiver' : 'resolved'
+        // No cancel exists for device problems ("I'm OK" and the caregiver Cancel are for health alerts).
+        const expected = DEVICE_PROBLEMS.has(a.alert_type)
+          ? 'resolved'
+          : fromWearable && (i + k) % 4 === 1
+            ? 'cancelled resident'
+            : (i + k) % 5 === 3
+              ? 'cancelled caregiver'
+              : 'resolved'
         const actual = a.status === 'cancelled' ? `cancelled ${a.cancelled_by_role}` : a.status
         if (actual !== expected) mismatches.push(`${a.alert_id}: ${actual}, expected ${expected}`)
         // Acknowledged first exactly when (i + k) % 3 !== 0, never on a resident cancel.
@@ -274,7 +293,7 @@ describe('createResidentDetail', () => {
     const formerAt: string[] = []
     details.forEach((d) => {
       historyOf([d]).forEach((a) => {
-        if (a.status !== 'resolved') {
+        if (a.status !== 'resolved' || DEVICE_PROBLEMS.has(a.alert_type)) {
           expect(a.resolved_by).toBeUndefined()
           return
         }
@@ -286,14 +305,9 @@ describe('createResidentDetail', () => {
       })
     })
     expect(mismatches).toEqual([])
-    expect(formerAt).toEqual([
-      'res-0006 k=0 ack',
-      'res-0011 k=2',
-      'res-0012 k=1',
-      'res-0013 k=0',
-      'res-0019 k=1 ack',
-      'res-0020 k=0 ack',
-    ])
+    // res-0006 k=0 (not_worn) and res-0013 k=0 (battery_low) are device problems now
+    // resolved by the watchdog, so they have no resolver name.
+    expect(formerAt).toEqual(['res-0011 k=2', 'res-0012 k=1', 'res-0019 k=1 ack', 'res-0020 k=0 ack'])
   })
 
   it("the detail's open-list alerts (open and acknowledged) match createDemoData for that resident", () => {

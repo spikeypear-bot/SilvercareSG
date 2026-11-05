@@ -201,7 +201,10 @@ the alert items (pattern 12 per resident, pattern 9 for every open one).
 ### IAM and Terraform
 
 17. `watchdog` role: `dynamodb:Query` on the registry `by-type` index, the latest
-    `by-message` index, and the alerts `open` index; `dynamodb:BatchGetItem` on the
+    `by-message` index, and the alerts `open` index (since 2026-11-05 only with
+    `Select = SPECIFIC_ATTRIBUTES` and only `pk`, `sk`, `open_pk`, `alert_type`,
+    `device_id`, via `dynamodb:Select` / `dynamodb:Attributes` conditions, so it can't
+    read the projected `ack_note`; see `docs/data-model.md`, alerts Index); `dynamodb:BatchGetItem` on the
     latest table (`LeadingKeys` `DEVICE#*`); `sqs:SendMessage` on `silvercare-alerts`;
     `sns:Publish` on `silvercare-ops-devices` (summary email); its own log group.
     `device-health` role: unchanged (it already writes `MSG#status`).

@@ -1,6 +1,7 @@
-import { useId, type ReactNode } from 'react'
-import { Activity, Droplet, HeartPulse, Thermometer } from 'lucide-react'
+import { useId, useRef, type ReactNode } from 'react'
+import { Activity, Droplet, HeartPulse, Thermometer, UserCheck } from 'lucide-react'
 import { Avatar } from '../../components/Avatar'
+import { Button } from '../../components/Button'
 import { Card } from '../../components/Card'
 import { EmptyState } from '../../components/EmptyState'
 import { RelativeTime } from '../../components/RelativeTime'
@@ -19,19 +20,24 @@ import {
   formatSpo2,
   formatTemp,
 } from './labels'
+import { useAuth } from '../auth/useAuth'
 import { MainLayout } from './MainLayout'
 import { Sparkline } from './Sparkline'
-import { sentToNurseAtOnce } from './stats'
+import { isDeviceProblem, sentToNurseAtOnce } from './stats'
 import { useDashboardData } from './useDashboardData'
 
 const MAX_RECENT_ALERTS = 5
 
 /**
  * The caregiver view (`/` for the `caregiver` group): the residents linked to the account.
- * Alerts are display only, with no actions (the caregiver Cancel button is Track B's).
+ * The caregiver can acknowledge an open device problem (user's decision 2026-11-05); health
+ * alerts are display only here (the nurse acknowledges them; the caregiver Cancel button
+ * is Track B's).
  */
 export function CaregiverView() {
-  const { data, loading, error, retry } = useDashboardData('family')
+  const { data, loading, error, retry, acknowledgeDeviceProblem } = useDashboardData('family')
+  const { user } = useAuth()
+  const caregiverName = user?.name || 'Caregiver'
 
   let content: ReactNode
   if (error) {
@@ -50,6 +56,7 @@ export function CaregiverView() {
             <ResidentOverview
               resident={resident}
               alerts={data.alerts.filter((a) => a.resident_id === resident.resident_id)}
+              onAcknowledge={(alertId) => acknowledgeDeviceProblem(alertId, caregiverName)}
             />
           </li>
         ))}
@@ -96,8 +103,16 @@ const VITALS: readonly VitalDef[] = [
   },
 ]
 
-function ResidentOverview({ resident, alerts }: { resident: Resident; alerts: ResidentAlert[] }) {
+interface ResidentOverviewProps {
+  resident: Resident
+  alerts: ResidentAlert[]
+  /** Acknowledges one of this resident's open device problems. */
+  onAcknowledge: (alertId: string) => void
+}
+
+function ResidentOverview({ resident, alerts, onAcknowledge }: ResidentOverviewProps) {
   const headingId = useId()
+  const recentHeadingRef = useRef<HTMLHeadingElement>(null)
   // vitals are newest first; sparklines read oldest to newest.
   const oldestFirst = [...resident.vitals].reverse()
   const latest = resident.vitals[0]
@@ -153,7 +168,8 @@ function ResidentOverview({ resident, alerts }: { resident: Resident; alerts: Re
         </div>
 
         <div className="flex flex-col gap-2">
-          <h3 className="text-base font-semibold text-slate-900">
+          {/* Takes focus after an acknowledge: the button goes away. */}
+          <h3 ref={recentHeadingRef} tabIndex={-1} className="text-base font-semibold text-slate-900">
             Recent alerts
           </h3>
           <div aria-live="polite">
@@ -181,6 +197,23 @@ function ResidentOverview({ resident, alerts }: { resident: Resident; alerts: Re
                       <EscalatedText atOnce />
                     )}
                     <AcknowledgedLines alert={alert} now={now} />
+                    {alert.status === 'open' && isDeviceProblem(alert) && (
+                      <div className="pt-1">
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            onAcknowledge(alert.alert_id)
+                            recentHeadingRef.current?.focus()
+                          }}
+                        >
+                          <UserCheck className="size-5" aria-hidden="true" />
+                          Acknowledge
+                          <span className="sr-only">
+                            : {ALERT_TYPE_LABELS[alert.alert_type]}, {resident.name}
+                          </span>
+                        </Button>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ol>

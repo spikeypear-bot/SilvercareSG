@@ -53,7 +53,18 @@ const openRows = () => {
 const announcer = () => screen.getByRole('status')
 const ackButton = (context: string) => screen.getByRole('button', { name: `Acknowledge: ${context}` })
 const resolveButton = (context: string) => screen.getByRole('button', { name: `Resolve: ${context}` })
-const rowFor = (context: string) => resolveButton(context).closest('li') as HTMLElement
+/**
+ * The one alert row (open list or resolved list) for "<type>, <resident>", found by its
+ * type line and resident name, not by a button: device-problem rows have no buttons.
+ */
+const rowFor = (context: string) => {
+  const [type, resident] = context.split(', ')
+  const rows = within(inbox())
+    .getAllByRole('listitem')
+    .filter((li) => within(li).queryByText(type, { selector: 'p' }) !== null && (li.textContent ?? '').includes(resident))
+  if (rows.length !== 1) throw new Error(`Expected one row for "${context}", found ${rows.length}`)
+  return rows[0]
+}
 const residentCards = () => screen.queryAllByRole('article')
 
 /** Demo inbox order: critical first (newest first), then the rest newest first. */
@@ -64,7 +75,7 @@ const DEMO_INBOX_ORDER: ReadonlyArray<[string, string]> = [
   ['Possible fall', 'Test Resident H'],
   ['Possible fall', 'Test Resident L'],
   ['Low blood oxygen', 'Test Resident S'],
-  ['Inactivity', 'Test Resident B'],
+  ['Wearable not worn', 'Test Resident B'],
   ['Device offline', 'Test Resident O'],
   ['Low battery', 'Test Resident F'],
   ['Device offline', 'Test Resident I'],
@@ -241,9 +252,33 @@ describe('open alerts inbox', () => {
     expect(rowFor(acked)).toHaveTextContent(/Acknowledged by the care centre nurse, 6 min ago/)
     expect(rowFor(acked)).not.toHaveTextContent(/Test Nurse/)
 
-    // 9 open + 3 acknowledged in the demo data.
-    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(9)
-    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(12)
+    // 9 open + 3 acknowledged in the demo data. Acknowledge only on the 6 open health
+    // alerts: the 3 open device problems are acknowledged by tech staff or caregivers.
+    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(6)
+    // Resolve on the 7 health alerts: device problems are resolved only by the watchdog.
+    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(7)
+  })
+
+  it('device problems have no Acknowledge and no Resolve (user decisions 2026-11-05)', async () => {
+    await renderLoaded()
+    for (const ctx of [
+      'Wearable not worn, Test Resident B',
+      'Low battery, Test Resident F',
+      'Device offline, Test Resident I',
+      'Device offline, Test Resident O',
+      'Low battery, Test Resident M',
+    ]) {
+      expect(within(rowFor(ctx)).getByText(/^(Open|Acknowledged)$/)).toBeInTheDocument()
+      expect(within(rowFor(ctx)).queryAllByRole('button')).toEqual([])
+    }
+  })
+
+  it('a device problem a caregiver acknowledged reads "Acknowledged by <name> (caregiver)", with no note', async () => {
+    await renderLoaded()
+    const o = rowFor('Device offline, Test Resident O')
+    expect(o).toHaveTextContent(/Acknowledged by Test Caregiver B \(caregiver\), 40 min ago/)
+    expect(o).not.toHaveTextContent(/care centre nurse|Message from the care centre/)
+    expect(rowFor('Low battery, Test Resident M')).toHaveTextContent(/Acknowledged by Test Caregiver A \(caregiver\)/)
   })
 
   it('a cancelled alert is not in the inbox or the counts, and has no buttons', async () => {
@@ -293,9 +328,10 @@ describe('open alerts inbox', () => {
     // Only the acknowledged High heart rate (G) is still critical.
     expect(within(tile('Open alerts')).getByText('1 critical')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /: Fall detected, Test Resident (C|Q)$/ })).not.toBeInTheDocument()
-    // 7 open + 3 acknowledged left.
-    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(7)
-    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(10)
+    // 7 open + 3 acknowledged left; Acknowledge on the 4 open health alerts among them.
+    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(4)
+    // Resolve on the 5 health alerts left (not on the 5 device problems).
+    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(5)
   })
 
   it('shows "No open alerts." when there are none, and the tile reads 0', async () => {
@@ -386,10 +422,8 @@ describe('acknowledge', () => {
     const g = rowFor('High heart rate, Test Resident G')
     expect(within(g).getByText('Message from the care centre:')).toBeInTheDocument()
     expect(within(g).getByText('Synthetic note: ambulance on the way, 8 minutes.')).toHaveClass('whitespace-pre-line')
-    const o = rowFor('Device offline, Test Resident O')
-    expect(within(o).getByText('Message from the care centre:')).toBeInTheDocument()
-    expect(o).toHaveTextContent(/Synthetic note: called the caregiver\.\s+Wearable to be checked at 3 pm\./)
-    // res-0013 was acknowledged without a note.
+    // Device problems are acknowledged by a caregiver, never with a nurse's note.
+    expect(rowFor('Device offline, Test Resident O')).not.toHaveTextContent('Message from the care centre')
     expect(rowFor('Low battery, Test Resident M')).not.toHaveTextContent('Message from the care centre')
   })
 })
@@ -407,7 +441,7 @@ describe('resolve', () => {
     expect(within(tile('Open alerts')).getByText('2 critical')).toBeInTheDocument()
   })
 
-  it('lists it under "Resolved since this page opened" with "Resolved by Test Nurse A"', async () => {
+  it('lists it under "Resolved since this page opened" with "Resolved, just now" (no name: the actor comes from the token)', async () => {
     const { user } = await renderLoaded()
     expect(screen.queryByText(/Resolved since this page opened/)).not.toBeInTheDocument()
     await user.click(resolveButton(C))
@@ -417,7 +451,8 @@ describe('resolve', () => {
     const items = within(details).getAllByRole('listitem')
     expect(items).toHaveLength(1)
     expect(items[0]).toHaveTextContent(C)
-    expect(items[0]).toHaveTextContent('Resolved by Test Nurse A, just now')
+    expect(items[0]).toHaveTextContent('Resolved, just now')
+    expect(items[0]).not.toHaveTextContent(/Resolved by|Test Nurse/)
   })
 
   it('moves focus to the inbox heading', async () => {
@@ -496,15 +531,17 @@ describe('escalation status (real clock)', () => {
     await renderLoaded()
     // Warnings: escalated after 5 minutes.
     expect(rowFor('Possible fall, Test Resident L')).toHaveTextContent('Escalated to the care centre nurse')
-    expect(rowFor('Inactivity, Test Resident B')).toHaveTextContent('Escalated to the care centre nurse')
+    expect(rowFor('Low blood oxygen, Test Resident S')).toHaveTextContent('Escalated to the care centre nurse')
+    // Device problems never go to the nurse (docs/features/watchdog.md): no routing line.
+    expect(rowFor('Wearable not worn, Test Resident B')).not.toHaveTextContent(/Escalat|at once/)
     // Critical: the nurse is the recipient, so the inbox shows just the Critical badge, no routing line.
     for (const ctx of ['Fall detected, Test Resident C', 'Fall detected, Test Resident Q']) {
       expect(rowFor(ctx)).toHaveTextContent('Critical')
       expect(rowFor(ctx)).not.toHaveTextContent(/Sent to the care centre nurse|at once|Escalat/)
     }
-    // Every open alert but H's (mid-countdown) and the 2 critical ones: 6 warnings escalated.
+    // Open health warnings but H's (mid-countdown): 3 escalated (L, S, and B's possible fall).
     expect(within(inbox()).queryAllByText('Sent to the care centre nurse at once')).toEqual([])
-    expect(within(inbox()).getAllByText('Escalated to the care centre nurse')).toHaveLength(6)
+    expect(within(inbox()).getAllByText('Escalated to the care centre nurse')).toHaveLength(3)
     expect(announcer()).toBeEmptyDOMElement()
   })
 
@@ -547,25 +584,25 @@ describe('escalation status (real clock)', () => {
       alert_id: 'alert-test-002',
       resident_id: 'res-0002',
       device_id: data.residents[1].bedroom.device_id,
-      alert_type: 'inactivity',
+      alert_type: 'spo2_low',
       severity: 'warning',
       escalated_at: escalatedAt,
     }
     await renderLoaded({ ...data, alerts: [data.alerts[0], warning] })
     expect(rowFor('Fall detected, Test Resident C')).not.toHaveTextContent(/Sent to the care centre nurse|Escalat/)
-    expect(rowFor('Inactivity, Test Resident B')).toHaveTextContent('Escalated to the care centre nurse')
+    expect(rowFor('Low blood oxygen, Test Resident B')).toHaveTextContent('Escalated to the care centre nurse')
     expect(inbox()).not.toHaveTextContent('at once')
   })
 
   it('shows "Escalated to the care centre nurse" for a warning from escalated_at alone', async () => {
     await renderLoaded(
       oneAlert({
-        alert_type: 'inactivity',
+        alert_type: 'spo2_low',
         severity: 'warning',
         escalated_at: new Date(Date.now() - 4 * 60_000).toISOString(),
       }),
     )
-    const row = rowFor('Inactivity, Test Resident C')
+    const row = rowFor('Low blood oxygen, Test Resident C')
     expect(row).toHaveTextContent('Escalated to the care centre nurse')
     expect(row).not.toHaveTextContent('at once')
     expect(announcer()).toBeEmptyDOMElement()
@@ -657,8 +694,8 @@ describe('escalation countdown (fake clock)', () => {
     expect(rowFor(H)).toHaveTextContent('Escalated to the care centre nurse')
     expect(rowFor(H)).not.toHaveTextContent('at once')
     expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
-    // 6 warnings escalated on load + H; the 2 critical ones show no routing line in the nurse inbox.
-    expect(within(inbox()).getAllByText('Escalated to the care centre nurse')).toHaveLength(7)
+    // 3 health warnings escalated on load + H; the 2 critical ones show no routing line in the nurse inbox.
+    expect(within(inbox()).getAllByText('Escalated to the care centre nurse')).toHaveLength(4)
     expect(within(inbox()).queryAllByText('Sent to the care centre nurse at once')).toEqual([])
 
     // A second announcement would toggle the trailing no-break space, so compare exactly.
@@ -890,7 +927,7 @@ describe('icon and text, never colour alone', () => {
     const timer = within(inbox()).getByRole('timer')
     expect(timer.parentElement?.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
     const escalated = within(inbox()).getAllByText('Escalated to the care centre nurse')
-    expect(escalated).toHaveLength(6)
+    expect(escalated).toHaveLength(3)
     escalated.forEach((el) => expect(el.querySelector('svg[aria-hidden="true"]')).not.toBeNull())
   })
 })

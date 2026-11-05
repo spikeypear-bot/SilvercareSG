@@ -2,7 +2,8 @@
  * Amplify Auth wrapper. This is the only module that imports from `aws-amplify`.
  *
  * - Configured from VITE_USER_POOL_ID / VITE_USER_POOL_CLIENT_ID (public IDs, not secrets).
- * - Amplify stores tokens itself; this module never stores, returns, or logs them.
+ * - Amplify stores tokens itself; this module never stores or logs them, and returns one
+ *   only from `getApiToken`, for the API's `Authorization` header.
  * - Cognito errors are mapped to the user-facing messages in docs/features/sign-in.md.
  *   Error details are never logged (they can contain emails or codes).
  */
@@ -116,6 +117,23 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
     }
   } catch (error) {
     throw mapError(error, {})
+  }
+}
+
+/**
+ * The token the API gets, as `Authorization: Bearer <token>`: the Cognito **ID token**,
+ * never the access token (docs/features/sign-in.md, API contract; decided 2026-11-05).
+ * The API needs the caller's `name` (a caregiver's `by_name`, a doctor's
+ * `updated_by_name`), and Cognito puts `name` only in the ID token; it carries `sub` and
+ * `cognito:groups` too. Amplify refreshes it when it has expired. Returns null when signed
+ * out. Callers send it only in that header: never store, log, or put it in a URL.
+ */
+export async function getApiToken(): Promise<string | null> {
+  try {
+    const session = await fetchAuthSession()
+    return session.tokens?.idToken?.toString() ?? null
+  } catch {
+    return null
   }
 }
 

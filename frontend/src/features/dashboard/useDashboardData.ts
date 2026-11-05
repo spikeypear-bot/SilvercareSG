@@ -2,8 +2,9 @@
  * Data loaders for the dashboards and the resident page. Today they read synthetic demo
  * data with a simulated delay so loading and error states are real. Later, replace the
  * bodies of `loadDashboardData` and `loadResidentDetail` with calls through
- * src/lib/api.ts, the alert actions with the acknowledge/resolve call
- * (docs/data-model.md pattern 16), and `updateThresholds` with the thresholds call
+ * src/lib/api.ts, the alert actions with the acknowledge/resolve calls
+ * (docs/data-model.md pattern 16; nurses acknowledge health alerts, caregivers device
+ * problems), and `updateThresholds` with the thresholds call
  * (the proposed thresholds-edit pattern), and `loadDeviceFleet` with the devices call (patterns 4, 5, 8);
  * the hooks and the views stay the same.
  */
@@ -17,6 +18,7 @@ import {
   createDeviceFleet,
   createResidentDetail,
 } from './demoData'
+import { isDeviceProblem } from './stats'
 
 export type DashboardView = 'staff' | 'family'
 
@@ -59,19 +61,30 @@ export type DeviceFleetLoader = () => Promise<FleetDevice[]>
 
 interface AlertActionsState {
   /**
-   * Marks an open alert acknowledged. Local state only for now. No name: an acknowledge is
-   * shown as "the care centre nurse" (docs/features/alert-routing.md). The API call sends
-   * just the alert ID and action (and later the optional note); the server takes the
-   * actor from the JWT `sub` and checks the caller is in the `nurse` group.
+   * The nurse's acknowledge: marks an open **health** alert acknowledged (a device problem
+   * is left unchanged: nurses don't acknowledge those). Local state only for now. No
+   * name: an acknowledge is shown as "the care centre nurse"
+   * (docs/features/alert-routing.md). The API call sends just the alert ID and action
+   * (and later the optional note); the server takes the actor from the JWT `sub` and
+   * checks the caller is in the `nurse` group.
    */
   acknowledgeAlert: (alertId: string) => void
   /**
-   * Marks an open or acknowledged alert resolved. `by` is the signed-in staff member's
-   * display name, used only to show the change on screen: the API call sends just the
-   * alert ID and action, and the server takes the actor from the JWT `sub`, stores the
-   * sub, and ignores any actor sent by the client.
+   * A caregiver's acknowledge of an open **device problem** (a health alert is left
+   * unchanged). Local state only for now. `by` is the caregiver's display name, used only
+   * to show the change on screen: the API call sends just the alert ID and action, and
+   * the server takes the actor (`sub`, and `name` for the email) from the ID token and
+   * checks the `caregiver` group and the link to the resident.
    */
-  resolveAlert: (alertId: string, by: string) => void
+  acknowledgeDeviceProblem: (alertId: string, by: string) => void
+  /**
+   * Marks an open or acknowledged **health** alert resolved (a device problem is left
+   * unchanged: only the watchdog resolves those). Local state only for now, with the time
+   * and no name: the actor comes from the ID token on the server, never from the client
+   * (decided 2026-11-05). The API call (docs/data-model.md, Track B route: resolve) also
+   * sends the required note; the note box comes with the alert-actions UI.
+   */
+  resolveAlert: (alertId: string) => void
 }
 
 export interface DashboardDataState extends AlertActionsState {
@@ -148,16 +161,27 @@ function useLoaded<K, T>(key: K, loader: (key: K) => Promise<T>) {
 }
 
 function acknowledged(alert: ResidentAlert): ResidentAlert | null {
-  return alert.status === 'open'
+  return alert.status === 'open' && !isDeviceProblem(alert)
     ? { ...alert, status: 'acknowledged', acknowledged_at: new Date().toISOString() }
     : null
 }
 
-function resolved(alert: ResidentAlert, by: string): ResidentAlert | null {
+function acknowledgedByCaregiver(alert: ResidentAlert, by: string): ResidentAlert | null {
+  return alert.status === 'open' && isDeviceProblem(alert)
+    ? {
+        ...alert,
+        status: 'acknowledged',
+        acknowledged_at: new Date().toISOString(),
+        acknowledged_by_role: 'caregiver',
+        acknowledged_by: by,
+      }
+    : null
+}
+
+function resolved(alert: ResidentAlert): ResidentAlert | null {
   // A cancelled alert is already off the open list and expires like a resolved one.
-  return alert.status === 'resolved' || alert.status === 'cancelled'
-    ? null
-    : { ...alert, status: 'resolved', resolved_by: by, resolved_at: new Date().toISOString() }
+  if (alert.status === 'resolved' || alert.status === 'cancelled' || isDeviceProblem(alert)) return null
+  return { ...alert, status: 'resolved', resolved_at: new Date().toISOString() }
 }
 
 /** Acknowledge and resolve for any state that holds an `alerts` list. */
@@ -181,12 +205,13 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
     (alertId: string) => updateAlert(alertId, acknowledged),
     [updateAlert],
   )
-  const resolveAlert = useCallback(
-    (alertId: string, by: string) => updateAlert(alertId, (a) => resolved(a, by)),
+  const acknowledgeDeviceProblem = useCallback(
+    (alertId: string, by: string) => updateAlert(alertId, (a) => acknowledgedByCaregiver(a, by)),
     [updateAlert],
   )
+  const resolveAlert = useCallback((alertId: string) => updateAlert(alertId, resolved), [updateAlert])
 
-  return { acknowledgeAlert, resolveAlert }
+  return { acknowledgeAlert, acknowledgeDeviceProblem, resolveAlert }
 }
 
 export function useDashboardData(

@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +59,29 @@ BUCKET = os.environ["HISTORY_BUCKET"]
 REGION = "ap-southeast-1"
 
 
+DYNAMODB_TF = Path(__file__).resolve().parents[3] / "infra" / "dynamodb.tf"
+
+
+def tf_projection(index_name: str) -> dict:
+    """The `Projection` of `index_name` exactly as infra/dynamodb.tf declares it (the
+    dynamodb-table module: INCLUDE with its non_key_attributes, else KEYS_ONLY), so the
+    fixture can't drift from what is deployed and reading an attribute the index
+    doesn't project fails here too."""
+    text = DYNAMODB_TF.read_text(encoding="utf-8")
+    block = re.search(
+        r'name\s*=\s*"' + re.escape(index_name) + r'"(.*?)read_capacity',
+        text,
+        re.DOTALL,
+    )
+    if block is None:
+        raise LookupError(f"index {index_name} not found in {DYNAMODB_TF}")
+    listed = re.search(r"non_key_attributes\s*=\s*\[(.*?)\]", block.group(1), re.DOTALL)
+    attributes = re.findall(r'"([^"]+)"', listed.group(1)) if listed else []
+    if not attributes:
+        return {"ProjectionType": "KEYS_ONLY"}
+    return {"ProjectionType": "INCLUDE", "NonKeyAttributes": attributes}
+
+
 def create_alerts_table(client) -> None:
     """silvercare-alerts as in infra/dynamodb.tf (pk/sk, sparse `open` index)."""
     client.create_table(
@@ -79,7 +103,7 @@ def create_alerts_table(client) -> None:
                     {"AttributeName": "open_pk", "KeyType": "HASH"},
                     {"AttributeName": "sk", "KeyType": "RANGE"},
                 ],
-                "Projection": {"ProjectionType": "ALL"},
+                "Projection": tf_projection("open"),
                 "ProvisionedThroughput": {
                     "ReadCapacityUnits": 1,
                     "WriteCapacityUnits": 1,
@@ -110,10 +134,7 @@ def create_latest_table(client) -> None:
                     {"AttributeName": "watch_type", "KeyType": "HASH"},
                     {"AttributeName": "pk", "KeyType": "RANGE"},
                 ],
-                "Projection": {
-                    "ProjectionType": "INCLUDE",
-                    "NonKeyAttributes": ["device_type", "latest", "latest_ts"],
-                },
+                "Projection": tf_projection("by-message"),
                 "ProvisionedThroughput": {
                     "ReadCapacityUnits": 3,
                     "WriteCapacityUnits": 4,

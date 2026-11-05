@@ -250,7 +250,7 @@ describe('recent alerts', () => {
     await renderLoaded()
     const items = timelineItems(cardFor('Test Resident B'))
     expect(items).toHaveLength(2)
-    expect(items[0]).toHaveTextContent('Inactivity')
+    expect(items[0]).toHaveTextContent('Wearable not worn')
     expect(items[1]).toHaveTextContent('Possible fall')
     items.forEach((item) => expect(within(item).getByText('Warning')).toBeInTheDocument())
     expect(within(cardFor('Test Resident E')).getByText('No recent alerts.')).toBeInTheDocument()
@@ -292,7 +292,7 @@ describe('recent alerts', () => {
       Array.from({ length: 7 }, (_, n) =>
         alertFor(d, 'res-0005', {
           alert_id: `alert-test-${n}`,
-          alert_type: 'low_battery',
+          alert_type: 'battery_low',
           severity: 'warning',
           event_ts: new Date(Date.now() - (n + 1) * 60 * 60_000).toISOString(),
         }),
@@ -327,7 +327,7 @@ describe('recent alerts', () => {
   })
 
   it.each([
-    ['an escalated warning', { severity: 'warning', alert_type: 'inactivity', status: 'open' }],
+    ['an escalated warning', { severity: 'warning', alert_type: 'spo2_low', status: 'open' }],
     ['an acknowledged critical alert', { status: 'acknowledged', acknowledged_at: new Date().toISOString() }],
     ['a resolved critical alert', { status: 'resolved', resolved_by: 'Test Nurse A', resolved_at: new Date().toISOString() }],
     ['a cancelled critical alert', { status: 'cancelled', cancelled_at: new Date().toISOString(), cancelled_by_role: 'resident' }],
@@ -441,9 +441,81 @@ describe('status comes from the data (criteria 19, 22)', () => {
   })
 })
 
+// --- device-problem acknowledge (user's decision 2026-11-05) ----------------
+
+describe('acknowledging a device problem', () => {
+  const B_NOT_WORN = 'Acknowledge: Wearable not worn, Test Resident B'
+
+  it('an open device problem has an Acknowledge button; health alerts have none', async () => {
+    await renderLoaded()
+    // res-0002's demo alerts: an open wearable-not-worn and an open possible fall.
+    expect(screen.getAllByRole('button', { name: /^Acknowledge/ }).map((b) => b.textContent)).toEqual([B_NOT_WORN])
+    const [notWorn, possibleFall] = timelineItems(cardFor('Test Resident B'))
+    expect(within(notWorn).getByRole('button', { name: B_NOT_WORN })).toBeInTheDocument()
+    expect(within(possibleFall).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['battery_low', 'Low battery'],
+    ['device_offline', 'Device offline'],
+    ['not_worn', 'Wearable not worn'],
+  ] as const)('offers Acknowledge on an open %s', async (alert_type, label) => {
+    await renderLoaded(withAlerts((d) => [alertFor(d, 'res-0005', { alert_type, severity: 'warning' })]))
+    expect(screen.getByRole('button', { name: `Acknowledge: ${label}, Test Resident E` })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['an open fall', { alert_type: 'fall', severity: 'critical' }],
+    ['an open vitals warning', { alert_type: 'spo2_low', severity: 'warning' }],
+    ['an acknowledged device problem', { alert_type: 'battery_low', severity: 'warning', status: 'acknowledged', acknowledged_at: new Date().toISOString(), acknowledged_by_role: 'caregiver', acknowledged_by: 'Test Caregiver B' }],
+    ['a resolved device problem', { alert_type: 'battery_low', severity: 'warning', status: 'resolved', resolved_by: 'Test Nurse A', resolved_at: new Date().toISOString() }],
+  ] as const)('offers no Acknowledge on %s', async (_, fields) => {
+    await renderLoaded(withAlerts((d) => [alertFor(d, 'res-0005', fields)]))
+    expect(screen.queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
+  })
+
+  it('acknowledges with the caregiver\'s own name, removes the button, and moves focus to "Recent alerts"', async () => {
+    const { user } = await renderLoaded()
+    const card = cardFor('Test Resident B')
+    await user.click(screen.getByRole('button', { name: B_NOT_WORN }))
+
+    const [notWorn] = timelineItems(card)
+    expect(notWorn).toHaveTextContent(/Acknowledged by Test Caregiver A \(caregiver\), just now/)
+    expect(notWorn).not.toHaveTextContent(/care centre nurse|Message from the care centre/)
+    expect(screen.queryByRole('button', { name: B_NOT_WORN })).not.toBeInTheDocument()
+    expect(within(card).getByRole('heading', { level: 3, name: 'Recent alerts' })).toHaveFocus()
+    // The new line is inside the timeline's live region, so screen readers hear it.
+    expect(within(notWorn).getByText(/^Acknowledged by Test Caregiver A/).closest('[aria-live="polite"]')).not.toBeNull()
+  })
+
+  it('shows another caregiver\'s acknowledge as "Acknowledged by <name> (caregiver)"', async () => {
+    await renderLoaded(
+      withAlerts((d) => [
+        alertFor(d, 'res-0005', {
+          alert_type: 'device_offline',
+          severity: 'warning',
+          status: 'acknowledged',
+          acknowledged_at: new Date(Date.now() - 2 * 60_000).toISOString(),
+          acknowledged_by_role: 'caregiver',
+          acknowledged_by: 'Test Caregiver B',
+        }),
+      ]),
+    )
+    expect(timelineItems(cardFor('Test Resident E'))[0]).toHaveTextContent(
+      /Acknowledged by Test Caregiver B \(caregiver\), 2 min ago/,
+    )
+  })
+})
+
 // --- accessibility ---------------------------------------------------------
 
 describe('accessibility', { timeout: 30_000 }, () => {
+  it('has no axe violations after acknowledging a device problem', async () => {
+    const { user, container } = await renderLoaded()
+    await user.click(screen.getByRole('button', { name: 'Acknowledge: Wearable not worn, Test Resident B' }))
+    expect(await axeViolations(container)).toEqual([])
+  })
+
   it('has no axe violations in the empty state', async () => {
     dashboardLoader.mockResolvedValue({ residents: [], alerts: [] })
     const { container } = renderCaregiver()

@@ -45,7 +45,10 @@ checks happen in the API. The frontend only uses groups to choose which screens 
 - `aws_apigatewayv2_authorizer` of type `JWT`:
   - `issuer = "https://cognito-idp.ap-southeast-1.amazonaws.com/<user_pool_id>"`
   - `audience = [<app_client_id>]`
-- The frontend sends the **access token** as `Authorization: Bearer <token>`.
+- The frontend sends the **ID token** as `Authorization: Bearer <token>` (from
+  `getApiToken()` in `src/lib/auth.ts`), never the access token: the API needs the
+  `name` claim (`by_name`, `*_by_name`), and only the ID token carries it; the access
+  token has no profile attributes (docs/features/sign-in.md, API contract).
 - Group checks happen in the handler (see `api-route`).
 
 ## Frontend

@@ -86,7 +86,7 @@ interface DetailContentProps {
   detail: ResidentDetail
   role: 'nurse' | 'doctor'
   onAcknowledge: (alertId: string) => void
-  onResolve: (alertId: string, by: string) => void
+  onResolve: (alertId: string) => void
   onSaveThresholds: (values: VitalsThresholds, by: string) => void
 }
 
@@ -120,7 +120,7 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
           role === 'nurse'
             ? {
                 onAcknowledge,
-                onResolve: (id) => onResolve(id, staffName),
+                onResolve,
               }
             : undefined
         }

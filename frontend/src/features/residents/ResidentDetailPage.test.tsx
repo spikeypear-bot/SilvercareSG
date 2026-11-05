@@ -486,16 +486,30 @@ const LIFECYCLE = { open: 'Open', acknowledged: 'Acknowledged', cancelled: 'Canc
 function expectRowMatches(row: HTMLElement, alert: ResidentAlert) {
   expect(row.querySelector('time')).toHaveAttribute('datetime', alert.event_ts)
   expect(within(row).getByText(LIFECYCLE[alert.status])).toBeInTheDocument()
-  if (alert.acknowledged_at) expect(row).toHaveTextContent('Acknowledged by the care centre nurse,')
-  else expect(row).not.toHaveTextContent('Acknowledged by')
+  if (alert.acknowledged_at && alert.acknowledged_by_role === 'caregiver') {
+    // A device problem, acknowledged by a caregiver (user's decision 2026-11-05).
+    expect(row).toHaveTextContent(`Acknowledged by ${alert.acknowledged_by} (caregiver),`)
+    expect(row).not.toHaveTextContent('care centre nurse,')
+  } else if (alert.acknowledged_at) {
+    expect(row).toHaveTextContent('Acknowledged by the care centre nurse,')
+  } else {
+    expect(row).not.toHaveTextContent('Acknowledged by')
+  }
   if (alert.acknowledged_at && alert.ack_note) {
     expect(row).toHaveTextContent('Message from the care centre:')
     expect(row).toHaveTextContent(alert.ack_note.replace(/\s+/g, ' '))
   } else {
     expect(row).not.toHaveTextContent('Message from the care centre')
   }
-  if (alert.status === 'resolved') expect(row).toHaveTextContent(`Resolved by ${alert.resolved_by},`)
-  else expect(row).not.toHaveTextContent('Resolved by')
+  if (alert.status === 'resolved' && alert.resolved_by) {
+    expect(row).toHaveTextContent(`Resolved by ${alert.resolved_by},`)
+  } else if (alert.status === 'resolved') {
+    // Resolved by the watchdog (a device problem): no name.
+    expect(row).toHaveTextContent('Resolved,')
+    expect(row).not.toHaveTextContent('Resolved by')
+  } else {
+    expect(row).not.toHaveTextContent('Resolved by')
+  }
   if (alert.status === 'cancelled' && alert.cancelled_by_role === 'caregiver') {
     expect(row).toHaveTextContent(`Cancelled by ${alert.cancelled_by ?? 'a caregiver'} (caregiver),`)
   } else if (alert.status === 'cancelled') {
@@ -543,10 +557,13 @@ describe('alert history (pattern 12)', () => {
     expect(rows[2]).not.toHaveTextContent('Acknowledged by')
     expect(rows[2]).not.toHaveTextContent('Resolved by')
 
-    expect(rows[3]).toHaveTextContent('Resolved by Test Nurse B')
+    // A low battery: a device problem, resolved by the watchdog, so no resolver name.
+    expect(rows[3]).toHaveTextContent('Low battery')
+    expect(rows[3]).toHaveTextContent('Resolved,')
+    expect(rows[3]).not.toHaveTextContent('Resolved by')
     expect(within(rows[3]).getByText('Resolved')).toBeInTheDocument()
-    // No staff name ever appears in an acknowledge line.
-    rows.forEach((r) => expect(r).not.toHaveTextContent(/Acknowledged by Test/))
+    // No staff name ever appears in an acknowledge line (only a caregiver's, on a device problem).
+    rows.forEach((r) => expect(r).not.toHaveTextContent(/Acknowledged by Test (Nurse|Doctor)/))
   })
 
   it('res-0007: an acknowledged unresolved alert shows "Acknowledged by the care centre nurse" and the note', async () => {
@@ -719,20 +736,37 @@ describe('nurse alert actions', () => {
     expect(row).not.toHaveTextContent('Acknowledged by')
     expect(row).not.toHaveTextContent('Resolved by')
     expect(within(row).queryAllByRole('button')).toEqual([])
-    // Only open-list alerts get buttons, and only for the nurse.
-    const openList = detail.alerts.filter((a) => a.status === 'open' || a.status === 'acknowledged')
+    // Only open-list health alerts get buttons, and only for the nurse (device problems
+    // are resolved by the watchdog).
+    const deviceProblems = new Set(['device_offline', 'battery_low', 'not_worn'])
+    const openList = detail.alerts.filter(
+      (a) => (a.status === 'open' || a.status === 'acknowledged') && !deviceProblems.has(a.alert_type),
+    )
     const resolveButtons = screen.queryAllByRole('button', { name: /^Resolve/ })
     expect(resolveButtons).toHaveLength(role === 'nurse' ? openList.length : 0)
   })
 
-  it('res-0006: a history alert handled by a deleted account reads "Former staff member"', async () => {
-    const detail = demoDetail('res-0006')
+  it('res-0020: a health alert resolved by a deleted account reads "Former staff member"', async () => {
+    const detail = demoDetail('res-0020')
     const former = detail.alerts.filter((a) => a.resolved_by === 'Former staff member')
+    expect(former).toHaveLength(1)
+    await renderLoaded('res-0020', TEST_USERS.doctor, detail)
+    const row = historyRows()[detail.alerts.indexOf(former[0])]
+    expect(former[0].alert_type).toBe('hr_high')
+    expect(row).toHaveTextContent('Acknowledged by the care centre nurse,')
+    expect(row).toHaveTextContent('Resolved by Former staff member,')
+  })
+
+  it('res-0006: a device problem acknowledged by a deleted caregiver account reads "Former caregiver", resolved with no name', async () => {
+    const detail = demoDetail('res-0006')
+    const former = detail.alerts.filter((a) => a.acknowledged_by === 'Former caregiver')
     expect(former).toHaveLength(1)
     await renderLoaded('res-0006', TEST_USERS.doctor, detail)
     const row = historyRows()[detail.alerts.indexOf(former[0])]
-    expect(row).toHaveTextContent('Acknowledged by the care centre nurse,')
-    expect(row).toHaveTextContent('Resolved by Former staff member,')
+    expect(former[0].alert_type).toBe('not_worn')
+    expect(row).toHaveTextContent('Acknowledged by Former caregiver (caregiver),')
+    expect(row).toHaveTextContent('Resolved,')
+    expect(row).not.toHaveTextContent('Resolved by')
   })
 
   it('acknowledge, then resolve: by-lines, label, focus, and announcements', async () => {
@@ -749,7 +783,9 @@ describe('nurse alert actions', () => {
 
     await user.click(resolve)
     expect(within(row()).getByText('Resolved')).toBeInTheDocument()
-    expect(row()).toHaveTextContent('Resolved by Test Nurse D, just now')
+    // No name: the API takes the actor from the token (decided 2026-11-05).
+    expect(row()).toHaveTextContent('Resolved, just now')
+    expect(row()).not.toHaveTextContent(/Resolved by|Test Nurse D/)
     expect(row()).toHaveTextContent('Acknowledged by the care centre nurse, ')
     expect(within(row()).queryAllByRole('button')).toEqual([])
     expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
@@ -763,7 +799,7 @@ describe('nurse alert actions', () => {
   it('resolve straight from open moves focus to the Alert history heading', async () => {
     const { user } = await renderLoaded('res-0003', NURSE_D)
     await user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
-    expect(historyRows()[0]).toHaveTextContent('Resolved by Test Nurse D')
+    expect(historyRows()[0]).toHaveTextContent('Resolved, just now')
     expect(historyRows()[0]).not.toHaveTextContent('Acknowledged by')
     expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
     await waitFor(() => expect(screen.getByRole('heading', { level: 2, name: /^Alert history/ })).toHaveFocus())

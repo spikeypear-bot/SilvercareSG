@@ -60,7 +60,11 @@ describe('view by group (Users and access, criterion 10)', () => {
     expect(screen.queryByRole('heading', { name: /^(Nurse|Doctor) dashboard$/ })).not.toBeInTheDocument()
     expect(await screen.findAllByRole('article')).toHaveLength(2)
     expect(screen.queryByText('Residents monitored')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Acknowledge|Resolve/ })).not.toBeInTheDocument()
+    // Caregivers acknowledge only device problems: the one open demo device problem of
+    // their linked residents (res-0002's wearable not worn). No resolve.
+    expect(screen.getAllByRole('button', { name: /Acknowledge|Resolve/ }).map((b) => b.textContent)).toEqual([
+      'Acknowledge: Wearable not worn, Test Resident B',
+    ])
   })
 
   it.each([
