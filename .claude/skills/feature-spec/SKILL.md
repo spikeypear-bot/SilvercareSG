@@ -31,6 +31,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 ## Readiness checklist
 
 - [ ] Every acceptance criterion is testable: a tester could write a pass/fail test for it.
+- [ ] Anything the spec says about existing behaviour was checked in the code that runs it,
+      not a comment or memory, and anything about AWS behaviour in AWS's docs. Every
+      "see Open questions" pointer has a matching item.
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
       **specific resident** is decided. A new group (e.g. `ops`) also lists which
       existing access patterns in `docs/data-model.md` it gets and which it's refused,
@@ -62,7 +65,8 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] Alerting inputs: validation ranges don't reject the emergency itself. Ranges
       copied from routine readings can (heart rate 0 = no pulse, cardiac arrest); for
       each alert, check the worst real reading is still accepted.
-- [ ] Personal data touched is listed, with its retention.
+- [ ] Personal data touched is listed, with its retention, and how one person's data would
+      be erased, checked against how it's really stored (e.g. files batching many devices).
 - [ ] Out of scope is filled in.
 - [ ] Open questions is empty.
 - [ ] Size: at most about two screens and two API routes, or the user agreed to the size.

@@ -61,9 +61,10 @@ def test_seed_devices_match_devices_json_exactly(data, devices):
     assert seeded == registry
 
 
-def test_seed_file_has_four_users_one_per_group_with_fixed_local_subs(data):
+def test_seed_file_has_three_users_one_per_group_with_fixed_local_subs(data):
     users = {u["user_id"]: u for u in data["users"]}
-    assert set(users) == {"test-doctor", "test-nurse", "test-caregiver", "test-family"}
+    assert set(users) == {"test-doctor", "test-nurse", "test-caregiver"}
+    assert len(data["users"]) == 3
     expected = {
         "test-doctor": ("test-doctor@example.com", "Test Doctor", "doctor", 1),
         "test-nurse": ("test-nurse@example.com", "Test Nurse", "nurse", 2),
@@ -73,7 +74,6 @@ def test_seed_file_has_four_users_one_per_group_with_fixed_local_subs(data):
             "caregiver",
             3,
         ),
-        "test-family": ("test-family@example.com", "Test Family", "family", 4),
     }
     for user_id, (email, name, group, n) in expected.items():
         user = users[user_id]
@@ -114,13 +114,19 @@ def test_seed_file_values_are_obviously_synthetic(data):
 def test_seed_file_links_match_the_spec(data):
     links = {(lk["user_id"], lk["resident_id"]) for lk in data["links"]}
     assert links == {
-        ("test-family", "res-0002"),
-        ("test-family", "res-0005"),
         ("test-caregiver", "res-0001"),
         ("test-caregiver", "res-0002"),
         ("test-caregiver", "res-0003"),
     }
-    assert len(data["links"]) == 5
+    assert len(data["links"]) == 3
+
+
+def test_seed_file_has_no_family_user_or_group(seed, data):
+    assert "family" not in seed.GROUPS
+    assert seed.LINK_GROUPS == ("caregiver",)
+    assert all(u["group"] != "family" for u in data["users"])
+    emails = {u["email"] for u in data["users"]}
+    assert "test-family@example.com" not in emails
 
 
 # ---- criterion 5: thresholds ----
@@ -204,7 +210,7 @@ def test_duplicate_resident_id_is_named(seed, data, devices):
 
 
 def test_link_to_unknown_resident_is_named(seed, data, devices):
-    data["links"].append({"user_id": "test-family", "resident_id": "res-0999"})
+    data["links"].append({"user_id": "test-caregiver", "resident_id": "res-0999"})
     problems = problems_for(seed, data, devices)
     assert any("res-0999" in p and "unknown resident" in p for p in problems)
 
@@ -219,6 +225,44 @@ def test_link_to_staff_user_is_refused(seed, data, devices):
     data["links"].append({"user_id": "test-doctor", "resident_id": "res-0001"})
     problems = problems_for(seed, data, devices)
     assert any("test-doctor" in p for p in problems)
+
+
+def test_link_to_removed_family_user_is_unknown(seed, data, devices):
+    data["links"].append({"user_id": "test-family", "resident_id": "res-0005"})
+    problems = problems_for(seed, data, devices)
+    assert any("test-family" in p and "unknown user" in p for p in problems)
+
+
+def test_user_in_the_removed_family_group_is_refused(seed, data, devices):
+    data["users"].append(
+        {
+            "user_id": "test-relative",
+            "email": "test-relative@example.com",
+            "name": "Test Relative",
+            "group": "family",
+            "local_sub": "00000000-0000-4000-8000-000000000004",
+        }
+    )
+    problems = problems_for(seed, data, devices)
+    assert any("test-relative" in p and "group" in p for p in problems)
+
+
+def test_user_with_a_retired_email_is_refused(seed, data, devices):
+    data["users"][2]["email"] = "test-family@example.com"
+    problems = problems_for(seed, data, devices)
+    assert any("test-caregiver" in p and "retired" in p for p in problems)
+    assert not any("test-family@example.com" in p for p in problems)
+
+
+def test_retired_users_are_exactly_test_family(seed):
+    assert seed.RETIRED_USERS == (
+        (
+            "test-family",
+            "test-family@example.com",
+            "Test Family",
+            frozenset({"family"}),
+        ),
+    )
 
 
 def test_device_assigned_to_unknown_resident_is_named(seed, data, devices):
@@ -270,10 +314,10 @@ def test_problem_messages_contain_ids_not_values(seed, data, devices):
     "mutate",
     [
         lambda d: d["links"].append(
-            {"user_id": ["test-family"], "resident_id": "res-0001"}
+            {"user_id": ["test-caregiver"], "resident_id": "res-0001"}
         ),
         lambda d: d["links"].append(
-            {"user_id": "test-family", "resident_id": ["res-0001"]}
+            {"user_id": "test-caregiver", "resident_id": ["res-0001"]}
         ),
         lambda d: d["devices"][0].__setitem__("resident_id", {"id": "res-0001"}),
     ],
@@ -336,8 +380,9 @@ def items(seed, data):
     return items_by_key(seed.build_registry_items(data, seed.local_subs(data), NOW))
 
 
-def test_builds_85_items(seed, data):
-    assert len(seed.build_registry_items(data, seed.local_subs(data), NOW)) == 85
+def test_builds_83_items(seed, data):
+    # 20 profiles + 20 thresholds + 40 devices + 3 links
+    assert len(seed.build_registry_items(data, seed.local_subs(data), NOW)) == 83
 
 
 def test_profile_item_shape(items):
@@ -419,23 +464,28 @@ def test_device_item_shape(items):
 
 
 def test_link_item_shape_uses_the_given_sub(seed, data):
-    subs = {"test-family": "aaaaaaaa-0000-4000-8000-000000000000"}
-    subs["test-caregiver"] = "bbbbbbbb-0000-4000-8000-000000000000"
+    subs = {"test-caregiver": "bbbbbbbb-0000-4000-8000-000000000000"}
     items = items_by_key(seed.build_registry_items(data, subs, NOW))
-    item = items[("USER#aaaaaaaa-0000-4000-8000-000000000000", "RESIDENT#res-0005")]
+    item = items[("USER#bbbbbbbb-0000-4000-8000-000000000000", "RESIDENT#res-0003")]
     assert item == {
-        "pk": {"S": "USER#aaaaaaaa-0000-4000-8000-000000000000"},
-        "sk": {"S": "RESIDENT#res-0005"},
-        "relationship": {"S": "family"},
+        "pk": {"S": "USER#bbbbbbbb-0000-4000-8000-000000000000"},
+        "sk": {"S": "RESIDENT#res-0003"},
+        "relationship": {"S": "caregiver"},
         "linked_at": {"S": TS},
         "linked_by": {"S": "seed"},
-        "gsi1_pk": {"S": "RESIDENT#res-0005"},
-        "gsi1_sk": {"S": "USER#aaaaaaaa-0000-4000-8000-000000000000"},
+        "gsi1_pk": {"S": "RESIDENT#res-0003"},
+        "gsi1_sk": {"S": "USER#bbbbbbbb-0000-4000-8000-000000000000"},
     }
-    caregiver = items[
-        ("USER#bbbbbbbb-0000-4000-8000-000000000000", "RESIDENT#res-0003")
-    ]
-    assert caregiver["relationship"] == {"S": "caregiver"}
+    links = sorted(sk for pk, sk in items if pk.startswith("USER#"))
+    assert links == ["RESIDENT#res-0001", "RESIDENT#res-0002", "RESIDENT#res-0003"]
+
+
+def test_link_keys_are_only_the_link_items(seed, data):
+    built = seed.build_registry_items(data, seed.local_subs(data), NOW)
+    assert seed.link_keys(built) == {
+        ("USER#00000000-0000-4000-8000-000000000003", f"RESIDENT#res-000{n}")
+        for n in (1, 2, 3)
+    }
 
 
 def test_local_subs_are_the_fixed_synthetic_subs(seed, data):
@@ -443,7 +493,6 @@ def test_local_subs_are_the_fixed_synthetic_subs(seed, data):
         "test-doctor": "00000000-0000-4000-8000-000000000001",
         "test-nurse": "00000000-0000-4000-8000-000000000002",
         "test-caregiver": "00000000-0000-4000-8000-000000000003",
-        "test-family": "00000000-0000-4000-8000-000000000004",
     }
 
 

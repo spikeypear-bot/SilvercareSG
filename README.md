@@ -202,14 +202,14 @@ spare. It also gives `res-0002` a personal SpO2 limit of 88 % (`THRESHOLDS#res-0
 Existing items are left alone (`exists`), so running it again is safe.
 
 For the full synthetic data set (20 residents with thresholds, all 40 devices assigned,
-4 test Cognito users, one per group, and their links), use `scripts/seed.py`
+3 test Cognito users (doctor, nurse, caregiver), and the caregiver's links), use `scripts/seed.py`
 (`docs/features/seed-data.md`). It asks you to type `seed`, can run before or after
 `seed-registry.py`, and writes the test users' passwords to `secrets/test-users.txt`
 (share that file privately):
 
 ```sh
 .venv/bin/python scripts/seed.py                    # seed (or reset) the registry and users
-.venv/bin/python scripts/seed.py --reset-passwords  # new passwords for the 4 test users
+.venv/bin/python scripts/seed.py --reset-passwords  # new passwords for the 3 test users
 .venv/bin/python scripts/seed.py --delete           # remove everything the seed created
 make seed-local                                     # same data in DynamoDB Local, no AWS
 ```

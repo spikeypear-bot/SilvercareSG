@@ -49,7 +49,10 @@ change there, list it under deviations; Claude makes it outside the workflow.
   reserved synthetic range and never overwrite items they don't own. "Not owned" means
   holding someone else's data (e.g. a device assigned to another resident), not merely
   existing: check what other scripts on `main` already write (e.g. unassigned spares)
-  so the two can run in either order.
+  so the two can run in either order. A script that deletes something it created
+  earlier checks at delete time that it is still as the script left it (its marker or
+  attributes; a conditional delete in DynamoDB), so an item or user someone has since
+  taken over is kept.
 
 ## Report
 

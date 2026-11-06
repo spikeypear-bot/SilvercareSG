@@ -3,7 +3,40 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-06
+
+- **Problem:** the clean job's SQL passed on local Trino but rejected every valid line on
+  real Athena, with `try()` hiding the error. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md` (Rules): local Trino isn't proof, so the owner runs
+  new functions on real Athena before merging.
+- **Problem:** a `data` lookup of an IAM group that `CLAUDE.md` said existed failed the PR
+  plan, because the group had never been made. **Changed:**
+  `.claude/skills/tf-change/SKILL.md` (Rules): the owner confirms such names in AWS before
+  the first push, since docs aren't proof.
+- **Problem:** three clean-data gaps: a Lake Formation grant on a `default` database that
+  didn't exist would have failed the apply, the deploy plan step left stderr unredacted in
+  a public log, and the plan role could probably read Athena query text. **Changed:**
+  `.claude/skills/tf-change/SKILL.md` (Rules): confirm or create names Terraform doesn't
+  create, redact stderr in workflow steps, extend `DenyDataReads` for new data services.
+
 ## 2026-11-04
+
+- **Problem:** the lambda-tester temporarily edited ingest's source to prove a test, then
+  restored it. **Changed:** `.claude/agents/lambda-tester.md`: no source edits even
+  temporarily; use `monkeypatch` or a copy under `tmp_path`.
+
+- **Problem:** the clean-data spec draft misstated existing accelerometer validation,
+  repeated an AWS role limit from memory, had a pointer to a missing open question, and
+  had an erasure plan that didn't fit batched raw files; only the design check caught
+  them. **Changed:** `.claude/skills/feature-spec/SKILL.md` (readiness checklist): verify
+  claims in running code and AWS docs, match pointers, and check erasure against storage.
+
+- **Problem:** removing the family test user from `seed-data`, the first version deleted
+  the retired `test-family` account by username alone, and pruned old seed links with an
+  unconditional batch delete after reading them, so an account or link a teammate had
+  since taken over could be deleted (privacy-reviewer, low ×2). **Changed:**
+  `.claude/agents/backend-builder.md`: scripts check at delete time that what they
+  delete is still as they left it. (Fix: name and group check, conditional deletes.)
 
 - **Problem:** renaming `FamilyView` to `CaregiverView`, Claude ran a Python edit script
   and an `rm` of the originals on separate lines of one shell call; the script failed,

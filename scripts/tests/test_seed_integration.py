@@ -18,7 +18,8 @@ import pytest
 pytestmark = pytest.mark.integration
 
 ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
-FAMILY_SUB = "00000000-0000-4000-8000-000000000004"
+# The local sub of the test-family user removed on 2026-11-04 (criterion 15a).
+OLD_FAMILY_SUB = "00000000-0000-4000-8000-000000000004"
 CAREGIVER_SUB = "00000000-0000-4000-8000-000000000003"
 NOW = datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC)
 LATER = datetime(2026, 11, 2, 3, 0, 0, tzinfo=UTC)
@@ -100,24 +101,30 @@ def check_criterion_8(client, table):
         "DEVICE#wearable-0002",
         "DEVICE#bedroom-0002",
     }
-    family = query(client, table, None, "pk", f"USER#{FAMILY_SUB}", "RESIDENT#", "sk")
-    assert sorted(i["sk"]["S"] for i in family) == [
+    caregiver = query(
+        client, table, None, "pk", f"USER#{CAREGIVER_SUB}", "RESIDENT#", "sk"
+    )
+    assert sorted(i["sk"]["S"] for i in caregiver) == [
+        "RESIDENT#res-0001",
         "RESIDENT#res-0002",
-        "RESIDENT#res-0005",
+        "RESIDENT#res-0003",
     ]
+    # Old seed links of the removed family user are pruned by every run.
+    old = query(client, table, None, "pk", f"USER#{OLD_FAMILY_SUB}", "RESIDENT#", "sk")
+    assert [i for i in old if i.get("linked_by", {}).get("S") == "seed"] == []
     users = query(
         client, table, "by-resident", "gsi1_pk", "RESIDENT#res-0002", "USER#", "gsi1_sk"
     )
-    assert {i["gsi1_sk"]["S"] for i in users} >= {
-        f"USER#{FAMILY_SUB}",
-        f"USER#{CAREGIVER_SUB}",
+    assert f"USER#{CAREGIVER_SUB}" in {i["gsi1_sk"]["S"] for i in users}
+    assert f"USER#{OLD_FAMILY_SUB}" not in {
+        i["gsi1_sk"]["S"] for i in users if i.get("linked_by", {}).get("S") == "seed"
     }
 
 
 def test_seed_local_twice_on_a_fresh_table(seed, local, scratch_table):
     # Exact counts: this table holds only the seed.
-    assert seed.seed_local(local, table=scratch_table, now=NOW) == 85
-    assert seed.seed_local(local, table=scratch_table, now=LATER) == 85
+    assert seed.seed_local(local, table=scratch_table, now=NOW) == 83
+    assert seed.seed_local(local, table=scratch_table, now=LATER) == 83
     check_criterion_8(local, scratch_table)
     assert len(query(local, scratch_table, "by-type", "entity_type", "DEVICE")) == 40
     assert len(query(local, scratch_table, "by-type", "entity_type", "RESIDENT")) == 20
@@ -130,9 +137,45 @@ def test_seed_local_twice_on_a_fresh_table(seed, local, scratch_table):
         "USER#",
         "gsi1_sk",
     )
-    assert len(users) == 2
+    assert [i["gsi1_sk"]["S"] for i in users] == [f"USER#{CAREGIVER_SUB}"]
     count = local.scan(TableName=scratch_table, Select="COUNT")["Count"]
-    assert count == 85
+    assert count == 83
+
+
+def old_link(sub, resident_id, linked_by):
+    return {
+        "pk": {"S": f"USER#{sub}"},
+        "sk": {"S": f"RESIDENT#{resident_id}"},
+        "relationship": {"S": "family"},
+        "linked_at": {"S": "2026-10-30T00:00:00Z"},
+        "linked_by": {"S": linked_by},
+        "gsi1_pk": {"S": f"RESIDENT#{resident_id}"},
+        "gsi1_sk": {"S": f"USER#{sub}"},
+    }
+
+
+def test_seed_local_prunes_old_seed_links_only(seed, local, scratch_table):
+    assert seed.seed_local(local, table=scratch_table, now=NOW) == 83
+    stale = [
+        old_link(OLD_FAMILY_SUB, "res-0002", "seed"),
+        old_link(OLD_FAMILY_SUB, "res-0005", "seed"),
+    ]
+    kept = [
+        old_link(OLD_FAMILY_SUB, "res-0006", "admin"),
+        old_link(OLD_FAMILY_SUB, "res-9001", "seed"),  # not a seeded resident
+    ]
+    for item in stale + kept:
+        local.put_item(TableName=scratch_table, Item=item)
+    assert seed.seed_local(local, table=scratch_table, now=LATER) == 83
+    old = query(
+        local, scratch_table, None, "pk", f"USER#{OLD_FAMILY_SUB}", "RESIDENT#", "sk"
+    )
+    assert sorted(i["sk"]["S"] for i in old) == [
+        "RESIDENT#res-0006",
+        "RESIDENT#res-9001",
+    ]
+    count = local.scan(TableName=scratch_table, Select="COUNT")["Count"]
+    assert count == 83 + len(kept)
 
 
 def test_main_local_twice(seed, local):
@@ -142,5 +185,6 @@ def test_main_local_twice(seed, local):
         out, err = io.StringIO(), io.StringIO()
         code = seed.main(["--local"], out=out, err=err)
         assert code == 0, err.getvalue()
-        assert "registry: 85 items written" in out.getvalue()
+        assert "registry: 83 items written" in out.getvalue()
+        assert "old seed links removed" in out.getvalue()
     check_criterion_8(local, "silvercare-registry")

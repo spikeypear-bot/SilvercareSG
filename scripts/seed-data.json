@@ -765,24 +765,9 @@
       "name": "Test Caregiver",
       "group": "caregiver",
       "local_sub": "00000000-0000-4000-8000-000000000003"
-    },
-    {
-      "user_id": "test-family",
-      "email": "test-family@example.com",
-      "name": "Test Family",
-      "group": "family",
-      "local_sub": "00000000-0000-4000-8000-000000000004"
     }
   ],
   "links": [
-    {
-      "user_id": "test-family",
-      "resident_id": "res-0002"
-    },
-    {
-      "user_id": "test-family",
-      "resident_id": "res-0005"
-    },
     {
       "user_id": "test-caregiver",
       "resident_id": "res-0001"
