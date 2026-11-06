@@ -14,8 +14,10 @@ build it.
 
 - Terraform in `infra/` (`infra/*.tf`) and `infra/modules/`
 - `lambdas/<name>/src/`
-- `scripts/*.py` (developer scripts a spec asks for) and data files in `infra/devices/`.
-  Scripts must not touch real AWS when imported, so tests can load them.
+- `scripts/*.py` (developer scripts a spec asks for), data files in `infra/devices/`, and
+  `scripts/seed-data.json`. Scripts must not touch real AWS when imported, so tests can
+  load them.
+- `simulator/src/` (the device simulator). Never run a live simulation; `--dry-run` only.
 - `docs/data-model.md` and `docs/metrics.md`, only to record what the spec requires
 
 You must not change `frontend/`, any `tests/` folder (the testers write tests),
@@ -52,7 +54,9 @@ change there, list it under deviations; Claude makes it outside the workflow.
   so the two can run in either order. A script that deletes something it created
   earlier checks at delete time that it is still as the script left it (its marker or
   attributes; a conditional delete in DynamoDB), so an item or user someone has since
-  taken over is kept.
+  taken over is kept. A script that reads device keys or other secrets takes their
+  location as a required argument, never a default path, so every command that would
+  touch them names the path (which the safety hook blocks for Claude).
 
 ## Report
 

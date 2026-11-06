@@ -56,7 +56,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
       including through cached device → resident lookups.
 - [ ] Live checks (smoke tests against AWS) don't rely on shared data teammates can
       change (e.g. thresholds: use values that fail any sensible limit), and space out
-      messages whose order matters (sent together, they run in parallel).
+      messages whose order matters (sent together, they run in parallel). Anything that
+      sends data to the live system (smoke tests, the simulator) names the registry data
+      it relies on (e.g. "run `seed.py` first") and what happens without it.
 - [ ] Every API route has method, path, groups, a request example, a response example
       per role, and error cases.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.

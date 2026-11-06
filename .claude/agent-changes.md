@@ -21,6 +21,13 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** the `simulator-core` spec (written by Claude) said normal data raises no
+  alert, but only if `seed.py` thresholds are in the live registry; with only
+  `seed-registry.py` data, two devices fall outside the cloud's defaults and nurses get
+  emails (privacy-reviewer, medium). **Changed:** `.claude/skills/feature-spec/SKILL.md`:
+  anything sending data to the live system names the registry data it relies on.
+  (Fix: precondition in the spec and README.)
+
 - **Problem:** the lambda-tester temporarily edited ingest's source to prove a test, then
   restored it. **Changed:** `.claude/agents/lambda-tester.md`: no source edits even
   temporarily; use `monkeypatch` or a copy under `tmp_path`.
@@ -104,6 +111,15 @@ a wasted step. Newest first. Review these in the diff before committing.
   refer to unmerged patterns by name in code, and on a clash keep main's number.
 
 ## 2026-11-03
+
+- **Problem:** in `simulator-core`, the simulator defaulted `--keys-dir` to the device
+  keys folder, so a live run never named the path, and the new guard rule (block
+  `simulator/src/main.py` without `--dry-run`) could be bypassed with `cd`, `-m main`, or
+  a stray `--dry-run` (privacy-reviewer, high). **Changed:**
+  `.claude/agents/backend-builder.md`: scripts take secret locations as a required
+  argument, never a default. `.claude/hooks/guard.sh` (setup change the user approved for
+  this feature): block `--endpoint` next to any way of starting the simulator, and
+  `gmake`; tested against 22 cases.
 
 - **Problem:** the live `seed-data` run stopped on 34 devices: it treated unassigned
   spares (written by Track A's `scripts/seed-registry.py`) as "not owned", the same as
