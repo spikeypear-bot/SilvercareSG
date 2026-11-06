@@ -31,6 +31,13 @@ a wasted step. Newest first. Review these in the diff before committing.
   them. **Changed:** `.claude/skills/feature-spec/SKILL.md` (readiness checklist): verify
   claims in running code and AWS docs, match pointers, and check erasure against storage.
 
+- **Problem:** removing the family test user from `seed-data`, the first version deleted
+  the retired `test-family` account by username alone, and pruned old seed links with an
+  unconditional batch delete after reading them, so an account or link a teammate had
+  since taken over could be deleted (privacy-reviewer, low ×2). **Changed:**
+  `.claude/agents/backend-builder.md`: scripts check at delete time that what they
+  delete is still as they left it. (Fix: name and group check, conditional deletes.)
+
 - **Problem:** renaming `FamilyView` to `CaregiverView`, Claude ran a Python edit script
   and an `rm` of the originals on separate lines of one shell call; the script failed,
   the `rm` still ran, and `FamilyView.test.tsx` (never read by the main session) was
@@ -97,6 +104,12 @@ a wasted step. Newest first. Review these in the diff before committing.
   refer to unmerged patterns by name in code, and on a clash keep main's number.
 
 ## 2026-11-03
+
+- **Problem:** the live `seed-data` run stopped on 34 devices: it treated unassigned
+  spares (written by Track A's `scripts/seed-registry.py`) as "not owned", the same as
+  devices assigned to another resident. **Changed:** `.claude/agents/backend-builder.md`:
+  "not owned" means holding someone else's data; check what other scripts on `main`
+  already write.
 
 - **Problem:** the live `--alerts` check (spec by Claude) sent heart rates 125/128 at
   once: a teammate's personal limit of 130 made them normal, and the two readings ran
@@ -231,6 +244,25 @@ a wasted step. Newest first. Review these in the diff before committing.
   `.claude/skills/api-route/SKILL.md` (handler takes `*_by` actors from the `sub` claim,
   ignores the body) and `.claude/skills/frontend/SKILL.md` (never send who did an
   action; a name shown early is display only).
+
+- **Problem:** the rebuilt `seed-data` script crashed with `ImportError` on the user's
+  macOS `python3` (3.9) instead of explaining the version; the README said `python3`.
+  The privacy-reviewer found reserved IDs written down but not enforced, and device
+  assignments overwritten with no ownership check (medium). **Changed:**
+  `.claude/agents/backend-builder.md`: host-run scripts check Python 3.11+ first; seed
+  scripts enforce reserved ID ranges and don't overwrite items they don't own. README
+  host-script setup now states the Python version.
+
+## 2026-10-30
+
+- **Problem:** in `seed-data`, `--delete` found the seed's link items through the test
+  users' current Cognito subs, so links of a user already deleted from Cognito were left
+  behind (lambda-tester failure, privacy-reviewer low). The passwords file was rewritten,
+  then truncated in place (privacy-reviewer low). The builder's scratch check ran
+  `--delete` without `--passwords-file`, so cleanup code ran against the real default
+  path in `secrets/` (no file existed). **Changed:** `.claude/agents/backend-builder.md`:
+  scratch runs pass explicit scratch paths; script output files merge and write
+  atomically; cleanup finds its items by its own data marker.
 
 ## 2026-10-25
 

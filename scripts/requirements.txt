@@ -1,3 +1,4 @@
-# Host-only requirements for developer scripts that call real AWS (scripts/ingest-check.py).
+# Host-only requirements for developer scripts that call real AWS (scripts/ingest-check.py,
+# scripts/seed.py, scripts/seed-registry.py).
 # Same version as requirements-dev.txt.
 boto3==1.43.114
