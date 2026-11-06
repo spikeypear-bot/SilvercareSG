@@ -33,7 +33,9 @@ Fix a CRLF script by stripping `\r` from that file only (`sed -i 's/\r$//' <file
 Never suggest `git checkout-index --force --all` or `git reset --hard` to refresh line
 endings while anything is uncommitted: they silently overwrite uncommitted edits. If
 port 8000 is taken by another container, the dev container still runs and unit tests
-work; only DynamoDB Local (integration tests) needs the port.
+work; only DynamoDB Local (integration tests) needs the port. If ruff fails with
+`Permission denied` under `/work/.ruff_cache`, add `--no-cache` to `ruff check` and
+`ruff format --check`; don't delete or chmod the cache.
 
 ## Levels of testing
 
