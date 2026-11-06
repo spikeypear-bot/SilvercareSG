@@ -12,6 +12,7 @@ export const ALERT_TYPE_LABELS: Record<AlertType, string> = {
   skin_temp_high: 'High skin temperature',
   skin_temp_low: 'Low skin temperature',
   possible_fall: 'Possible fall',
+  inactivity: 'Inactivity',
   device_offline: 'Device offline',
   battery_low: 'Low battery',
   not_worn: 'Wearable not worn',

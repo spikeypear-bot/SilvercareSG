@@ -3,6 +3,13 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-07
+
+- **Problem:** after merging main, the seed tests failed with `ModuleNotFoundError`
+  because main had changed `requirements-dev.txt` and the local dev image was older.
+  **Changed:** `.claude/skills/local-dev/SKILL.md` (Changing the toolbox): run
+  `make build` after a pull or merge that changes `requirements-dev.txt` or `docker/`.
+
 ## 2026-11-06
 
 - **Problem:** the demo bed data treated a possible fall as open with

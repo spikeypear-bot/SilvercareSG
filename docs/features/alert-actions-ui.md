@@ -22,6 +22,13 @@ component changes.
 | caregiver | the caregiver view ("My residents"): their linked residents' recent alerts, with acknowledge lines, notes, cancel lines, and resolve lines | cancel an `open` or `acknowledged` alert of a linked resident, after confirming |
 | `family` (removed group) | the no-access screen (unchanged) | nothing |
 
+- Device problems (`device_offline`, `battery_low`, `not_worn`; docs/features/watchdog.md)
+  are the exception (user's decisions 2026-11-05, kept when this spec was merged into
+  `api-endpoints` on 2026-11-07; docs/data-model.md pattern 16): the nurse neither
+  acknowledges nor resolves them (the watchdog resolves them), and a caregiver can't
+  cancel them but acknowledges an `open` one instead ("Acknowledged by <name>
+  (caregiver), <time>", no note). The criteria below apply to health alerts.
+
 - Access to a specific resident: staff see every resident; a caregiver sees and cancels
   only residents they are linked to (pattern 13). In this phase the demo links every
   caregiver to res-0002 and res-0005 (`FAMILY_LINKED_RESIDENT_IDS`); the API will check

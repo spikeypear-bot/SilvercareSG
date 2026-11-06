@@ -113,7 +113,7 @@ describe('AlertRow alert types', () => {
 
   it('every alert type has a label', () => {
     Object.values(ALERT_TYPE_LABELS).forEach((label) => expect(label.trim()).not.toBe(''))
-    expect(Object.keys(ALERT_TYPE_LABELS)).toHaveLength(10)
+    expect(Object.keys(ALERT_TYPE_LABELS)).toHaveLength(11)
   })
 })
 

@@ -65,6 +65,9 @@ tests with `-e DYNAMODB_ENDPOINT=http://silvercare-ddb-tmp:8000`, then
 ## Changing the toolbox
 
 - Python packages: edit `requirements-dev.txt` (keep versions pinned), then `make build`.
+  Also run `make build` after a pull or merge that changed `requirements-dev.txt` or
+  `docker/`: tests failing with `ModuleNotFoundError` usually mean a stale image, not
+  broken code.
 - Tool versions (Terraform, tflint, checkov, Python): edit the `ARG`s or `FROM` line in
   `docker/dev.Dockerfile`, then `make build`. Keep Python on the Lambda runtime version.
 

@@ -787,9 +787,7 @@ describe('nurse alert actions', () => {
 
     await user.click(resolve)
     expect(within(row()).getByText('Resolved')).toBeInTheDocument()
-    // No name: the API takes the actor from the token (decided 2026-11-05).
-    expect(row()).toHaveTextContent('Resolved, just now')
-    expect(row()).not.toHaveTextContent(/Resolved by|Test Nurse D/)
+    expect(row()).toHaveTextContent('Resolved by Test Nurse D, just now')
     expect(row()).toHaveTextContent('Acknowledged by the care centre nurse, ')
     expect(within(row()).queryAllByRole('button')).toEqual([])
     expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
@@ -803,7 +801,7 @@ describe('nurse alert actions', () => {
   it('resolve straight from open moves focus to the Alert history heading', async () => {
     const { user } = await renderLoaded('res-0003', NURSE_D)
     await user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
-    expect(historyRows()[0]).toHaveTextContent('Resolved, just now')
+    expect(historyRows()[0]).toHaveTextContent('Resolved by Test Nurse D')
     expect(historyRows()[0]).not.toHaveTextContent('Acknowledged by')
     expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
     await waitFor(() => expect(screen.getByRole('heading', { level: 2, name: /^Alert history/ })).toHaveFocus())
