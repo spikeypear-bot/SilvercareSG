@@ -30,7 +30,8 @@ ALL = [f"wearable-{n:04d}" for n in range(1, 21)] + [
 ]
 SUMMARY_RE = re.compile(
     r"^\d\d:\d\d SGT routine \d\d:\d\d \| connected (\d+)/(\d+) \| sent vitals (\d+)"
-    r" status (\d+) bed (\d+) motion (\d+) \| dropped (\d+) \| failed (\d+)$"
+    r" status (\d+) bed (\d+) motion (\d+) fall (\d+) vitals_alert (\d+)"
+    r" alert_cancel (\d+) \| dropped (\d+) \| failed (\d+)$"
 )
 PROBLEM_RE = re.compile(
     r"^(wearable|bedroom)-\d{4}: (connect refused \([A-Za-z0-9 ]+\)"
@@ -391,7 +392,7 @@ def test_messages_due_while_disconnected_are_dropped_and_counted_not_queued(keys
     )
     total = result.total()
     assert f"| dropped {len(expected)} |" in total
-    dropped_per_minute = sum(int(m[7]) for m in result.summaries())
+    dropped_per_minute = sum(int(m[10]) for m in result.summaries())
     assert dropped_per_minute == len(expected)
 
 
@@ -448,8 +449,8 @@ def test_one_summary_line_per_minute_like_the_spec_example(keys, tmp_path):
     for line in summaries:
         match = SUMMARY_RE.fullmatch(line)
         assert match and match[1] == "40" and match[2] == "40"
-        assert match[7] == "0" and match[8] == "0"
-    sent = sum(sum(int(m[i]) for i in range(3, 7)) for m in result.summaries())
+        assert match[10] == "0" and match[11] == "0"
+    sent = sum(sum(int(m[i]) for i in range(3, 10)) for m in result.summaries())
     assert sent == len(world.published)
     assert result.stderr == ""
     assert_clean_output(result, tmp_path)

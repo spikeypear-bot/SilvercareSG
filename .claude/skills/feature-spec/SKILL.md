@@ -58,7 +58,12 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
       change (e.g. thresholds: use values that fail any sensible limit), and space out
       messages whose order matters (sent together, they run in parallel). Anything that
       sends data to the live system (smoke tests, the simulator) names the registry data
-      it relies on (e.g. "run `seed.py` first") and what happens without it.
+      it relies on (e.g. "run `seed.py` first") and what happens without it, and
+      counts the emails it causes from the alert specs (escalation, alerts never
+      suppressed), not from one rule.
+- [ ] Timed behaviour says what happens at its edges: events due at the same moment
+      (which runs first), and work still scheduled when the run or process stops (sent,
+      dropped, or reported).
 - [ ] Every API route has method, path, groups, a request example, a response example
       per role, and error cases.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.

@@ -64,8 +64,8 @@ class Reporter:
         self, epoch_ms: int, routine_ms: int, connected: int, devices: int
     ) -> str:
         """One minute's line, e.g. `12:03 SGT routine 21:58 | connected 40/40 |
-        sent vitals 20 status 8 bed 0 motion 3 | dropped 0 | failed 0`; then resets
-        the minute's counts."""
+        sent vitals 20 status 8 bed 0 motion 3 fall 0 vitals_alert 0 alert_cancel 0 |
+        dropped 0 | failed 0`; then resets the minute's counts."""
         line = (
             f"{sgt_hhmm(epoch_ms)} SGT routine {routine.format_hhmm(routine_ms)}"
             f" | connected {connected}/{devices} | {self.minute.text()}"

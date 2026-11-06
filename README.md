@@ -149,6 +149,38 @@ ran, check with `docker compose ps` and stop leftovers with `docker compose down
 Useful options: `--start-at 21:55` (start the routine at that time of day, to see
 bedtime in minutes), `--devices wearable-0001,bedroom-0001`, `--random-seed N`.
 
+#### Alert scenarios
+
+Make one wearable have an emergency on purpose, while the other devices keep running
+normally (`docs/features/simulator-alert-scenarios.md`):
+
+| Scenario | What the wearable does | Expected alert |
+|---|---|---|
+| `fall` | a fall, then lies still until `im-ok` or 10 min | `fall` (critical) |
+| `hr-spike` | heart rate 150 for 3 min | `hr_high` critical, then warning |
+| `spo2-drop` | SpO2 84 % for 3 min | `spo2_low` critical, then warning |
+| `no-pulse` | no pulse for 3 min | `hr_low` critical (no pulse) |
+| `im-ok` | the "I'm OK" button | cancels the wearable's open alerts |
+
+Start them with `--scenario <name>:<wearable>[@<time after start>]` (default 30 s), or
+type `<name> <wearable>` (e.g. `fall wearable-0003`) into the running simulator:
+
+```sh
+make simulate ENDPOINT=<host> ARGS="--duration 10m --scenario fall:wearable-0003@1m --scenario im-ok:wearable-0003@2m"
+make simulate-dry-run ARGS="--instant --duration 10m --scenario hr-spike:wearable-0003@1m"
+```
+
+The second line prints the messages without AWS.
+
+**The alerts and emails are real.** Each scenario emails the caregivers subscribed to
+that resident, and every alert not cancelled with `im-ok` also goes to all the nurse
+subscribers (escalation). `hr-spike` and `spo2-drop` raise two alerts each (critical,
+then warning); falls are always emailed; other repeats of the same alert for the same
+resident are held back for 30 minutes. So one scenario can mean 2–4 emails per inbox:
+keep live demos to a few scenarios. Don't run
+`make smoke-test` on a device while the simulator runs: AWS allows one connection per
+device, so the two would keep disconnecting each other.
+
 ## Alerts
 
 A wearable `fall` or `vitals_alert` (a critical reading on the device, including no

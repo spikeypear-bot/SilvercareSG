@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 import payloads
 import routine
+import scenarios
 from residents import Resident
 
 VITALS_PERIOD_MS = routine.MINUTE_MS
@@ -28,7 +29,20 @@ BATTERY_DRAIN_PER_H = 1.5
 BATTERY_CHARGE_PER_H = 40.0
 BATTERY_START_RANGE = (60.0, 95.0)
 
-MESSAGE_TYPES = ("vitals", "status", "bed", "motion")
+MESSAGE_TYPES = (
+    "vitals",
+    "status",
+    "bed",
+    "motion",
+    "fall",
+    "vitals_alert",
+    "alert_cancel",
+)
+_SCENARIO_KINDS = frozenset({"scenario", "cancel", "end", "vitals_alert", "fall"})
+# At the same elapsed time: scenario ends first, then flag scenario starts, then
+# everything else (heap order is (time, seq)).
+_END_SEQ_START = -(2 * 10**9)
+_FLAG_SEQ_START = -(10**9)
 
 
 @dataclass(frozen=True)
@@ -80,6 +94,29 @@ class _Event:
     seq: int
     kind: str = field(compare=False)
     key: str = field(compare=False)
+    # Scenario events: (scenario id,) or (name,) for a flag start.
+    data: tuple = field(default=(), compare=False)
+
+
+@dataclass
+class _Scenario:
+    """One running scenario other than im-ok (at most one per wearable)."""
+
+    sid: int
+    name: str
+    device_id: str
+    t0: int
+    end_ms: int | None  # None for a fall: it ends when the resident gets up
+    rng: random.Random
+    value: int | None = None  # the current hr-spike / spo2-drop reading
+    lying: tuple[float, float, float] | None = None  # fall only
+
+
+@dataclass
+class _WearableScenarios:
+    started: int = 0  # scenarios started on this wearable (seeds their streams)
+    active: _Scenario | None = None
+    last_cancel_ms: int | None = None  # when the latest alert_cancel is (to be) sent
 
 
 def device_rng(seed: int, device_id: str) -> random.Random:
@@ -115,6 +152,12 @@ class Engine:
         self._new_id = new_id or (lambda: str(uuid.uuid4()))
         self._heap: list[_Event] = []
         self._seq = 0
+        self._seed = seed
+        self._flag_seq = _FLAG_SEQ_START
+        self._end_seq = _END_SEQ_START
+        self._sid = 0
+        self._scenarios: dict[str, _WearableScenarios] = {}
+        self._notices: list[str] = []
         self.started: set[str] = set()
 
         # Offsets for every resident (not only selected ones), so the same seed gives
@@ -161,9 +204,27 @@ class Engine:
 
     # ---- schedule ----
 
-    def _push(self, elapsed_ms: int, kind: str, key: str) -> None:
+    def _push(self, elapsed_ms: int, kind: str, key: str, data: tuple = ()) -> None:
         self._seq += 1
-        heapq.heappush(self._heap, _Event(elapsed_ms, self._seq, kind, key))
+        heapq.heappush(self._heap, _Event(elapsed_ms, self._seq, kind, key, data))
+
+    def schedule_scenario(self, name: str, device_id: str, at_ms: int) -> None:
+        """A --scenario flag: start the scenario at elapsed at_ms. Flags start in
+        their command-line order, after scenario ends but before other events due
+        at the same time."""
+        self._flag_seq += 1
+        heapq.heappush(
+            self._heap,
+            _Event(at_ms, self._flag_seq, "scenario", device_id, (name,)),
+        )
+
+    def _push_end(self, at_ms: int, device_id: str, sid: int) -> None:
+        """A scenario's end. It runs before anything else due at the same time, so
+        a scenario ending at t is over for every event at t (it covers [t0, t))."""
+        self._end_seq += 1
+        heapq.heappush(
+            self._heap, _Event(at_ms, self._end_seq, "end", device_id, (sid,))
+        )
 
     @staticmethod
     def _first_slot(period_ms: int, slot_ms: int, after_ms: int) -> int:
@@ -273,9 +334,17 @@ class Engine:
         if phase == routine.CHARGING:
             return []  # off the wrist: no vitals
         assert state.wearable_rng is not None
+        # Always drawn from the normal stream, so the other fields stay normal.
         values = payloads.vitals_values(
             state.wearable_rng, state.resident.baseline, state.resident.limits, phase
         )
+        active = self._active(device_id, now_ms)
+        if active is not None:
+            if active.name in (scenarios.HR_SPIKE, scenarios.SPO2_DROP):
+                active.value = scenarios.spike_value(active.name, active.rng)
+            values = scenarios.override_vitals(
+                active.name, values, active.rng, active.value, active.lying
+            )
         return [
             self._msg(
                 now_ms,
@@ -328,8 +397,205 @@ class Engine:
                 )
         return out
 
+    # ---- scenarios ----
+
+    def take_notices(self) -> list[str]:
+        """Scenario lines (started/ended/skipped) produced since the last call."""
+        out, self._notices = self._notices, []
+        return out
+
+    def cut_off(self, until_ms: int) -> list[str]:
+        """When the run stops after handling every event up to until_ms: a line for
+        each scenario still going and each im-ok whose alert_cancel wasn't sent, so
+        nobody thinks a fall was cancelled when it wasn't."""
+        lines: list[str] = []
+        for device_id in sorted(self._scenarios):
+            sc = self._scenarios[device_id]
+            if sc.last_cancel_ms is not None and sc.last_cancel_ms > until_ms:
+                lines.append(
+                    f"scenario {scenarios.IM_OK} {device_id} {scenarios.CUT_OFF}"
+                )
+            if sc.active is not None:
+                lines.append(
+                    f"scenario {sc.active.name} {device_id} {scenarios.CUT_OFF}"
+                )
+        return lines
+
+    def _active(self, device_id: str, now_ms: int) -> _Scenario | None:
+        """The scenario affecting the device's readings at now_ms, if any."""
+        sc = self._scenarios.get(device_id)
+        active = sc.active if sc else None
+        if active is None:
+            return None
+        if active.end_ms is not None and now_ms >= active.end_ms:
+            return None
+        return active
+
+    def _worn(self, device_id: str, now_ms: int) -> bool:
+        state = self._owner[device_id]
+        phase = routine.phase_at(self.routine_ms(now_ms), state.offset_ms)
+        return phase != routine.CHARGING
+
+    def start_scenario(self, name: str, device_id: str, now_ms: int) -> list[Message]:
+        """Start a scenario on a wearable of this run at now_ms.
+
+        Returns the messages due at once. Later messages and the end are scheduled.
+        The lines (`scenario <name> <id> started`, `... skipped: <reason>`, `...
+        ended`) come from take_notices(), in order."""
+        assert name in scenarios.NAMES and device_id in self._owner
+        assert device_id.startswith("wearable-")
+        label = f"scenario {name} {device_id}"
+        sc = self._scenarios.setdefault(device_id, _WearableScenarios())
+        if name == scenarios.IM_OK:
+            return self._start_im_ok(label, sc, device_id, now_ms)
+        if not self._worn(device_id, now_ms):
+            self._notices.append(f"{label} skipped: {scenarios.SKIP_NOT_WORN}")
+            return []
+        if sc.active is not None:
+            self._notices.append(f"{label} skipped: {scenarios.SKIP_BUSY}")
+            return []
+        self._sid += 1
+        rng = scenarios.scenario_rng(self._seed, device_id, sc.started)
+        sc.started += 1
+        if name == scenarios.FALL:
+            active = _Scenario(
+                self._sid,
+                name,
+                device_id,
+                now_ms,
+                None,
+                rng,
+                lying=scenarios.lying_orientation(rng),
+            )
+            self._push(
+                now_ms + scenarios.FALL_MESSAGE_DELAY_MS,
+                "fall",
+                device_id,
+                (active.sid,),
+            )
+            self._push_end(now_ms + scenarios.FALL_MAX_DOWN_MS, device_id, active.sid)
+        else:
+            end_ms = now_ms + scenarios.VITALS_DURATION_MS
+            active = _Scenario(self._sid, name, device_id, now_ms, end_ms, rng)
+            active.value = scenarios.spike_value(name, rng)
+            self._push(
+                now_ms + scenarios.ALERT_DELAY_MS,
+                "vitals_alert",
+                device_id,
+                (active.sid,),
+            )
+            self._push_end(end_ms, device_id, active.sid)
+        sc.active = active
+        self._notices.append(f"{label} started")
+        return []
+
+    def _start_im_ok(
+        self, label: str, sc: _WearableScenarios, device_id: str, now_ms: int
+    ) -> list[Message]:
+        if (
+            sc.last_cancel_ms is not None
+            and now_ms < sc.last_cancel_ms + scenarios.CANCEL_SPACING_MS
+        ):
+            self._notices.append(f"{label} skipped: {scenarios.SKIP_TOO_SOON}")
+            return []
+        active = sc.active
+        if active is not None and active.name == scenarios.FALL:
+            fall_at = active.t0 + scenarios.FALL_MESSAGE_DELAY_MS
+            if now_ms < fall_at + scenarios.CANCEL_SPACING_MS:
+                # The fall message isn't out yet, or went out less than 5 s ago.
+                cancel_at = fall_at + scenarios.CANCEL_SPACING_MS
+                sc.last_cancel_ms = cancel_at
+                self._push(cancel_at, "cancel", device_id, (active.sid,))
+                self._notices.append(f"{label} started (after the fall message)")
+                return []
+        sc.last_cancel_ms = now_ms
+        self._notices.append(f"{label} started")
+        return self._send_cancel(device_id, now_ms)
+
+    def _send_cancel(self, device_id: str, now_ms: int) -> list[Message]:
+        """The alert_cancel; it ends an active fall (the resident gets up)."""
+        out = [self._msg(now_ms, device_id, "alert_cancel", payloads.alert_cancel)]
+        sc = self._scenarios[device_id]
+        if sc.active is not None and sc.active.name == scenarios.FALL:
+            self._end(sc)
+        self._notices.append(f"scenario {scenarios.IM_OK} {device_id} ended")
+        return out
+
+    def _end(self, sc: _WearableScenarios) -> None:
+        assert sc.active is not None
+        self._notices.append(f"scenario {sc.active.name} {sc.active.device_id} ended")
+        sc.active = None
+
+    def _current(self, event: _Event) -> tuple[_WearableScenarios, _Scenario] | None:
+        """The wearable's scenario if it is still the one the event belongs to."""
+        sc = self._scenarios.get(event.key)
+        if sc is None or sc.active is None or sc.active.sid != event.data[0]:
+            return None
+        return sc, sc.active
+
+    def _vitals_alert(self, now_ms: int, active: _Scenario) -> list[Message]:
+        if active.end_ms is not None and (
+            now_ms + scenarios.ALERT_REPEAT_MS < active.end_ms
+        ):
+            # Again every 5 minutes while the condition lasts.
+            self._push(
+                now_ms + scenarios.ALERT_REPEAT_MS,
+                "vitals_alert",
+                active.device_id,
+                (active.sid,),
+            )
+        if not self._worn(active.device_id, now_ms):
+            return []  # sent only while worn
+        metric, limit, direction = scenarios.ALERT_RULE[active.name]
+        value = 0 if active.name == scenarios.NO_PULSE else active.value
+        assert value is not None
+        return [
+            self._msg(
+                now_ms,
+                active.device_id,
+                "vitals_alert",
+                lambda ts, mid: payloads.vitals_alert(
+                    ts, mid, metric, value, limit, direction, scenarios.ALERT_HELD_S
+                ),
+            )
+        ]
+
+    def _fall(self, now_ms: int, active: _Scenario) -> list[Message]:
+        assert active.lying is not None
+        values = scenarios.fall_values(active.rng, active.lying)
+        payload = payloads.fall(
+            self.epoch_ms(active.t0),  # ts is the impact
+            self._new_id(),
+            values.confidence,
+            values.peak_g,
+            scenarios.FALL_STILL_S,
+            values.samples,
+        )
+        return [Message(now_ms, active.device_id, "fall", payload)]
+
+    def _handle_scenario(self, event: _Event) -> list[Message]:
+        now = event.elapsed_ms
+        if event.kind == "scenario":
+            return self.start_scenario(event.data[0], event.key, now)
+        if event.kind == "cancel":
+            return self._send_cancel(event.key, now)
+        current = self._current(event)
+        if current is None:
+            return []  # the scenario has ended since
+        sc, active = current
+        if event.kind == "end":
+            self._end(sc)
+            return []
+        if event.kind == "vitals_alert":
+            return self._vitals_alert(now, active)
+        if event.kind == "fall":
+            return self._fall(now, active)
+        raise AssertionError(f"unknown event kind {event.kind}")  # pragma: no cover
+
     def _handle(self, event: _Event) -> list[Message]:
         now = event.elapsed_ms
+        if event.kind in _SCENARIO_KINDS:
+            return self._handle_scenario(event)
         if event.kind == "startup":
             return self.startup_messages(event.key, now)
         if event.kind == "status":

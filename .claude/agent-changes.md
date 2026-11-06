@@ -32,6 +32,16 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** the `simulator-alert-scenarios` spec (written by Claude) left two timing
+  edges open: a flag at the previous scenario's end was skipped as `busy` (flags ran
+  before the same-time end; lambda-tester found it), and messages still scheduled at
+  `--duration` were silently lost, so an "I'm OK" could print `started` and never send
+  (privacy-reviewer, low). It also promised one email per 30 min, ignoring escalation
+  and never-suppressed falls (privacy-reviewer, medium). **Changed:**
+  `.claude/skills/feature-spec/SKILL.md`: a checklist item for same-moment ordering
+  and work pending at stop, and live tools count emails from all the alert specs.
+  (Fix: ends sort first, `cut off: run ended` lines, README and spec warning.)
+
 - **Problem:** the `simulator-core` spec (written by Claude) said normal data raises no
   alert, but only if `seed.py` thresholds are in the live registry; with only
   `seed-registry.py` data, two devices fall outside the cloud's defaults and nurses get

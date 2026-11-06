@@ -2,7 +2,10 @@
 
 Plays the devices in infra/devices/devices.json, each resident from
 scripts/seed-data.json following their own baseline vitals and daily routine, and
-publishes normal data exactly as docs/metrics.md defines it.
+publishes normal data exactly as docs/metrics.md defines it. Alert scenarios
+(docs/features/simulator-alert-scenarios.md) start from --scenario flags or, while a
+run goes on with a terminal on stdin (not --instant), from typed lines
+`<name> <wearable_id>` (`help` lists the names).
 
   python simulator/src/main.py --dry-run [--instant --duration 24h] [--random-seed 1]
   python simulator/src/main.py --endpoint <iot_endpoint> --keys-dir <dir>   (live)
@@ -36,7 +39,9 @@ from pathlib import Path
 from typing import TextIO
 
 import routine
+import scenarios
 from clock import InstantClock, RealClock, now_epoch_ms
+from commands import CommandSource, StdinCommands
 from engine import Engine
 from live import ClientFactory, LinkManager, missing_key_files, paho_client_factory
 from report import SGT, Reporter
@@ -138,6 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="live only: Amazon root CA file (default: devices/AmazonRootCA1.pem)",
     )
+    parser.add_argument(
+        "--scenario",
+        action="append",
+        metavar="NAME:WEARABLE_ID[@OFFSET]",
+        help="start an alert scenario (" + ", ".join(scenarios.NAMES) + ") on a"
+        " wearable of the run at an elapsed offset (default 30s); repeatable",
+    )
     parser.add_argument("--seed-file", type=Path, default=DEFAULT_SEED_FILE)
     parser.add_argument("--devices-file", type=Path, default=DEFAULT_DEVICES_FILE)
     return parser
@@ -173,7 +185,21 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
             parser.error("--instant needs --dry-run")
     if args.instant and args.duration is None:
         parser.error("--instant needs --duration")
+    requests: list[scenarios.Request] = []
+    for position, text in enumerate(args.scenario or [], start=1):
+        try:
+            requests.append(scenarios.parse_flag(text, parse_duration, args.duration))
+        except ValueError as exc:
+            parser.error(f"--scenario {position}: {exc}")
+    args.scenario_requests = requests
     return args
+
+
+def _stdin_is_terminal() -> bool:
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (OSError, ValueError):
+        return False  # closed or detached stdin
 
 
 def _install_signals(stop: threading.Event) -> Callable[[], None]:
@@ -202,9 +228,11 @@ def main(
     client_factory: ClientFactory | None = None,
     stop: threading.Event | None = None,
     new_id: Callable[[], str] | None = None,
+    commands: CommandSource | None = None,
 ) -> int:
     """Run the simulator. The keyword arguments are for tests: a fake clock, a fixed
-    start time, a fake MQTT client factory, a stop event, and message IDs."""
+    start time, a fake MQTT client factory, a stop event, message IDs, and a fake
+    typed-command source (used instead of stdin; still off with --instant)."""
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
     args = parse_args(argv)
@@ -224,6 +252,12 @@ def main(
     if unknown:
         err(f"error: not in the devices file: {', '.join(unknown)}")
         return EXIT_USAGE
+    known = set(device_order)
+    for position, request in enumerate(args.scenario_requests, start=1):
+        problem = scenarios.target_problem(request.device_id, known, selected)
+        if problem:
+            err(f"error: --scenario {position}: {problem}")
+            return EXIT_USAGE
 
     keys_dir = args.keys_dir  # required for live runs; unused in a dry-run
     ca_file = args.ca_file or DEFAULT_CA_FILE
@@ -264,6 +298,8 @@ def main(
         schedule_startup=args.dry_run,
         new_id=new_id,
     )
+    for request in args.scenario_requests:
+        engine.schedule_scenario(request.name, request.device_id, request.offset_ms)
     if clock is None:
         clock = InstantClock() if args.instant else RealClock()
     stop = stop or threading.Event()
@@ -279,6 +315,13 @@ def main(
         f" routine {routine.format_hhmm(start_routine)}"
     )
 
+    command_source: CommandSource | None = None
+    if not args.instant:
+        if commands is not None:
+            command_source = commands
+        elif _stdin_is_terminal():
+            command_source = StdinCommands(sys.stdin)
+
     restore = _install_signals(stop)
     links: LinkManager | None = None
     try:
@@ -293,6 +336,9 @@ def main(
                 stop=stop,
                 summary_out=summary,
                 step_s=DRY_RUN_STEP_S,
+                commands=command_source,
+                known_devices=known,
+                err_out=err,
             )
         else:
             factory = client_factory or paho_client_factory(keys_dir, ca_file)
@@ -312,6 +358,9 @@ def main(
                 summary_out=summary,
                 links=links,
                 step_s=LIVE_STEP_S,
+                commands=command_source,
+                known_devices=known,
+                err_out=err,
             )
     except BrokenPipeError:
         # stdout closed early (e.g. piped into head): stop quietly.
