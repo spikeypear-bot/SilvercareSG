@@ -43,7 +43,9 @@ structure, not code that exists yet. Update this file as decisions land.
   limits inside the always-free tier (25 RCU / 25 WCU across all tables and indexes),
   no auto scaling. Tables, keys, and access patterns are in `docs/data-model.md`.
 - **History and analytics:** every telemetry message and alert also goes to S3 for
-  analysis; the data is cleaned later with AWS Lake Formation. Each IoT rule also sends
+  analysis. A daily `clean` Lambda runs Athena SQL that writes clean Parquet tables to a
+  separate bucket, and Lake Formation governs Athena access (`docs/features/clean-data.md`).
+  Each IoT rule also sends
   messages to an SQS queue, and a `history` Lambda writes them to S3 in 5-minute
   batches (`docs/decisions/0001-iot-rule-routing.md`, History path). Firehose and
   Kinesis are not used: they need AWS's paid plan.
@@ -114,7 +116,7 @@ GitHub Actions workflows in `.github/workflows/`:
 |---|---|---|
 | `checks.yml` | every PR, and before every deploy | builds the dev image, then `make lint`, `make test`, `make test-integration`, `make tf-check`; frontend lint/test/build once `frontend/` exists. No secrets or AWS access. |
 | `plan.yml` | every PR from this repo (not forks) | `terraform plan` with the read-only `silvercare-cicd-plan` role; posts a PR comment listing what will be created, updated, replaced, or **destroyed** |
-| `deploy.yml` | push to `main` | runs `checks.yml`, then `terraform plan` + `apply` with the `silvercare-cicd` role, then builds `frontend/` with the Cognito IDs from the Terraform outputs and uploads it to the S3 bucket (every deploy) |
+| `deploy.yml` | push to `main` | runs `checks.yml`, then `terraform plan` + `apply` with the `silvercare-cicd` role, then builds `frontend/` with the Cognito IDs from the Terraform outputs and uploads it to the S3 bucket (every deploy), then runs the clean-data self-check (pass or fail only) |
 
 Implications:
 
@@ -181,7 +183,7 @@ under Singapore's PDPA. Treat it accordingly:
   the shared password or MFA (only the account owner can). MFA is optional. Because the
   user is shared, CloudTrail can't tell developers apart. Data reads and the shared user
   are acceptable while all data is synthetic; revisit both before any real resident data
-  arrives.
+  arrives (full list: "Before any real resident data arrives" in `docs/data-model.md`).
 - The `pdpa-check` skill has the full checklist.
 
 ## Claude setup

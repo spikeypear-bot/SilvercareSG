@@ -112,7 +112,7 @@ Who does what:
 14. Per record:
     - the body is parsed as JSON (the rule's output: payload plus `device_id`,
       `message`, `received_at`)
-    - `<message>` is the body's `message` if it matches `^[a-z]{1,16}$`, otherwise
+    - `<message>` is the body's `message` if it matches `^[a-z_]{1,16}$`, otherwise
       `unknown`
     - the date comes from `received_at` (epoch milliseconds) if it is a non-negative
       integer, otherwise from the record's SQS `SentTimestamp` attribute

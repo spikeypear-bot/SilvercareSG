@@ -107,6 +107,84 @@
       "Resource": "arn:aws:cloudfront::753674274065:distribution/*"
     },
     {
+      "Sid": "AthenaAnalysisWorkgroup",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:StopQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:GetQueryResultsStream",
+        "athena:BatchGetQueryExecution",
+        "athena:ListQueryExecutions",
+        "athena:GetWorkGroup"
+      ],
+      "Resource": "arn:aws:athena:ap-southeast-1:753674274065:workgroup/silvercare-analysis"
+    },
+    {
+      "Sid": "AthenaListWorkgroups",
+      "Effect": "Allow",
+      "Action": [
+        "athena:ListWorkGroups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AthenaBrowseCatalog",
+      "Effect": "Allow",
+      "Action": [
+        "athena:GetDataCatalog",
+        "athena:ListDatabases",
+        "athena:GetDatabase",
+        "athena:ListTableMetadata",
+        "athena:GetTableMetadata"
+      ],
+      "Resource": "arn:aws:athena:ap-southeast-1:753674274065:datacatalog/AwsDataCatalog"
+    },
+    {
+      "Sid": "GlueReadLake",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetDatabases",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:GetPartition",
+        "glue:GetPartitions",
+        "glue:BatchGetPartition"
+      ],
+      "Resource": [
+        "arn:aws:glue:ap-southeast-1:753674274065:catalog",
+        "arn:aws:glue:ap-southeast-1:753674274065:database/silvercare_lake",
+        "arn:aws:glue:ap-southeast-1:753674274065:table/silvercare_lake/*"
+      ]
+    },
+    {
+      "Sid": "GlueDefaultDatabase",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase"
+      ],
+      "Resource": "arn:aws:glue:ap-southeast-1:753674274065:database/default"
+    },
+    {
+      "Sid": "LakeFormationDataAccess",
+      "Effect": "Allow",
+      "Action": [
+        "lakeformation:GetDataAccess"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "WriteAnalysisResults",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::silvercare-athena-results-753674274065/analysis/*"
+    },
+    {
       "Sid": "TerraformLockForLocalPlan",
       "Effect": "Allow",
       "Action": [

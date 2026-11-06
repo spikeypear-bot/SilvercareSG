@@ -27,7 +27,14 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
   (tflint flags it if missing).
 - Outputs: `terraform apply` in `deploy.yml` prints every non-sensitive output to the
   public Actions log. Mark an output `sensitive = true` unless it's fine to publish (it
-  can still be read with `terraform output`).
+  can still be read with `terraform output`). Any `terraform` step in a workflow must also
+  redact stderr, because discarding stdout alone leaves error text in that log.
+- A name Terraform doesn't create (a hard-coded `default`, a `data` lookup) fails only at
+  apply: `make tf-check` never contacts AWS. Create it in Terraform where that's safe;
+  otherwise list it for the owner to confirm exists before merging.
+- A new service that stores or returns data: add its read actions to `DenyDataReads` in
+  `infra/bootstrap/ci-plan-role.tf` (the owner applies it). The plan role has
+  `ReadOnlyAccess`, and any PR from this repo can use it.
 - A `file()` on a missing path errors before any `precondition` runs. To fail with your
   own message, guard it: `fileexists(p) ? file(p) : "<placeholder>"`. Test such logic
   without AWS on `terraform_data` in a scratch dir.
