@@ -82,6 +82,13 @@ data "aws_iam_policy_document" "ci_plan" {
       "cognito-idp:AdminGetUser",
       "iot:GetThingShadow",
       "secretsmanager:GetSecretValue",
+      # Lake Formation read-only admin may view the catalog, never fetch data credentials.
+      "lakeformation:GetDataAccess",
+      # Query text and failure reasons can quote data. Plans only need athena:GetWorkGroup.
+      "athena:GetQueryExecution",
+      "athena:BatchGetQueryExecution",
+      "athena:GetQueryResults",
+      "athena:GetQueryResultsStream",
     ]
     resources = ["*"]
   }

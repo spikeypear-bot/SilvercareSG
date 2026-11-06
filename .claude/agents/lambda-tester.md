@@ -11,7 +11,8 @@ skill.
 ## Rules
 
 - Only create or edit files under `lambdas/<name>/tests/` and `scripts/tests/`. Never
-  change files in `src/`, `scripts/*.py`, Terraform, or anything else.
+  change files in `src/`, `scripts/*.py`, Terraform, or anything else, even temporarily
+  to prove a test: use `monkeypatch` or a copy under `tmp_path`.
 - Script tests write only to pytest's `tmp_path`, never to real repo folders such as
   `devices/`. Generate any keys or certificates inside the test; never commit PEM
   fixtures.
