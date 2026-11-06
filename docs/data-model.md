@@ -100,7 +100,7 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 
 | # | Who / what | Query | Table / index | Key condition | Frequency |
 |---|---|---|---|---|---|
-| 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container). `device-health` reads no registry |
+| 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container; `alert_cancel` always reads it uncached, docs/features/possible-fall.md). `device-health` reads no registry |
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | as pattern 1 for `vitals`, assigned devices only (cached 5 min, including "no item") |
 | 3 | `telemetry`, `device-health`, `critical-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
 | 4 | backend: `watchdog` (docs/features/watchdog.md); *(proposed)* staff only: devices view | Every device, assigned or not (the watchdog keeps only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog: eventually consistent, paginated) | every 5 min; per devices-view load |
@@ -108,7 +108,7 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
 | 8 | Staff only: nurse and doctor dashboards, *(proposed)* devices view (names for assigned devices) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
-| 9 | Staff only: nurse and doctor dashboards; backend: `watchdog` | All open alerts (and acknowledged ones, which keep `open_pk`), newest first | alerts `open` | Query `open_pk = OPEN`, descending (watchdog: eventually consistent, paginated; it uses only the three device-problem types, to keep one open alert per device and type and to find the ones to resolve) | every 30 s per open dashboard; every 5 min |
+| 9 | Staff only: nurse and doctor dashboards; backend: `watchdog` | All open alerts (and acknowledged ones, which keep `open_pk`), newest first | alerts `open` | Query `open_pk = OPEN`, descending (watchdog: eventually consistent, paginated; it uses only the three device-problem types and `possible_fall`, to keep one open alert per device and type and to find the ones to resolve) | every 30 s per open dashboard; every 5 min |
 | 10 | Resident page: staff, or caregiver after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
 | 11 | Resident page: staff, or caregiver after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (per device: wearable `vitals`, `vitals_alert`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
 | 12 | Resident page: staff, or caregiver after 13 | This resident's alerts | alerts | Query `pk = RESIDENT#<resident_id>`, descending | per page view |
@@ -123,11 +123,12 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 21 | backend: `alert-processor` | A wearable's newest vitals, to add to a fall alert | latest | GetItem `pk = DEVICE#<device_id>`, `sk = MSG#vitals` (uses `entries[0]`) | per fall alert |
 | 22 | backend: `alert-processor` | Re-read an alert that already exists (a redelivered message) | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent | per redelivered alert message |
 | 23 | backend: `alert-processor` | Escalation (warnings from assigned devices): mark the check queued; 300 s later read the alert's `status` and mark it escalated (docs/features/escalation.md, alert-routing.md). Critical and unassigned alerts only `SET escalated_at` after the nurse email sent at once | alerts | UpdateItem `SET escalation_queued_at` with `attribute_not_exists(escalation_queued_at)`; GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; UpdateItem `SET escalated_at` with `attribute_not_exists(escalated_at)` | per stored alert (one GetItem, up to two UpdateItems) |
-| 24 | backend: `alert-processor` | Resident cancel: this resident's alerts from one device that are `open` or `acknowledged` (or already `cancelled` but without `status_notified_at`, a retry), up to the press, except device problems (docs/features/alert-cancel.md, criterion 8; alert-routing.md, criterion 10; watchdog.md, criterion 14a) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk <= "ALERT#<changed_at>#~"` (alerts at exactly `changed_at` included, later ones not), strongly consistent, `FilterExpression` `device_id = :device AND (#status IN (:open, :acknowledged) OR (#status = :new AND attribute_not_exists(status_notified_at))) AND NOT alert_type IN (:offline, :battery, :not_worn)`, paginated; then per target a conditional UpdateItem (`#status IN (:open, :acknowledged)`) and `SET status_notified_at` with `attribute_not_exists(status_notified_at)` | per `alert_cancel` (rare) |
+| 24 | backend: `alert-processor` | Resident cancel: this resident's alerts from one device that are `open` or `acknowledged` (or already `cancelled` but without `status_notified_at`, a retry), up to the press, except device problems, plus the resident's possible falls from any device (docs/features/alert-cancel.md, criterion 8; alert-routing.md, criterion 10; watchdog.md, criterion 14a; possible-fall.md, criterion 13) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk <= "ALERT#<changed_at>#~"` (alerts at exactly `changed_at` included, later ones not), strongly consistent, `FilterExpression` `((device_id = :device AND NOT alert_type IN (:offline, :battery, :not_worn)) OR alert_type = :possible_fall) AND (#status IN (:open, :acknowledged) OR (#status = :new AND attribute_not_exists(status_notified_at)))` (the `OR alert_type = :possible_fall` only for a wearable target, which every resident cancel is), paginated; then per target a conditional UpdateItem (`#status IN (:open, :acknowledged)`) and `SET status_notified_at` with `attribute_not_exists(status_notified_at)` | per `alert_cancel` (rare) |
 | 25 | backend: `alert-processor` | Acknowledge or cancel of one alert (a `status_update` from Track B's API: nurse or caregiver for health alerts, ops or caregiver for device problems), or the watchdog's resolve of a device problem | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; then the role/type rule (else `not_allowed`); conditional UpdateItem (acknowledge `#status = :open`; cancel and resolve `#status IN (:open, :acknowledged)`); `SET status_notified_at` with `attribute_not_exists(status_notified_at)` (not for a resolve, which emails nobody) | per acknowledge, caregiver cancel, or resolve |
 | 26 | *(proposed)* Doctor only: resident page | Change this resident's thresholds, and record the change (27) | registry | TransactWriteItems: UpdateItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS`, condition `attribute_exists(pk)` and `updated_at` unchanged since the read; PutItem of the change | rare |
 | 27 | *(proposed)* Resident page: staff only | This resident's threshold changes, newest first | registry | Query `pk = THRESHOLD_LOG#<resident_id>`, descending | per page view |
 | 28 | backend: `watchdog` | `worn_false_since` of the wearables whose newest `status` has `worn = false` (docs/features/watchdog.md, criterion 2) | latest | BatchGetItem `pk = DEVICE#<device_id>`, `sk = MSG#status` (up to 100 keys per call, `UnprocessedKeys` retried), eventually consistent, projecting `pk`, `worn_false_since` | every 5 min, only for wearables off the wrist |
+| 27 | backend: `watchdog` (docs/features/possible-fall.md, criterion 3a) | Bedroom units in possible-fall test mode | registry `by-type` | Query `entity_type = TEST_MODE` (as pattern 4), eventually consistent, paginated, projecting `pk`, `sk`; usually returns nothing | every 5 min |
 
 No pattern uses `Scan`.
 
@@ -318,6 +319,25 @@ numbers stay in Cognito, not here. Staff can see every resident and have no link
 
 How links are created is Open decision #3 (user onboarding).
 
+### Possible-fall test mode
+
+docs/features/possible-fall.md, criterion 3a. For live checks only: written and
+deleted by hand in the DynamoDB console (the shared developer user can write
+`silvercare-*` items); `scripts/iot-smoke-test.py --possible-fall` prints the exact
+item. No personal data.
+
+| Attribute | Example | Notes |
+|---|---|---|
+| `pk` | `DEVICE#bedroom-0003` | must be a bedroom unit, else ignored |
+| `sk` | `TEST_MODE#2026-11-04T06:00:00.000Z` | when it was set, ISO 8601 UTC with ms and `Z` |
+| `entity_type` | `TEST_MODE` | `by-type` hash key (pattern 27) |
+
+While the time in `sk` is at most 2 hours before now (and not in the future), the
+watchdog's possible-fall check for that unit only skips the night window and waits 2
+minutes instead of 20; every other condition is unchanged. An unreadable, expired, or
+future time is ignored, so the item stops working by itself after 2 hours (delete it
+anyway). An alert that only test mode allowed has `details.test_mode = true`.
+
 ### Indexes
 
 `by-type` puts residents and devices in one index, so the `watchdog` role, which only
@@ -327,7 +347,7 @@ Lambdas never log names.
 
 | Index | Hash | Range | Projection | Serves |
 |---|---|---|---|---|
-| `by-type` | `entity_type` | `pk` | INCLUDE `display_name`, `home_id`, `photo_key`, `device_type`, `resident_id` | 4, 8, photo cleanup |
+| `by-type` | `entity_type` | `pk` | INCLUDE `display_name`, `home_id`, `photo_key`, `device_type`, `resident_id` | 4, 8, 27, photo cleanup |
 | `by-resident` | `gsi1_pk` | `gsi1_sk` | INCLUDE `device_type`, `relationship` | 10, 15 |
 
 ## Photos
@@ -459,15 +479,15 @@ gets enough write capacity for every vitals write.
 | `pk` | `RESIDENT#res-0003` | |
 | `sk` | `ALERT#2026-10-18T03:14:07.360Z#6f1c2e0a-5b3d-5e8f-9a47-000000000001` | `ALERT#<event_ts>#<alert_id>` |
 | `alert_id` | `6f1c2e0a-5b3d-5e8f-9a47-000000000001` | UUID v5 of `"<event_ts>\|<alert_type>\|<severity>\|<device_id>"` (docs/features/vitals-alerts.md, criterion 2; items stored before vitals alerts have the older ID without `severity`): deterministic, so retries can't duplicate, and opaque, so the key doesn't reveal the type of health event |
-| `alert_type` | `fall` | health alerts: `fall`, `hr_high`, `hr_low`, `spo2_low`, `skin_temp_high`, `skin_temp_low` (docs/features/vitals-alerts.md); device problems: `device_offline`, `battery_low`, `not_worn` (docs/features/watchdog.md) |
-| `severity` | `critical` | `critical` (falls, device `vitals_alert`) or `warning` (the cloud vitals check; always for device problems). Items stored before vitals alerts have none; they are all falls (critical) |
+| `alert_type` | `fall` | health alerts: `fall`, `hr_high`, `hr_low`, `spo2_low`, `skin_temp_high`, `skin_temp_low` (docs/features/vitals-alerts.md), `possible_fall` (docs/features/possible-fall.md, raised by the watchdog); device problems: `device_offline`, `battery_low`, `not_worn` (docs/features/watchdog.md) |
+| `severity` | `critical` | `critical` (falls, device `vitals_alert`, possible falls) or `warning` (the cloud vitals check; always for device problems). Items stored before vitals alerts have none; they are all falls (critical) |
 | `device_id` | `wearable-0007` | |
 | `event_ts` | `2026-10-18T03:14:07.360Z` | see below |
 | `received_at` | `2026-10-18T03:14:07.410Z` | when the IoT rule received the triggering message (from the alert message) |
 | `created_at` | `2026-10-18T03:14:07.900Z` | when `alert-processor` stored the item |
-| `status` | `open` | `open`, `acknowledged` (health alerts by a nurse; device problems by ops or a caregiver), `cancelled` (health alerts only: the wearable "I'm OK" cancel, docs/features/alert-cancel.md, or a caregiver in the portal, docs/features/alert-routing.md), `resolved` (device problems: by the watchdog when the problem cleared, docs/features/watchdog.md). Anything but `open` stops escalation. Only `alert-processor` changes `open` to `acknowledged`, or `open` / `acknowledged` to `cancelled` or (device problems) `resolved`, through a [status update](#status-updates) |
+| `status` | `open` | `open`, `acknowledged` (health alerts by a nurse; device problems by ops or a caregiver), `cancelled` (health alerts only: the wearable "I'm OK" cancel, docs/features/alert-cancel.md, or a caregiver in the portal, docs/features/alert-routing.md), `resolved` (device problems: by the watchdog when the problem cleared, docs/features/watchdog.md; possible falls: by the watchdog when the resident is back in bed, docs/features/possible-fall.md). Anything but `open` stops escalation. Only `alert-processor` changes `open` to `acknowledged`, or `open` / `acknowledged` to `cancelled` or (device problems) `resolved`, through a [status update](#status-updates) |
 | `source_message_id` | `c2a1d4f0-8b6e-4f0a-a3c9-7e15d2b9f804` | for message-triggered alerts |
-| `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals). Vitals warning: `metric`, `value`, `limit`, `direction`, `previous_value`, e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above", "previous_value": 125}`. Vitals critical: `metric`, `value`, `limit`, `direction`, `held_s` (`hr_low` `value` 0 = no pulse). Device problems (docs/features/watchdog.md, criteria 8, 8a): `device_offline` `{"last_seen": "<ts>"}` plus `"grouped": true` when the watchdog raised 5 or more in one run; `battery_low` `{"battery_pct": 15}` (integer 0-100); `not_worn` `{"since": "<ts>"}` |
+| `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals). Vitals warning: `metric`, `value`, `limit`, `direction`, `previous_value`, e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above", "previous_value": 125}`. Vitals critical: `metric`, `value`, `limit`, `direction`, `held_s` (`hr_low` `value` 0 = no pulse). Device problems (docs/features/watchdog.md, criteria 8, 8a): `device_offline` `{"last_seen": "<ts>"}` plus `"grouped": true` when the watchdog raised 5 or more in one run; `battery_low` `{"battery_pct": 15}` (integer 0-100); `not_worn` `{"since": "<ts>"}`. Possible fall (docs/features/possible-fall.md, criteria 4 and 9): `{"out_of_bed_since": "<event time of the bed → occupied: false entry>", "wearable": "not_worn" \| "no_recent_status" \| "no_wearable"}`, plus `"test_mode": true` only when the alert was allowed by test mode alone (no other fields) |
 | `notified_at` | `2026-10-18T03:14:08.300Z` | set once, after the caregiver SNS email was published (device problems too); guards against a second email on redelivery. Absent for unassigned alerts |
 | `ops_notified_at` | `2026-11-04T02:00:01.200Z` | device problems only (docs/features/watchdog.md, criterion 13): set once, after the email to the ops topic (`silvercare-ops-devices`) was published, with `attribute_not_exists(ops_notified_at)`. Absent on grouped offline alerts (the watchdog emailed ops one summary instead) |
 | `notification` | `skipped_unassigned` | only on unassigned alerts (`pk = RESIDENT#unassigned`): no caregiver is emailed (the nurses are, at once) |
@@ -481,7 +501,7 @@ gets enough write capacity for every vitals write.
 | `cancelled_by` | caregiver `sub` | the caregiver who cancelled; absent when the resident cancelled. The user's name (`by_name`) is never stored |
 | `status_notified_at` | `2026-11-03T02:00:06.100Z` | set once, after the follow-up email(s) for the current `status` (`acknowledged` or `cancelled`) were published, or when nobody is emailed (an unassigned acknowledge) (docs/features/alert-cancel.md, criterion 10); an item with the new `status` but without it gets its follow-up on a retry. A cancel of an acknowledged alert REMOVEs the acknowledge's value, so the cancel's follow-up is tracked on its own |
 | `resolved_by`, `resolved_at` | staff `sub`, timestamp | the `sub` is never returned (see Actor names). `resolved_at` is the resolve's `changed_at`. A watchdog resolve (device problems) has no `resolved_by` |
-| `resolved_by_role` | `system` | who resolved: `system` (the watchdog, when the device problem cleared; docs/features/watchdog.md, criterion 11) |
+| `resolved_by_role` | `system` | who resolved: `system` (the watchdog, when the device problem cleared, docs/features/watchdog.md, criterion 11, or the resident of a possible fall is back in bed, docs/features/possible-fall.md, criterion 8) |
 | `escalates_at` | `2026-10-18T03:19:08.300Z` | *(proposed)* **not stored**: the API adds it to an `open` **warning** from an assigned device that has no `escalated_at` yet, as `notified_at` + 300 s, so the portal can show a countdown to the escalation check (docs/features/escalation.md, alert-routing.md; decided 2026-11-03, delay changed 2026-11-04). Never on critical or unassigned alerts: the nurses are emailed at once and `escalated_at` is set. Approximate: the check runs about 300 s after `escalation_queued_at` |
 | `open_pk` | `OPEN` | present until resolved or cancelled (an acknowledged alert keeps it, so the watchdog still sees an acknowledged device problem and resolves it); removing it takes the alert out of the `open` index |
 | `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days, or `cancelled_at` + 30 days for a cancelled alert. See [Retention](#retention) |
@@ -502,7 +522,7 @@ however many times the same event is processed:
 | device offline | the device's last `status` `ts` (same outage → same key on every watchdog run) |
 | low battery | `ts` of the newest `status` (the one with the low reading) |
 | wearable not worn | the status item's `worn_false_since` |
-| possible fall | `ts` of the `bed` → `occupied: false` event |
+| possible fall | `ts` of the `bed` → `occupied: false` event, or its `received_at` if the entry has `clock_skew = true` (docs/features/possible-fall.md, criterion 2); also `details.out_of_bed_since` |
 
 **Device problems** (docs/features/watchdog.md): the `watchdog` Lambda, every 5 minutes,
 raises `device_offline` (no `status` for more than 15 minutes; a device that never sent
@@ -515,8 +535,26 @@ worn again or charging, or the device is no longer assigned to that resident) wi
 `system` / `resolved` [status update](#status-updates). A not-worn alert stays open
 overnight until the wearable is worn or charged.
 
+**Possible fall** (docs/features/possible-fall.md): in the same run, the `watchdog`
+reads every bedroom unit's newest `bed` and `motion` entry (pattern 5) and the
+test-mode items (pattern 27). An entry's event time is its `ts`, or its `received_at`
+when `clock_skew = true`. For each assigned bedroom unit that is not offline (a unit
+without any `status` is not offline) and has a `bed` entry, it raises a **critical**
+`possible_fall` when the newest `bed` entry is `occupied = false` (event time =
+`vacated_at`), `vacated_at` is in 22:00:00–06:59:59.999 SGT, `now − vacated_at ≥ 20
+min`, the newest `motion` entry is `motion = false` or absent, and none of the
+resident's assigned wearables has a newest `status` with `worn = true` less than 15
+minutes old. Test mode (pattern 27) skips the night window and makes the wait 2 minutes
+for that unit. At most one open possible fall per unit (pattern 9); never grouped. An
+open one is resolved by a `system` / `resolved` status update with `reason =
+back_in_bed` when the unit's newest `bed` entry is `occupied = true` with an event time
+after the alert's `event_ts` (= `out_of_bed_since`); nothing else resolves it
+automatically. `alert-processor` routes it as a critical health alert (caregivers and
+nurses at once, no repeat check, no fall enrichment).
+
 **Repeats** (docs/features/vitals-alerts.md, criteria 17-20): before storing any alert
-except a fall or a device problem, `alert-processor` runs pattern 7 for the 30 minutes up to its
+except a fall, a possible fall (docs/features/possible-fall.md, criterion 10), or a
+device problem, `alert-processor` runs pattern 7 for the 30 minutes up to its
 `event_ts`, alerts at the same `event_ts` included. If an alert with the same `alert_type`, the same `severity`, and a
 different `alert_id` is there (for `unassigned`, also the same `device_id`), the new
 one is **suppressed**: not stored, archived, or emailed, only logged (IDs and outcome
@@ -694,12 +732,38 @@ The watchdog's resolve (synthetic values):
 
 `resolved` is valid only from `system`, and `system` only with `resolved`.
 
+`reason` (docs/features/possible-fall.md, criterion 7) is an optional field allowed
+only on a `system` update, and only with the value `back_in_bed` (any other value, or
+the key on any other role's update, is invalid). The watchdog sends it on the resolve
+of a possible fall:
+
+```json
+{
+  "kind": "status_update",
+  "schema_version": 1,
+  "resident_id": "res-0003",
+  "new_status": "resolved",
+  "changed_at": "2026-11-04T16:05:00.000Z",
+  "by_role": "system",
+  "by": null,
+  "by_name": null,
+  "reason": "back_in_bed",
+  "target": { "alert_id": "6f1c2e0a-5b3d-5e8f-9a47-000000000003", "event_ts": "2026-11-04T15:40:00.000Z" }
+}
+```
+
+A device-problem resolve keeps the shape above **without** the `reason` key, so the
+watchdog's existing resolves stay valid; a `system` resolve with `reason` on a device
+problem, or without it on a possible fall, is `not_allowed` (checked after reading the
+target).
+
 **Which role may change which type** (docs/features/watchdog.md, criterion 14a), checked
 by `alert-processor` after reading the target (it can't be checked earlier):
 
 | Alert type | Allowed |
 |---|---|
-| device problems (`device_offline`, `battery_low`, `not_worn`) | `ops` or `caregiver` `acknowledged`; `system` `resolved` |
+| device problems (`device_offline`, `battery_low`, `not_worn`) | `ops` or `caregiver` `acknowledged`; `system` `resolved` (no `reason`) |
+| `possible_fall` (docs/features/possible-fall.md, criterion 12) | `nurse` `acknowledged`; `resident` or `caregiver` `cancelled`; `system` `resolved` with `reason = back_in_bed` |
 | health alerts (every other type) | `nurse` `acknowledged`; `resident` or `caregiver` `cancelled` |
 
 Anything else (e.g. a nurse acknowledging a low battery, a caregiver cancelling one, ops
@@ -716,7 +780,8 @@ acknowledging a fall): nothing changes, no email, outcome `not_allowed`, not a f
 | `by` | `null` for `resident` and `system`; the caller's Cognito `sub` (a lowercase UUID) for `caregiver` / `nurse` / `ops`, from the verified token |
 | `by_name` | only for `caregiver`: the `name` claim of the verified token, 1-100 characters, not only spaces, no control characters. Used only to build the masked name in the email; never stored, logged, or emailed in full. `null` for every other role |
 | `note` | only for `nurse`, optional: absent or `null` means no note; else a string of 1-500 characters, not only whitespace, no control or other non-printing characters (Unicode category C, e.g. bidi overrides, zero-width spaces, and the line/paragraph separators U+2028/U+2029) except newline (`\n`). Each line is emailed quoted with `> `. Stored as `ack_note`, emailed to caregivers, never logged. A cancel must not have the key |
-| `target` | `{"device_id"}` (every open or acknowledged alert from that device up to `changed_at`) or `{"alert_id", "event_ts"}` (one alert) |
+| `reason` | only for `system`, optional: absent (device-problem resolve) or `back_in_bed` (possible-fall resolve, docs/features/possible-fall.md, criterion 7). Any other value, `null`, or the key on another role's update is invalid |
+| `target` | `{"device_id"}` (every open or acknowledged alert from that device up to `changed_at`, plus, for a wearable, the resident's possible falls) or `{"alert_id", "event_ts"}` (one alert) |
 
 - Any other combination or an unknown field is invalid: it fails the record and ends
   in `silvercare-alerts-dlq` (where `by_name` and `note` can stay up to 14 days).
@@ -738,7 +803,9 @@ acknowledging a fall): nothing changes, no email, outcome `not_allowed`, not a f
     `status = resolved`, `resolved_at` (`changed_at`), `resolved_by_role = system`,
     `expires_at = changed_at + 30 days`, and REMOVEs `open_pk`. Keeps the acknowledge's
     fields. **No follow-up email** and no `status_notified_at`; an alert already
-    resolved (or missing) ends `not_open`.
+    resolved (or missing) ends `not_open`. A possible fall's back-in-bed resolve
+    (`reason = back_in_bed`, docs/features/possible-fall.md, criterion 8) is applied
+    the same way but does get a follow-up (below).
   A failed condition skips that alert without an email.
 - Then the follow-up (one email per alert, then `SET status_notified_at` with
   `attribute_not_exists(status_notified_at)`):
@@ -756,7 +823,14 @@ acknowledging a fall): nothing changes, no email, outcome `not_allowed`, not a f
     nurses. Subject `SilverCare update: <label> - <device_id> (<resident_id>)
     acknowledged`; first line `The device problem below was acknowledged by the ops team
     at <time> SGT.` or `... by Ta* Me* Li** (caregiver) at ...`, then the device-problem
-    lines (type, device, resident, detail line).
+    lines (type, device, resident, detail line);
+  - back-in-bed resolve of a possible fall: the caregivers (`silvercare-alerts`,
+    `resident_id` attribute; not for `unassigned`) and, if the item has
+    `escalated_at`, the nurses (`silvercare-nurses`). Subject `SilverCare update:
+    Possible fall - <resident_id> resolved`; first line `The alert below was resolved
+    at <changed_at> SGT: the resident is back in bed.`, then the usual lines. An item
+    already `resolved` by `system` without `status_notified_at` gets its follow-up on
+    a retry.
   An unassigned alert's follow-up adds `Device: <device_id>`, or `Device: invalid`. An
   item that already has the new `status` from the same kind of update (the resident;
   or the same caregiver, nurse, or ops `sub`) but no `status_notified_at` gets its
@@ -787,11 +861,15 @@ and Athena (docs/features/ingest-history.md; the History path in
   so a delete really deletes (e.g. for a PDPA erasure request). One lifecycle rule:
   abort incomplete multipart uploads after 1 day. Retention is decided (see
   [Retention](#retention)) but not in Terraform yet: `telemetry/` needs an expiry
-  rule at 365 days *(proposed)*, added only once daily summaries exist.
+  rule at 365 days *(proposed)*, added only once daily summaries exist. The clean job must
+  refuse dates older than that limit in the same change: a re-run deletes a date's output
+  first, so with its raw files gone it would leave that date empty.
 - **Key layout:**
   `telemetry/message=<message>/date=<yyyy-mm-dd>/<yyyymmddTHHMMSSZ>-<uuid4>.jsonl.gz`.
-  `<message>` is the body's `message` if it matches `^[a-z]{1,16}$`, else `unknown`;
-  bodies that aren't a JSON object go to `unparseable`. `<date>` is the UTC date of
+  `<message>` is the body's `message` if it matches `^[a-z_]{1,16}$`, else `unknown`;
+  bodies that aren't a JSON object go to `unparseable`. Files written before underscores
+  were allowed hold `vitals_alert` and `alert_cancel` under `unknown`, the only names this
+  affected; they aren't moved, and the clean job reads them from there. `<date>` is the UTC date of
   `received_at` (else the SQS sent time). The timestamp is when the file was written;
   the UUID is random, so keys hold no device or resident IDs.
 - **Alerts:** `alerts/date=<yyyy-mm-dd>/<alert_id>.json`, one object per alert:
@@ -829,8 +907,83 @@ and Athena (docs/features/ingest-history.md; the History path in
   queue. It may only add objects under `telemetry/`. `alert-processor` writes
   `alerts/` only.
 - **Readers:** developers (the shared IAM user's `ReadProjectBuckets` statement; read
-  only, no write or delete), e.g. `scripts/ingest-check.py --history`. Lake Formation
-  and Athena later.
+  only, no write or delete), e.g. `scripts/ingest-check.py --history`. The `clean`
+  Lambda, through Athena, reads `telemetry/` only (see [S3 clean layer](#s3-clean-layer)).
+
+## S3 clean layer
+
+The first layer of the data lake (raw → clean → curated), built by the daily `clean`
+Lambda from one UTC day of `telemetry/` (docs/features/clean-data.md). Raw files are
+never changed. Clean data identifies devices only: linking to residents is for the later
+curated layer. No DynamoDB access, so no RCU or WCU use.
+
+- **Buckets** in `ap-southeast-1`, both with all public access blocked,
+  `BucketOwnerEnforced`, SSE-S3, a TLS-only bucket policy, and versioning off:
+  - `silvercare-clean-<account_id>`: `tables/<table>/date=<yyyy-mm-dd>/`, Parquet
+    (Snappy). Expires at 365 days *(proposed)*, see [Retention](#retention).
+  - `silvercare-athena-results-<account_id>`: `clean/` for the Lambda, `analysis/` for
+    developers. Objects expire after 7 days.
+- **Glue database** `silvercare_lake`:
+  - `raw_telemetry`: one `line string` column (text input, gzip read automatically),
+    partitioned by `message` and `date`, at `s3://silvercare-history-<account_id>/telemetry/`.
+    `alerts/` is not part of it.
+  - The eight clean tables and `rejected` below, each partitioned by `date` (the raw
+    file's `date`, from `received_at`).
+
+| Table | From raw `message` | Columns besides the common ones |
+|---|---|---|
+| `vitals` | `vitals` | `hr_bpm` int, `spo2_pct` int, `skin_temp_c` double, `activity_pct` int, `accel_g` string (JSON), `accel_valid` boolean |
+| `vitals_alert` | `vitals_alert` | `metric` string, `value` int, `limit` int, `direction` string, `held_s` int |
+| `fall` | `fall` | `confidence` double, `peak_g` double, `still_s` int, `accel_window` string (JSON), `accel_valid` boolean |
+| `alert_cancel` | `alert_cancel` | none |
+| `wearable_status` | `status`, wearable | `battery_pct` int, `worn` boolean, `charging` boolean, `fw_version` string |
+| `bedroom_status` | `status`, bedroom | `battery_pct` int, `fw_version` string |
+| `motion` | `motion` | `motion` boolean |
+| `bed` | `bed` | `occupied` boolean |
+
+- **Common columns:** `message_id` string, `device_id` string, `ts` timestamp,
+  `received_at` timestamp, `schema_version` int, `clock_skew` boolean (`ts` more than 5
+  minutes from `received_at`).
+- **What is kept:** a line is in a clean table only if ingest's `validate_event` would
+  accept it, ignoring its accelerometer checks. A line under `unknown` whose `message`
+  names a contract type is processed as that type, for that date. Within a table and date
+  the earliest `received_at` per `message_id` is kept, across the type's own partition and
+  `unknown`; a duplicate landing on another date isn't removed.
+- **Fields:** unknown fields are dropped, at the top level and inside the accelerometer
+  columns, which are rebuilt from known fields only. `accel_g` is `{"x":…,"y":…,"z":…}`,
+  with `accel_valid` true when all three are numbers from −16 to 16. `accel_window` is
+  `hz`, `start_offset_ms`, and `samples`, with `accel_valid` true when they are 25, −1000,
+  and 50 arrays of 3 numbers from −16 to 16. Otherwise `accel_valid` is false and the
+  column is null, and the message stays in its table.
+- **`rejected`:** `message` (the raw partition), `reason`, `raw_line`, and `date`. Every
+  line that fails validation, every line under `unparseable`, and every line under
+  `unknown` that doesn't name a contract type (`unknown_message`), exact duplicates once.
+  `reason` uses ingest's `Rejection` strings plus `unknown_message` and `unparseable`.
+  `raw_line` holds the message as received.
+- **Writes:** for each table the job deletes the date's folder, then writes it again, so
+  a re-run replaces that date. It is the only writer.
+- **Access:**
+
+  | Who | Through Athena and the catalog (Lake Formation) | Direct S3 |
+  |---|---|---|
+  | `silvercare-clean` role | runs queries in `silvercare-clean`; reads `raw_telemetry`, adds partitions | read `telemetry/` (no write or delete); list, write, and delete `tables/` in the clean bucket; own results prefix |
+  | Developers | run queries in `silvercare-analysis`; the eight clean tables only, not `raw_telemetry` or `rejected` | read everything, including `rejected` and raw, through `ReadProjectBuckets`; write only to `analysis/` results |
+
+  Lake Formation doesn't limit direct S3 reads. That matches today's rule while all data
+  is synthetic.
+- **Retention:** clean tables, `rejected` included, expire 365 days after a file is
+  written *(proposed, see [Retention](#retention))*. Athena result files last 7 days; Athena keeps query text in its history for 45 days.
+- **Erasure: not solved.** Raw files batch many devices together, so erasing one device
+  means rewriting those files without it and re-running the affected dates. Those rewrites
+  restart the expiry clock for every other device on those dates, so the tool must account
+  for that. `unparseable` lines have no parsed `device_id`, but `raw_body` may still contain
+  one as text, so the tool must search that text or rely on expiry. Athena results and
+  query history age out rather than being erased.
+- **Before any real resident data arrives:**
+  - the per-device erasure tool above exists
+  - direct S3 reads can be traced (who read which object, when): none are recorded today
+  - the shared developer user and its read access are reviewed
+  - raw telemetry's expiry rule exists
 
 ## Capacity
 
@@ -844,7 +997,7 @@ read of up to 4 KB per second, or two eventually consistent ones.
 | latest reads (write rule step 1) | ~0.5/s × 1 RCU ≈ **0.5 RCU** |
 | `by-message` index writes | vitals 0.33/s + status/bed/motion 0.15/s, 1 WCU each ≈ **0.5 WCU** |
 | registry reads | cached in Lambdas; dashboards ≈ **< 1 RCU** |
-| `watchdog` (every 5 min) | eventually consistent Queries of `by-type` (~40 devices), `by-message` `status` (~40 items, a few KB), and `open`, plus one BatchGetItem for wearables off the wrist: a few RCU per run, about 1 run per 300 s ≈ **< 0.1 RCU** on average |
+| `watchdog` (every 5 min) | eventually consistent Queries of `by-type` (~40 devices, plus `TEST_MODE`, normally empty), `by-message` `status` (~40 items, a few KB), `bed` and `motion` (~20 items each), and `open`, plus one BatchGetItem for wearables off the wrist: a few RCU per run, about 1 run per 300 s ≈ **< 0.1 RCU** on average |
 | alerts | rare writes (plus up to two escalation UpdateItems per alert: `escalated_at` at once for critical and unassigned alerts, or `escalation_queued_at` and `escalated_at` for warnings; and two per alert a status update changes); one strongly consistent Query per non-fall alert (repeat check) and per `alert_cancel` (pattern 24, rare), one strongly consistent GetItem per escalation check, per acknowledge, and per caregiver cancel; dashboard polling ≈ **< 1 RCU** |
 
 Provisioned (fixed, no auto scaling):
@@ -906,6 +1059,8 @@ critical-alert and `silvercare-iot-rules`.
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
 | Threshold change history *(proposed)* | the resident's lifetime + 6 years (MOH Circular 85/2022); kept after offboarding | TTL `expires_at` = date of death + 6 years, set when a date of death is recorded (no field for it yet); no expiry until then |
 | History (S3 `telemetry/`, raw) | daily summaries made by 90 days, raw deleted at 365 days *(both proposed)* | S3 lifecycle expiry on `telemetry/` at 365 days (not in Terraform yet) |
+| Clean tables (S3 `silvercare-clean-<account_id>`, `tables/`, `rejected` included) | 365 days after a file is written *(proposed)*, matching raw; re-running a date restarts its clock | S3 lifecycle expiry on `tables/` |
+| Athena results and query history | result files 7 days; query text 45 days (AWS's fixed limit) | S3 lifecycle expiry; AWS ages out the history |
 | Alert copies and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; finding one resident's objects and the date of death are gaps (see [S3 history](#s3-history)); no expiry rule until then |
 | Failed fall and `vitals_alert` events (SQS `silvercare-critical-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
 | Latest device `vitals_alert`s | 5 per device | write rule |

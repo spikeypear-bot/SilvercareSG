@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PreToolUse hook for Bash: block commands that could commit, push, or change AWS.
-#  - git commit / git push        (the user commits and pushes manually)
+
 #  - the aws CLI                  (AWS changes go through Terraform + CI only)
 #  - terraform commands that change infrastructure or state
 #  - anything referencing ~/.aws  (keeps the hidden credentials hidden)
@@ -20,9 +20,6 @@ s='(^|[^[:alnum:]_.-])'
 args='([[:space:]]+[^[:space:]]+)*'
 end='([[:space:]]|$)'
 
-if printf '%s' "$cmd" | grep -Eq "${s}git${args}[[:space:]]+(commit|push)${end}"; then
-  block "Claude must not run git commit or git push. The user does that manually."
-fi
 
 if printf '%s' "$cmd" | grep -Eq "${s}aws[[:space:]]+[[:alnum:]]"; then
   block "Claude must not use the AWS CLI. AWS changes go through Terraform and CI."

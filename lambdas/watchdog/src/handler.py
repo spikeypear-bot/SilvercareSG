@@ -10,8 +10,15 @@ content is not used). Each run starts fresh from DynamoDB, so nothing is carried
      pattern 5);
    - every open alert (alerts `open`, Query open_pk = OPEN, pattern 9);
    - for wearables whose newest status has worn = false, a BatchGetItem of their
-     MSG#status items for worn_false_since (written by device-health).
-2. Decide (checks.plan): device problems to raise, open device problems to resolve.
+     MSG#status items for worn_false_since (written by device-health);
+   - every bedroom unit's newest bed and motion entry (latest `by-message`, Query
+     watch_type = bed and = motion, pattern 5; docs/features/possible-fall.md,
+     criterion 1);
+   - the test-mode items (registry `by-type`, Query entity_type = TEST_MODE,
+     possible-fall criterion 3a; usually none).
+2. Decide (checks.plan): device problems and possible falls to raise, open ones to
+   resolve (a possible fall when the resident is back in bed, with reason
+   back_in_bed).
 3. If 5 or more devices are newly offline, Publish one summary email to silvercare-ops-devices
    first (a failure fails the run before any alert is sent, so the retry sends it
    again rather than never).
@@ -25,7 +32,8 @@ alert; a second resolve of the same alert ends not_open in alert-processor.
 
 Logs: one line per raised or resolved alert (alert_id, alert_type, device_id,
 resident_id) and one summary line per run (devices checked, raised and resolved per
-type, grouped). Never battery values, timestamps, or details.
+type including possible_fall, grouped, test_mode_units). Never battery values,
+timestamps (bed or motion times), worn state, or details.
 """
 
 from __future__ import annotations
@@ -49,6 +57,7 @@ LOG_MESSAGE = "watchdog"
 REGISTRY_INDEX = "by-type"
 LATEST_INDEX = "by-message"
 ALERTS_INDEX = "open"
+TEST_MODE = "TEST_MODE"
 BATCH_GET_MAX_KEYS = 100
 # BatchGetItem may return UnprocessedKeys (e.g. throttling): retry them a few times
 # with a short back-off, then fail the run.
@@ -162,9 +171,56 @@ def read_statuses() -> dict[str, checks.Status]:
     return statuses
 
 
+def read_bedroom_entries(
+    watch_type: str, field_name: str
+) -> dict[str, checks.BedroomEntry]:
+    """Pattern 5 (possible-fall criterion 1): every bedroom unit's newest `bed` or
+    `motion` entry, by device_id (malformed items are skipped)."""
+    items = query_all(
+        {
+            "TableName": os.environ["LATEST_TABLE"],
+            "IndexName": LATEST_INDEX,
+            "KeyConditionExpression": "#watch = :type",
+            "ExpressionAttributeNames": {
+                "#watch": "watch_type",
+                "#pk": "pk",
+                "#latest": "latest",
+            },
+            "ExpressionAttributeValues": {":type": {"S": watch_type}},
+            "ProjectionExpression": "#pk, #latest",
+        }
+    )
+    entries: dict[str, checks.BedroomEntry] = {}
+    for item in items:
+        parsed = checks.bedroom_entry_from_item(item, field_name)
+        if parsed is not None:
+            entries[parsed[0]] = parsed[1]
+    return entries
+
+
+def read_test_mode(now: datetime) -> frozenset[str]:
+    """Possible-fall criterion 3a: the bedroom units in test mode (registry by-type,
+    entity_type = TEST_MODE; invalid, expired, and future items are ignored)."""
+    items = query_all(
+        {
+            "TableName": os.environ["REGISTRY_TABLE"],
+            "IndexName": REGISTRY_INDEX,
+            "KeyConditionExpression": "#type = :test_mode",
+            "ExpressionAttributeNames": {
+                "#type": "entity_type",
+                "#pk": "pk",
+                "#sk": "sk",
+            },
+            "ExpressionAttributeValues": {":test_mode": {"S": TEST_MODE}},
+            "ProjectionExpression": "#pk, #sk",
+        }
+    )
+    return checks.units_in_test_mode(items, now)
+
+
 def read_open_alerts() -> list[checks.OpenAlert]:
-    """Pattern 9: every open or acknowledged device-problem alert (other types are
-    read but dropped)."""
+    """Pattern 9: every open or acknowledged device-problem and possible_fall alert
+    (other types are read but dropped)."""
     items = query_all(
         {
             "TableName": os.environ["ALERTS_TABLE"],
@@ -269,7 +325,7 @@ def send_status_update(message: dict[str, Any]) -> None:
 
 
 def _counts(alert_types: list[str]) -> dict[str, int]:
-    return {t: alert_types.count(t) for t in checks.DEVICE_PROBLEM_TYPES}
+    return {t: alert_types.count(t) for t in checks.WATCHDOG_TYPES}
 
 
 def run(now: datetime) -> dict[str, Any]:
@@ -278,8 +334,20 @@ def run(now: datetime) -> dict[str, Any]:
     statuses = read_statuses()
     open_alerts = read_open_alerts()
     worn_since = read_worn_since(off_wrist_wearables(devices, statuses))
+    beds = read_bedroom_entries("bed", "occupied")
+    motions = read_bedroom_entries("motion", "motion")
+    test_mode = read_test_mode(now)
 
-    decided = checks.plan(devices, statuses, worn_since, open_alerts, now)
+    decided = checks.plan(
+        devices,
+        statuses,
+        worn_since,
+        open_alerts,
+        now,
+        beds=beds,
+        motions=motions,
+        test_mode=test_mode,
+    )
 
     if decided.grouped:
         publish_summary(decided.raise_alerts)
@@ -316,6 +384,7 @@ def run(now: datetime) -> dict[str, Any]:
         "raised": _counts([p.alert_type for p in decided.raise_alerts]),
         "resolved": _counts([a.alert_type for a in decided.resolve]),
         "grouped": decided.grouped,
+        "test_mode_units": decided.test_mode_units,
     }
 
 

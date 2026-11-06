@@ -1,0 +1,75 @@
+{
+  "tables": {
+    "vitals": {
+      "raw_message": "vitals",
+      "device": "wearable",
+      "accel": "accel_g",
+      "fields": [
+        { "name": "hr_bpm", "kind": "int", "nullable": true, "min": 20, "max": 250 },
+        { "name": "spo2_pct", "kind": "int", "nullable": true, "min": 50, "max": 100 },
+        { "name": "skin_temp_c", "kind": "number", "nullable": true, "min": 20.0, "max": 45.0 },
+        { "name": "activity_pct", "kind": "int", "min": 0, "max": 100 }
+      ]
+    },
+    "vitals_alert": {
+      "raw_message": "vitals_alert",
+      "device": "wearable",
+      "accel": null,
+      "fields": [
+        { "name": "metric", "kind": "str", "max_len": 16 },
+        { "name": "value", "kind": "int" },
+        { "name": "limit", "kind": "int" },
+        { "name": "direction", "kind": "str", "max_len": 16 },
+        { "name": "held_s", "kind": "int", "min": 10, "max": 600 }
+      ]
+    },
+    "fall": {
+      "raw_message": "fall",
+      "device": "wearable",
+      "accel": "accel_window",
+      "fields": [
+        { "name": "confidence", "kind": "number", "min": 0.0, "max": 1.0 },
+        { "name": "peak_g", "kind": "number", "min": 0, "max": 16 },
+        { "name": "still_s", "kind": "int", "min": 0, "max": 600 }
+      ]
+    },
+    "alert_cancel": {
+      "raw_message": "alert_cancel",
+      "device": "wearable",
+      "accel": null,
+      "fields": []
+    },
+    "wearable_status": {
+      "raw_message": "status",
+      "device": "wearable",
+      "accel": null,
+      "fields": [
+        { "name": "battery_pct", "kind": "int", "min": 0, "max": 100 },
+        { "name": "worn", "kind": "bool" },
+        { "name": "charging", "kind": "bool" },
+        { "name": "fw_version", "kind": "str", "max_len": 32 }
+      ]
+    },
+    "bedroom_status": {
+      "raw_message": "status",
+      "device": "bedroom",
+      "accel": null,
+      "fields": [
+        { "name": "battery_pct", "kind": "int", "nullable": true, "min": 0, "max": 100 },
+        { "name": "fw_version", "kind": "str", "max_len": 32 }
+      ]
+    },
+    "motion": {
+      "raw_message": "motion",
+      "device": "bedroom",
+      "accel": null,
+      "fields": [{ "name": "motion", "kind": "bool" }]
+    },
+    "bed": {
+      "raw_message": "bed",
+      "device": "bedroom",
+      "accel": null,
+      "fields": [{ "name": "occupied", "kind": "bool" }]
+    }
+  }
+}

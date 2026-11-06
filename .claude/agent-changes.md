@@ -3,7 +3,44 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-06
+
+- **Problem:** the demo bed data treated a possible fall as open with
+  `status !== 'resolved'`, so a cancelled one still showed the resident out of bed
+  (found by frontend-tester, no test covered it). **Changed:**
+  `.claude/skills/frontend/SKILL.md` (Rules): decide "still open" with `isOnOpenList`,
+  never by excluding `resolved`.
+
+- **Problem:** integration tests couldn't start DynamoDB Local because host port 8000
+  was taken by another project's container, and the first workaround failed (a
+  `docker compose run` container has no `dynamodb-local` alias). **Changed:**
+  `.claude/skills/local-dev/SKILL.md` (Windows paragraph): run an unpublished DynamoDB
+  Local by name and point `DYNAMODB_ENDPOINT` at it.
+- **Problem:** the clean job's SQL passed on local Trino but rejected every valid line on
+  real Athena, with `try()` hiding the error. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md` (Rules): local Trino isn't proof, so the owner runs
+  new functions on real Athena before merging.
+- **Problem:** a `data` lookup of an IAM group that `CLAUDE.md` said existed failed the PR
+  plan, because the group had never been made. **Changed:**
+  `.claude/skills/tf-change/SKILL.md` (Rules): the owner confirms such names in AWS before
+  the first push, since docs aren't proof.
+- **Problem:** three clean-data gaps: a Lake Formation grant on a `default` database that
+  didn't exist would have failed the apply, the deploy plan step left stderr unredacted in
+  a public log, and the plan role could probably read Athena query text. **Changed:**
+  `.claude/skills/tf-change/SKILL.md` (Rules): confirm or create names Terraform doesn't
+  create, redact stderr in workflow steps, extend `DenyDataReads` for new data services.
+
 ## 2026-11-04
+
+- **Problem:** the lambda-tester temporarily edited ingest's source to prove a test, then
+  restored it. **Changed:** `.claude/agents/lambda-tester.md`: no source edits even
+  temporarily; use `monkeypatch` or a copy under `tmp_path`.
+
+- **Problem:** the clean-data spec draft misstated existing accelerometer validation,
+  repeated an AWS role limit from memory, had a pointer to a missing open question, and
+  had an erasure plan that didn't fit batched raw files; only the design check caught
+  them. **Changed:** `.claude/skills/feature-spec/SKILL.md` (readiness checklist): verify
+  claims in running code and AWS docs, match pointers, and check erasure against storage.
 
 - **Problem:** twice, Claude's inline Python heredoc that edited TypeScript tests failed
   with "unexpected EOF" because the script contained backticks (template literals), and
@@ -29,6 +66,14 @@ a wasted step. Newest first. Review these in the diff before committing.
   without its spec's Privacy section saying so (privacy-reviewer, low). **Changed:**
   `.claude/skills/frontend/SKILL.md`: component files export only components; new
   personal data on a screen updates that spec's Privacy section in the same change.
+
+- **Problem:** in `possible-fall`, a back-in-bed resolve used the bedroom unit's data
+  without checking the unit was still the alert's resident's, and "I'm OK" used a
+  5-minute cached device → resident lookup, so after a reassignment one resident's data
+  could close (and email about) another's alert (found by privacy-reviewer).
+  **Changed:** `.claude/skills/feature-spec/SKILL.md`: checklist item on device
+  reassignment for anything acting on alerts with device data. (Fix: resident check in
+  the watchdog, uncached lookup for `alert_cancel`.)
 
 - **Problem:** for `watchdog`, Claude offered the user only "unencrypted ops topic" or
   "paid KMS key"; privacy-reviewer pointed out the free option (a separate `aws/sns`

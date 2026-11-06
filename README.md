@@ -297,3 +297,32 @@ Device-problem emails come from their own topic, `silvercare-ops-devices` (encry
 ops subscriber gets one more AWS "Subscription Confirmation" email: confirm it, or
 device problems reach caregivers only. The `silvercare-watchdog-not-running` alarm
 emails ops if the watchdog hasn't run for 15 minutes.
+
+### Possible fall at night
+
+The watchdog also raises a **critical** "Possible fall" (caregivers and nurses at once)
+when a bedroom unit's bed was vacated between 22:00 and 07:00 SGT, has been empty for
+20 minutes, nothing is moving in the bedroom, and the resident's wearable isn't worn
+(or has sent nothing for 15 minutes, or there is none). It resolves itself when the
+resident is back in bed, with a "resolved: the resident is back in bed" email, and
+"I'm OK" on the wearable cancels it (`docs/features/possible-fall.md`).
+
+Live check at any time of day, with a resident whose wearable the simulator isn't
+sending for (e.g. `res-0003`):
+
+```sh
+make smoke-test DEVICE=bedroom-0003 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) POSSIBLE_FALL=1
+```
+
+It prints a **test-mode item**: create it in DynamoDB → `silvercare-registry` →
+Create item (JSON view). For that unit only, any time counts as night and the wait is
+2 minutes; the item stops working 2 hours after the time in its `sk`. Within about
+2–7 minutes, "SilverCare CRITICAL alert: Possible fall - res-0003" (with `Test mode:
+yes`) reaches `res-0003`'s caregivers and the nurses. Then:
+
+```sh
+make smoke-test DEVICE=bedroom-0003 ENDPOINT=$(terraform -chdir=infra output -raw iot_endpoint) BACK_IN_BED=1
+```
+
+Within 5 minutes, "SilverCare update: Possible fall - res-0003 resolved" reaches the
+same people. Delete the test-mode item afterwards.

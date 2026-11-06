@@ -85,5 +85,9 @@ For alert logic: thresholds at, just below, and just above each boundary.
 - Write invisible or control characters in tests as escapes (`"\u200b"`, `"\u202e"`),
   and check the saved file still has the escape: some editors save the raw character,
   which ruff rejects (PLE2502/PLE2515). Run `ruff check` on new test files.
+- SQL that passes on local Trino isn't proven for Athena, which runs an older engine.
+  `try()` and `try_cast` turn its errors into NULLs, so a difference can look like bad
+  data rather than a failed query. Have the owner run new functions on real Athena
+  before merging.
 - One behaviour per test. Name tests after the behaviour:
   `test_duplicate_reading_is_not_written_twice`.

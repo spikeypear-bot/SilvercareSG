@@ -156,3 +156,104 @@ def put_alert(
         item["open_pk"] = "OPEN"
     ddb.put_item(TableName=ALERTS_TABLE, Item=_ser(item))
     return item
+
+
+# ---- possible fall (docs/features/possible-fall.md) ----
+
+BEDROOM_2 = "bedroom-0002"
+BED_ID = "00000000-0000-4000-8000-0000000000b1"
+MOTION_ID = "00000000-0000-4000-8000-0000000000c1"
+
+
+def sgt(
+    hour: int,
+    minute: int = 0,
+    second: int = 0,
+    ms: int = 0,
+    day: int = 5,
+) -> datetime:
+    """2026-11-<day> hour:minute:second.ms SGT, as UTC."""
+    return datetime(
+        2026, 11, day, hour, minute, second, ms * 1000, tzinfo=checks.SGT
+    ).astimezone(UTC)
+
+
+def bedroom_latest(
+    field_name: str, value: Any, ts: str, message_id: str, **fields: Any
+) -> dict[str, Any]:
+    """A newest bed (field_name "occupied") or motion entry, sent at `ts`."""
+    entry: dict[str, Any] = {
+        "message_id": message_id,
+        "ts": ts,
+        "received_at": ts,
+        "clock_skew": False,
+        field_name: value,
+    }
+    entry.update(fields)
+    return entry
+
+
+def bed_entry(occupied: bool, ts: str, **fields: Any) -> checks.BedroomEntry:
+    item = {
+        "pk": f"DEVICE#{BEDROOM}",
+        "latest": bedroom_latest(
+            "occupied", occupied, ts, fields.pop("message_id", BED_ID), **fields
+        ),
+    }
+    parsed = checks.bedroom_entry_from_item(item, "occupied")
+    assert parsed is not None
+    return parsed[1]
+
+
+def motion_entry(motion: bool, ts: str, **fields: Any) -> checks.BedroomEntry:
+    item = {
+        "pk": f"DEVICE#{BEDROOM}",
+        "latest": bedroom_latest(
+            "motion", motion, ts, fields.pop("message_id", MOTION_ID), **fields
+        ),
+    }
+    parsed = checks.bedroom_entry_from_item(item, "motion")
+    assert parsed is not None
+    return parsed[1]
+
+
+def _put_bedroom(ddb, device_id, watch_type, field_name, value, ts, message_id, fields):
+    entry = bedroom_latest(field_name, value, ts, message_id, **fields)
+    item: dict[str, Any] = {
+        "pk": f"DEVICE#{device_id}",
+        "sk": f"MSG#{watch_type}",
+        "device_type": "bedroom",
+        "entries": [entry],
+        "latest": entry,
+        "latest_ts": entry["ts"],
+        "version": 1,
+        "watch_type": watch_type,
+    }
+    ddb.put_item(TableName=LATEST_TABLE, Item=_ser(item))
+    return entry
+
+
+def put_bed(
+    ddb, device_id: str, occupied: bool, ts: str, **fields: Any
+) -> dict[str, Any]:
+    """A MSG#bed item as ingest writes it (watch_type bed)."""
+    return _put_bedroom(ddb, device_id, "bed", "occupied", occupied, ts, BED_ID, fields)
+
+
+def put_motion(
+    ddb, device_id: str, motion: bool, ts: str, **fields: Any
+) -> dict[str, Any]:
+    """A MSG#motion item as ingest writes it (watch_type motion)."""
+    return _put_bedroom(
+        ddb, device_id, "motion", "motion", motion, ts, MOTION_ID, fields
+    )
+
+
+def put_test_mode(ddb, device_id: str, set_at: str) -> None:
+    """The registry TEST_MODE item a developer creates by hand (criterion 3a)."""
+    item = {
+        "pk": f"DEVICE#{device_id}",
+        "sk": f"TEST_MODE#{set_at}",
+        "entity_type": "TEST_MODE",
+    }
+    ddb.put_item(TableName=REGISTRY_TABLE, Item=_ser(item))

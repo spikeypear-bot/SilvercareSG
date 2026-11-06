@@ -92,6 +92,15 @@ cleared) is conditional on open or acknowledged, sets resolved_at, resolved_by_r
 expires_at, REMOVEs open_pk, and sends no email. The resident's "I'm OK" Query skips
 the three device-problem types, so they stay open.
 
+Possible falls (docs/features/possible-fall.md, criteria 8-13) are critical health
+alerts from the watchdog: no repeat check, no fall enrichment, caregivers and nurses at
+once. Besides the health-alert changes they take the system resolve with reason
+back_in_bed (a system resolve with a reason is not_allowed on a device problem, and
+one without a reason is not_allowed on a possible fall), which sends a follow-up to
+the caregivers and, if the item has escalated_at, the nurses, then SET
+status_notified_at once (retried like a cancel's). A wearable's "I'm OK" also cancels
+the resident's open or acknowledged possible falls, whatever device raised them.
+
 Any AWS error fails only that record. Logs hold one line per record with alert_id,
 alert_type, severity, device_id, resident_id, and the outcome (plus a reason or error
 code; new alerts add nurses; checks add kind and escalation_delay_ms; status updates log
@@ -125,6 +134,8 @@ from message import (
     KIND_ESCALATION_CHECK,
     KIND_STATUS_UPDATE,
     NOT_WORN,
+    POSSIBLE_FALL,
+    REASON_BACK_IN_BED,
     ROLE_CAREGIVER,
     ROLE_NURSE,
     ROLE_OPS,
@@ -157,7 +168,9 @@ LATENCY_METRIC = "AlertDispatchLatency"
 
 # Repeat suppression (vitals-alerts criteria 17-19).
 REPEAT_WINDOW = timedelta(minutes=30)
-NEVER_SUPPRESSED = frozenset({"fall"})
+# Falls and possible falls (docs/features/possible-fall.md, criterion 10): each event
+# is a separate emergency.
+NEVER_SUPPRESSED = frozenset({"fall", POSSIBLE_FALL})
 
 STORED = "stored"
 DUPLICATE = "duplicate"
@@ -917,15 +930,32 @@ def is_device_problem(item: dict[str, Any]) -> bool:
     return item.get("alert_type") in DEVICE_PROBLEM_TYPES
 
 
-def is_allowed(item: dict[str, Any], update: StatusUpdate) -> bool:
-    """Watchdog criterion 14a: device problems take only an ops or caregiver
-    acknowledge and the system resolve; every other alert (health alerts, or an item
-    without a known type) only a nurse acknowledge and a resident or caregiver
-    cancel."""
-    allowed = (
-        DEVICE_PROBLEM_CHANGES if is_device_problem(item) else HEALTH_ALERT_CHANGES
+def is_possible_fall(item: dict[str, Any]) -> bool:
+    return item.get("alert_type") == POSSIBLE_FALL
+
+
+def is_back_in_bed(update: StatusUpdate) -> bool:
+    """Possible-fall criterion 7: the watchdog's resolve when the resident is back in
+    bed."""
+    return (
+        update.by_role == ROLE_SYSTEM
+        and update.new_status == STATUS_RESOLVED
+        and update.reason == REASON_BACK_IN_BED
     )
-    return (update.by_role, update.new_status) in allowed
+
+
+def is_allowed(item: dict[str, Any], update: StatusUpdate) -> bool:
+    """Watchdog criterion 14a, possible-fall criterion 12: device problems take only
+    an ops or caregiver acknowledge and the system resolve without a reason; a
+    possible fall takes what health alerts take plus the system resolve with reason
+    back_in_bed; every other alert (health alerts, or an item without a known type)
+    only a nurse acknowledge and a resident or caregiver cancel."""
+    change = (update.by_role, update.new_status)
+    if is_device_problem(item):
+        return change in DEVICE_PROBLEM_CHANGES and update.reason is None
+    if is_possible_fall(item) and is_back_in_bed(update):
+        return True
+    return change in HEALTH_ALERT_CHANGES
 
 
 def is_follow_up_retry(item: dict[str, Any], update: StatusUpdate) -> bool:
@@ -933,11 +963,15 @@ def is_follow_up_retry(item: dict[str, Any], update: StatusUpdate) -> bool:
     status_notified_at (a crash after the update, before the follow-up was recorded),
     set by the same kind of update: an acknowledge by the same sub (and, for a device
     problem, the same role), a caregiver cancel by the same sub, a resident cancel by
-    the resident. A system resolve sends no follow-up, so it never has a retry."""
-    if update.new_status == STATUS_RESOLVED:
+    the resident. A device-problem system resolve sends no follow-up, so it never has
+    a retry; a back-in-bed resolve (possible-fall criterion 8) does, when the item
+    was resolved by the system."""
+    if update.new_status == STATUS_RESOLVED and not is_back_in_bed(update):
         return False
     if item.get("status") != update.new_status or "status_notified_at" in item:
         return False
+    if update.new_status == STATUS_RESOLVED:
+        return item.get("resolved_by_role") == ROLE_SYSTEM and is_possible_fall(item)
     if update.new_status == STATUS_ACKNOWLEDGED:
         role = item.get("acknowledged_by_role")
         if role is not None and role != update.by_role:
@@ -954,9 +988,18 @@ def is_changeable(item: dict[str, Any], update: StatusUpdate) -> bool:
     return item.get("status") in CHANGEABLE_FROM[update.new_status]
 
 
+def cancels_possible_falls(update: StatusUpdate) -> bool:
+    """Possible-fall criterion 13: a wearable's "I'm OK" (device target) also cancels
+    the resident's possible falls, whatever device raised them."""
+    return update.device_id is not None and update.device_id.startswith("wearable-")
+
+
 def is_target(item: dict[str, Any], update: StatusUpdate) -> bool:
     """An item this update changes or owes a follow-up (a retry)."""
-    if update.device_id is not None and item.get("device_id") != update.device_id:
+    other_device = (
+        update.device_id is not None and item.get("device_id") != update.device_id
+    )
+    if other_device and not (cancels_possible_falls(update) and is_possible_fall(item)):
         return False
     return is_changeable(item, update) or is_follow_up_retry(item, update)
 
@@ -966,29 +1009,36 @@ def query_device_targets(update: StatusUpdate) -> list[dict[str, Any]]:
     open or acknowledged, or already have this status but no status_notified_at
     (retry). Strongly consistent, paginated. Only resident cancels have a device
     target. Device problems are left out (watchdog criterion 14a): "I'm OK" cancels
-    health alerts only."""
+    health alerts only. A wearable's "I'm OK" also finds the resident's possible
+    falls from any device (possible-fall criterion 13)."""
     client = dynamodb_client()
     items: list[dict[str, Any]] = []
+    device_filter = (
+        "device_id = :device AND NOT alert_type IN (:offline, :battery, :not_worn)"
+    )
+    values: dict[str, Any] = {
+        ":pk": {"S": f"RESIDENT#{update.resident_id}"},
+        ":high": {"S": device_target_upper_bound(update)},
+        ":device": {"S": update.device_id or ""},
+        ":open": {"S": STATUS_OPEN},
+        ":acknowledged": {"S": STATUS_ACKNOWLEDGED},
+        ":new": {"S": update.new_status},
+        ":offline": {"S": DEVICE_OFFLINE},
+        ":battery": {"S": BATTERY_LOW},
+        ":not_worn": {"S": NOT_WORN},
+    }
+    if cancels_possible_falls(update):
+        device_filter = f"({device_filter}) OR alert_type = :possible_fall"
+        values[":possible_fall"] = {"S": POSSIBLE_FALL}
     request: dict[str, Any] = {
         "TableName": os.environ["ALERTS_TABLE"],
         "KeyConditionExpression": "pk = :pk AND sk <= :high",
         "FilterExpression": (
-            "device_id = :device AND (#status IN (:open, :acknowledged) OR "
-            "(#status = :new AND attribute_not_exists(status_notified_at))) AND "
-            "NOT alert_type IN (:offline, :battery, :not_worn)"
+            f"({device_filter}) AND (#status IN (:open, :acknowledged) OR "
+            "(#status = :new AND attribute_not_exists(status_notified_at)))"
         ),
         "ExpressionAttributeNames": {"#status": "status"},
-        "ExpressionAttributeValues": {
-            ":pk": {"S": f"RESIDENT#{update.resident_id}"},
-            ":high": {"S": device_target_upper_bound(update)},
-            ":device": {"S": update.device_id or ""},
-            ":open": {"S": STATUS_OPEN},
-            ":acknowledged": {"S": STATUS_ACKNOWLEDGED},
-            ":new": {"S": update.new_status},
-            ":offline": {"S": DEVICE_OFFLINE},
-            ":battery": {"S": BATTERY_LOW},
-            ":not_worn": {"S": NOT_WORN},
-        },
+        "ExpressionAttributeValues": values,
         "ProjectionExpression": ", ".join(TARGET_ATTRIBUTES),
         "ConsistentRead": True,
     }
@@ -1106,7 +1156,10 @@ def apply_status(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any] |
 def follow_up_to_nurses(update: StatusUpdate, item: dict[str, Any]) -> bool:
     """Alert-routing criterion 13: a cancel goes to the nurses if they were emailed
     about the alert (escalated_at) or had acknowledged it (acknowledged_at, which only
-    an acknowledge sets and a cancel keeps); an acknowledge never does."""
+    an acknowledge sets and a cancel keeps); a back-in-bed resolve goes to them if they
+    were emailed (escalated_at, possible-fall criterion 8); an acknowledge never does."""
+    if update.new_status == STATUS_RESOLVED:
+        return "escalated_at" in item
     if update.new_status != STATUS_CANCELLED:
         return False
     return "escalated_at" in item or "acknowledged_at" in item
@@ -1129,6 +1182,7 @@ def send_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
         by_role=update.by_role,
         by_name=update.by_name,
         note=update.note,
+        reason=update.reason,
     )
     if update.resident_id != UNASSIGNED:
         sns_client().publish(
@@ -1197,14 +1251,15 @@ def send_device_problem_follow_up(update: StatusUpdate, item: dict[str, Any]) ->
 
 def apply_to_target(update: StatusUpdate, item: dict[str, Any]) -> str:
     """One target: update it and send the follow-up (updated), skip it if it changed
-    meanwhile (skipped), or send the missing follow-up of a retry (updated). A system
-    resolve sends no follow-up (watchdog criterion 11)."""
+    meanwhile (skipped), or send the missing follow-up of a retry (updated). A
+    device-problem system resolve sends no follow-up (watchdog criterion 11); a
+    back-in-bed resolve does (possible-fall criterion 8)."""
     if is_changeable(item, update):
         updated = apply_status(update, item)
         if updated is None:
             return SKIPPED
         item = updated
-    if update.new_status == STATUS_RESOLVED:
+    if update.new_status == STATUS_RESOLVED and not is_back_in_bed(update):
         return UPDATED
     if is_device_problem(item):
         send_device_problem_follow_up(update, item)

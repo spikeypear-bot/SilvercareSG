@@ -102,6 +102,15 @@ the subject `SilverCare update: <label> - <device_id> (<resident_id>) acknowledg
 the heading `SilverCare update`, the first line `The device problem below was
 acknowledged by the ops team at <time>.` (or `by Ta* Me* Li** (caregiver)`), then the
 same lines from Type on.
+
+Possible fall (docs/features/possible-fall.md, criteria 8 and 11), caregiver and
+nurse emails: the usual body with `Device: <bedroom id>` after Resident, and after
+When the lines `Out of bed since: <time> SGT` and `Wearable: not worn` / `Wearable: no
+recent status` / `Wearable: none assigned`, plus `Test mode: yes` when
+details.test_mode is true. No readings. The back-in-bed follow-up has the subject
+`SilverCare update: Possible fall - <resident_id> resolved` and the first line `The
+alert below was resolved at <time> SGT: the resident is back in bed.`, then the usual
+follow-up lines.
 """
 
 from __future__ import annotations
@@ -125,6 +134,7 @@ TYPE_LABELS = {
     "spo2_low": "Low blood oxygen",
     "skin_temp_high": "High skin temperature",
     "skin_temp_low": "Low skin temperature",
+    "possible_fall": "Possible fall",
 }
 SEVERITY_LABELS = {"warning": "Warning", "critical": "Critical"}
 NO_READING = "no reading"
@@ -166,6 +176,16 @@ DEVICE_PROBLEM_LABELS = {
 }
 DEVICE_PROBLEM_HEADING = "SilverCare device problem"
 OPS_TEAM = "the ops team"
+
+# Possible fall (docs/features/possible-fall.md, criteria 8 and 11).
+POSSIBLE_FALL = "possible_fall"
+WEARABLE_LABELS = {
+    "not_worn": "not worn",
+    "no_recent_status": "no recent status",
+    "no_wearable": "none assigned",
+}
+TEST_MODE_LINE = "Test mode: yes"
+BACK_IN_BED = "back_in_bed"
 
 
 def _type_label(alert_type: str) -> str:
@@ -276,6 +296,23 @@ def _reading_line(details: dict[str, Any], severity: str) -> str:
     )
 
 
+def _possible_fall_lines(details: dict[str, Any]) -> list[str]:
+    """Out of bed since, Wearable, and (test mode only) Test mode lines (criterion
+    11). No readings."""
+    since_dt = _parse_ts(details.get("out_of_bed_since"))
+    since = format_when(since_dt) if since_dt else "unknown time"
+    wearable = details.get("wearable")
+    shown = (
+        WEARABLE_LABELS.get(wearable, "unknown")
+        if isinstance(wearable, str)
+        else "unknown"
+    )
+    lines = [f"Out of bed since: {since}", f"Wearable: {shown}"]
+    if details.get("test_mode") is True:
+        lines.append(TEST_MODE_LINE)
+    return lines
+
+
 def escalation_subject(alert_type: str, resident_id: str) -> str:
     """Nurse email subject, both severities (escalation criterion 9). At most 100
     characters."""
@@ -346,11 +383,14 @@ def _body(
     if nurse_line is not None:
         lines.append(nurse_line)
     lines.append(f"Resident: {resident_id}")
-    if escalated and resident_id == UNASSIGNED:
+    possible_fall = alert_type == POSSIBLE_FALL
+    if possible_fall or (escalated and resident_id == UNASSIGNED):
         lines.append(_device_line(item.get("device_id")))
     lines.append(f"When: {when}")
     if alert_type == "fall":
         lines += [_fall_details_line(details), _vitals_line(details)]
+    elif possible_fall:
+        lines += _possible_fall_lines(details)
     else:
         lines.append(_reading_line(details, severity))
     if not escalated and severity == "critical":
@@ -405,21 +445,29 @@ def follow_up_body(
     by_role: str,
     by_name: str | None,
     note: str | None = None,
+    reason: str | None = None,
 ) -> str:
     """The follow-up body (alert-routing criterion 15): who changed the alert and when
     (for a cancel of an acknowledged alert, also when the nurse acknowledged it), then
     the alert's type, severity, resident, and time, then the nurse's note if there is
     one (each line quoted with "> "). No reading or details; a Device line only for an
-    unassigned alert."""
+    unassigned alert. A back-in-bed resolve (possible-fall criterion 8) says why
+    instead of who."""
     severity = item.get("severity") or DEFAULT_SEVERITY
     event_dt = _parse_ts(item.get("event_ts"))
     when = format_when(event_dt) if event_dt else "unknown time"
-    changed_by = _changed_by(by_role, by_name)
-    lines = [
-        "SilverCare update",
-        "",
-        f"The alert below was {new_status} by {changed_by} at {format_when(changed_at)}.",
-    ]
+    if new_status == "resolved" and reason == BACK_IN_BED:
+        first = (
+            f"The alert below was resolved at {format_when(changed_at)}: the resident"
+            " is back in bed."
+        )
+    else:
+        changed_by = _changed_by(by_role, by_name)
+        first = (
+            f"The alert below was {new_status} by {changed_by} at"
+            f" {format_when(changed_at)}."
+        )
+    lines = ["SilverCare update", "", first]
     if new_status == "cancelled" and "acknowledged_at" in item:
         acked_dt = _parse_ts(item.get("acknowledged_at"))
         acked = format_when(acked_dt) if acked_dt else "an unknown time"
