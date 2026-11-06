@@ -618,10 +618,12 @@ describe('alert history (pattern 12)', () => {
     closed.forEach((row) => expect(row).not.toHaveTextContent(/Escalat|Sent to the care centre nurse/))
   })
 
-  it('an open warning past its 5 minutes shows "Escalated to the care centre nurse" (res-0012)', async () => {
-    const detail = demoDetail('res-0012')
-    expect(detail.alerts[0]).toMatchObject({ alert_type: 'possible_fall', severity: 'warning', status: 'open' })
-    await renderLoaded('res-0012', TEST_USERS.doctor, detail)
+  it('an open warning past its 5 minutes shows "Escalated to the care centre nurse" (res-0019)', async () => {
+    // res-0012's open possible fall is critical now (docs/features/possible-fall.md), so S's
+    // 27-minute-old low blood oxygen warning is the escalated open warning here.
+    const detail = demoDetail('res-0019')
+    expect(detail.alerts[0]).toMatchObject({ alert_type: 'spo2_low', severity: 'warning', status: 'open' })
+    await renderLoaded('res-0019', TEST_USERS.doctor, detail)
     const open = historyRows()[0]
     expect(open).toHaveTextContent('Escalated to the care centre nurse')
     expect(open).not.toHaveTextContent('at once')
@@ -643,7 +645,7 @@ describe('alert history (pattern 12)', () => {
     const soon = { ...first, escalates_at: new Date(Date.now() + 1_200).toISOString() }
     await renderLoaded('res-0008', TEST_USERS.doctor, { ...detail, alerts: [soon, ...rest] })
     expect(announcer()).toBeEmptyDOMElement()
-    await waitFor(() => expect(announcer()).toHaveTextContent('Escalated to the care centre nurse: Possible fall, Test Resident H.'))
+    await waitFor(() => expect(announcer()).toHaveTextContent('Escalated to the care centre nurse: Low blood oxygen, Test Resident H.'))
     // The countdown ticks once a second, so it can trail the announcement slightly.
     await waitFor(() => expect(within(historyRows()[0]).getByText('Escalated to the care centre nurse')).toBeInTheDocument())
   })

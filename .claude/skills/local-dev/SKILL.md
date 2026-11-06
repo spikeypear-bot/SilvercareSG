@@ -33,7 +33,12 @@ Fix a CRLF script by stripping `\r` from that file only (`sed -i 's/\r$//' <file
 Never suggest `git checkout-index --force --all` or `git reset --hard` to refresh line
 endings while anything is uncommitted: they silently overwrite uncommitted edits. If
 port 8000 is taken by another container, the dev container still runs and unit tests
-work; only DynamoDB Local (integration tests) needs the port.
+work; only DynamoDB Local (integration tests) needs the port. Don't stop the other
+container: start an unpublished one with
+`docker compose run -d --rm --name silvercare-ddb-tmp dynamodb-local` (a `run` container
+publishes no ports and doesn't get the `dynamodb-local` alias), run the integration
+tests with `-e DYNAMODB_ENDPOINT=http://silvercare-ddb-tmp:8000`, then
+`docker stop silvercare-ddb-tmp`.
 
 ## Levels of testing
 

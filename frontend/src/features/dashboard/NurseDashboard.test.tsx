@@ -72,18 +72,19 @@ const residentCards = () => screen.queryAllByRole('article')
 const DEMO_INBOX_ORDER: ReadonlyArray<[string, string]> = [
   ['Fall detected', 'Test Resident C'],
   ['High heart rate', 'Test Resident G'],
+  // Possible falls are always critical (docs/features/possible-fall.md), so pinned too.
+  ['Possible fall', 'Test Resident L'],
   ['Fall detected', 'Test Resident Q'],
+  ['Possible fall', 'Test Resident B'],
   // B's warning for the caregiver view's demo countdown (2 min old), then H (2.5 min).
   ['Inactivity', 'Test Resident B'],
-  ['Possible fall', 'Test Resident H'],
-  ['Possible fall', 'Test Resident L'],
+  ['Low blood oxygen', 'Test Resident H'],
   ['Low blood oxygen', 'Test Resident S'],
   ['Inactivity', 'Test Resident B'],
   ['Device offline', 'Test Resident O'],
   ['Low battery', 'Test Resident F'],
   ['Device offline', 'Test Resident I'],
   ['Low battery', 'Test Resident M'],
-  ['Possible fall', 'Test Resident B'],
 ]
 
 /** A single synthetic alert for focused tests. */
@@ -144,10 +145,10 @@ describe('loading, error, and layout', () => {
 describe('stat tiles are toggle buttons that pick the panel', () => {
   it('shows four tiles with the numbers from the data', async () => {
     await renderLoaded()
-    // 13 demo alerts, all unresolved; 3 critical (2 falls + 1 acknowledged vitals).
+    // 13 demo alerts, all unresolved; 5 critical (2 falls, 1 acknowledged vitals, 2 possible falls).
     expect(tileValue('Residents monitored')).toBe('20')
     expect(tileValue('Open alerts')).toBe('13')
-    expect(within(tile('Open alerts')).getByText('3 critical')).toBeInTheDocument()
+    expect(within(tile('Open alerts')).getByText('5 critical')).toBeInTheDocument()
     // 6 offline devices (L and O wearables; F, I, O, Q bedroom sensors).
     expect(tileValue('Devices offline')).toBe('6')
     // Wearables only (F 15%, M 12%); D's 9% bedroom sensor is not a wearable.
@@ -304,8 +305,8 @@ describe('open alerts inbox', () => {
     expect(inbox()).not.toHaveTextContent('Cancelled')
     expect(inboxHeading()).toHaveTextContent('Open alerts (11)')
     expect(tileValue('Open alerts')).toBe('11')
-    // Only the acknowledged High heart rate (G) is still critical.
-    expect(within(tile('Open alerts')).getByText('1 critical')).toBeInTheDocument()
+    // Still critical: G's acknowledged High heart rate and the possible falls of L and B.
+    expect(within(tile('Open alerts')).getByText('3 critical')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /: Fall detected, Test Resident (C|Q)$/ })).not.toBeInTheDocument()
     // 8 open + 3 acknowledged left.
     expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(8)
@@ -331,7 +332,7 @@ describe('open alerts inbox', () => {
     await renderLoaded({ ...data, alerts })
     expect(openRows()).toHaveLength(12)
     expect(tileValue('Open alerts')).toBe('12')
-    expect(screen.queryByRole('button', { name: /Resolve: Possible fall, Test Resident H/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Resolve: Low blood oxygen, Test Resident H/ })).not.toBeInTheDocument()
   })
 
   it('the alert lists are not live regions (the announcer is)', async () => {
@@ -408,7 +409,7 @@ describe('acknowledge', () => {
 
   it('removes the "Not yet escalated" label', async () => {
     const { user } = await renderLoaded()
-    const H = 'Possible fall, Test Resident H'
+    const H = 'Low blood oxygen, Test Resident H'
     expect(within(rowFor(H)).getByText('Not yet escalated')).toBeInTheDocument()
     await acknowledge(user, H)
     expect(rowFor(H)).not.toHaveTextContent(/Not yet escalated|Escalat/)
@@ -445,7 +446,7 @@ describe('resolve', () => {
     expect(openRows()).toHaveLength(12)
     expect(inboxHeading()).toHaveTextContent('Open alerts (12)')
     expect(tileValue('Open alerts')).toBe('12')
-    expect(within(tile('Open alerts')).getByText('2 critical')).toBeInTheDocument()
+    expect(within(tile('Open alerts')).getByText('4 critical')).toBeInTheDocument()
   })
 
   it('lists it under "Resolved since this page opened" with "Resolved by Test Nurse A"', async () => {
@@ -501,13 +502,13 @@ describe('resolve', () => {
     const { user } = await renderLoaded()
     await acknowledge(user, C)
     await user.click(resolveButton(C))
-    await user.click(resolveButton('Possible fall, Test Resident H'))
+    await user.click(resolveButton('Low blood oxygen, Test Resident H'))
     const details = screen.getByText('Resolved since this page opened (2)').closest('details') as HTMLElement
     const items = within(details).getAllByRole('listitem')
     expect(items).toHaveLength(2)
     // Both resolved within the same second may share a timestamp, so only check both are present.
     expect(details).toHaveTextContent(C)
-    expect(details).toHaveTextContent('Possible fall, Test Resident H')
+    expect(details).toHaveTextContent('Low blood oxygen, Test Resident H')
   })
 
   it('resolving the last alert shows "No open alerts."', async () => {
@@ -529,9 +530,11 @@ describe('escalation status (real clock)', () => {
     // H's warning, and B's (the caregiver view's demo countdown): one label each.
     const labels = within(inbox()).getAllByText('Not yet escalated')
     expect(labels).toHaveLength(2)
-    expect(within(rowFor('Possible fall, Test Resident H')).getByText('Not yet escalated')).toBeInTheDocument()
-    expect(openRows()[3]).toHaveTextContent('Inactivity')
-    expect(within(openRows()[3]).getByText('Not yet escalated')).toBeInTheDocument()
+    expect(within(rowFor('Low blood oxygen, Test Resident H')).getByText('Not yet escalated')).toBeInTheDocument()
+    // B's is the first warning, after the 5 pinned critical alerts.
+    expect(openRows()[5]).toHaveTextContent('Inactivity')
+    expect(openRows()[5]).toHaveTextContent('Test Resident B')
+    expect(within(openRows()[5]).getByText('Not yet escalated')).toBeInTheDocument()
   })
 
   it('escalated alerts show no routing line in the nurse inbox, and nothing is announced on load', async () => {
@@ -625,7 +628,7 @@ describe('escalation status (real clock)', () => {
       ...data.alerts[0],
       alert_id: 'alert-test-002',
       resident_id: 'res-0008',
-      alert_type: 'possible_fall',
+      alert_type: 'spo2_low',
       severity: 'warning',
       escalates_at: future,
     }
@@ -646,7 +649,7 @@ describe('escalation status (real clock)', () => {
 
 describe('escalation countdown (fake clock)', () => {
   const NOW = new Date('2026-10-18T02:30:00Z')
-  const H = 'Possible fall, Test Resident H'
+  const H = 'Low blood oxygen, Test Resident H'
 
   beforeEach(() => {
     vi.useFakeTimers()

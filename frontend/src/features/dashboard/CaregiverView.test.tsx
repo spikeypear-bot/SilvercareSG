@@ -246,7 +246,7 @@ describe('linked residents (demo data)', () => {
 // --- recent alerts ---------------------------------------------------------
 
 describe('recent alerts', () => {
-  it('res-0002 lists its 3 demo warnings newest first; res-0005 has none', async () => {
+  it('res-0002 lists its 3 demo alerts (2 warnings, then a critical possible fall) newest first; res-0005 has none', async () => {
     await renderLoaded()
     const items = timelineItems(cardFor('Test Resident B'))
     expect(items).toHaveLength(3)
@@ -256,7 +256,12 @@ describe('recent alerts', () => {
     expect(items[1]).toHaveTextContent('Inactivity')
     expect(items[1]).toHaveTextContent('Escalated to the care centre nurse')
     expect(items[2]).toHaveTextContent('Possible fall')
-    items.forEach((item) => expect(within(item).getByText('Warning')).toBeInTheDocument())
+    items.slice(0, 2).forEach((item) => expect(within(item).getByText('Warning')).toBeInTheDocument())
+    // Possible falls are always critical: sent to the nurse at once, never a countdown.
+    expect(within(items[2]).getByText('Critical')).toBeInTheDocument()
+    expect(within(items[2]).queryByText('Warning')).not.toBeInTheDocument()
+    expect(items[2]).toHaveTextContent('Sent to the care centre nurse at once')
+    expect(within(items[2]).queryByRole('timer')).not.toBeInTheDocument()
     expect(within(cardFor('Test Resident E')).getByText('No recent alerts.')).toBeInTheDocument()
     expect(timelineItems(cardFor('Test Resident E'))).toEqual([])
   })
@@ -315,11 +320,17 @@ describe('recent alerts', () => {
 
   it('an escalated demo warning shows "Escalated to the care centre nurse" (the caregiver is not the recipient)', async () => {
     const { data } = await renderLoaded()
-    const escalated = data.alerts.filter((a) => a.resident_id === 'res-0002' && a.escalated_at && a.status === 'open')
+    const escalated = data.alerts.filter(
+      (a) => a.resident_id === 'res-0002' && a.severity === 'warning' && a.escalated_at && a.status === 'open',
+    )
     expect(escalated.length).toBeGreaterThan(0)
     const card = cardFor('Test Resident B')
     expect(within(card).getAllByText('Escalated to the care centre nurse')).toHaveLength(escalated.length)
-    expect(card).not.toHaveTextContent('at once')
+    // "At once" only on B's critical possible fall, never on a warning.
+    const warnings = timelineItems(card).filter((item) => within(item).queryByText('Warning'))
+    expect(warnings).toHaveLength(2)
+    warnings.forEach((item) => expect(item).not.toHaveTextContent('at once'))
+    expect(within(card).getAllByText('Sent to the care centre nurse at once')).toHaveLength(1)
   })
 
   it('an open critical alert with escalated_at shows "Sent to the care centre nurse at once"', async () => {

@@ -122,7 +122,8 @@ describe('dashboardStats', () => {
     expect(dashboardStats(data)).toEqual({
       residents: 20,
       openAlerts: 13,
-      criticalAlerts: 3,
+      // Two falls, res-0007's acknowledged hr_high, and the possible falls of res-0012 and res-0002.
+      criticalAlerts: 5,
       devicesOffline: 6,
       // Wearables only: res-0004's low bedroom sensor is not counted here.
       lowBattery: 2,
@@ -131,7 +132,7 @@ describe('dashboardStats', () => {
 
   it('leaves resolved alerts out of the open and critical counts', () => {
     const alerts = data.alerts.map((a) => (a.severity === 'critical' ? { ...a, status: 'resolved' as const } : a))
-    expect(dashboardStats({ ...data, alerts })).toMatchObject({ openAlerts: 10, criticalAlerts: 0 })
+    expect(dashboardStats({ ...data, alerts })).toMatchObject({ openAlerts: 8, criticalAlerts: 0 })
   })
 
   it('leaves cancelled alerts out of the open and critical counts', () => {
@@ -140,7 +141,7 @@ describe('dashboardStats', () => {
         ? { ...a, status: 'cancelled' as const, cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' as const }
         : a,
     )
-    expect(dashboardStats({ ...data, alerts })).toMatchObject({ openAlerts: 10, criticalAlerts: 0 })
+    expect(dashboardStats({ ...data, alerts })).toMatchObject({ openAlerts: 8, criticalAlerts: 0 })
   })
 
   it('counts acknowledged alerts as open', () => {

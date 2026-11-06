@@ -13,8 +13,8 @@ function baseAlert(overrides: Partial<ResidentAlert> = {}): ResidentAlert {
   return {
     alert_id: 'alert-test-001',
     resident_id: 'res-0008',
-    device_id: 'bedroom-test-008',
-    alert_type: 'possible_fall',
+    device_id: 'wearable-test-008',
+    alert_type: 'spo2_low',
     severity: 'warning',
     status: 'open',
     event_ts: new Date(NOW.getTime() - 30_000).toISOString(),
@@ -63,13 +63,13 @@ describe('AlertRow', () => {
     const onAcknowledge = vi.fn()
     const onResolve = vi.fn()
     renderRow({ actions: { onAcknowledge, onResolve } })
-    await user.click(screen.getByRole('button', { name: 'Acknowledge: Possible fall, Test Resident H' }))
+    await user.click(screen.getByRole('button', { name: 'Acknowledge: Low blood oxygen, Test Resident H' }))
     // Acknowledge only opens the note form; submitting it (same name) acknowledges.
     expect(onAcknowledge).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: 'Acknowledge: Possible fall, Test Resident H' }))
+    await user.click(screen.getByRole('button', { name: 'Acknowledge: Low blood oxygen, Test Resident H' }))
     expect(onAcknowledge).toHaveBeenCalledTimes(1)
     expect(onAcknowledge).toHaveBeenCalledWith(undefined)
-    await user.click(screen.getByRole('button', { name: 'Resolve: Possible fall, Test Resident H' }))
+    await user.click(screen.getByRole('button', { name: 'Resolve: Low blood oxygen, Test Resident H' }))
     expect(onResolve).toHaveBeenCalledTimes(1)
   })
 
@@ -94,7 +94,12 @@ describe('AlertRow alert types', () => {
     ['device_offline', 'Device offline'],
     ['low_battery', 'Low battery'],
   ] as const)('%s shows "%s" and names the buttons with it', (type, label) => {
-    renderRow({ alert: baseAlert({ alert_type: type }), actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() } })
+    // A possible fall is always critical (docs/features/possible-fall.md), never a warning.
+    const severity = type === 'possible_fall' ? 'critical' : 'warning'
+    renderRow({
+      alert: baseAlert({ alert_type: type, severity }),
+      actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() },
+    })
     const row = screen.getByRole('listitem')
     expect(within(row).getByText(label)).toBeInTheDocument()
     expect(row).not.toHaveTextContent('Vitals need attention')
@@ -756,7 +761,7 @@ describe('AcknowledgedLines', () => {
 })
 
 describe('acknowledge note form (alert-actions-ui, criteria 1-7)', () => {
-  const CONTEXT = 'Possible fall, Test Resident H'
+  const CONTEXT = 'Low blood oxygen, Test Resident H'
   const ackButton = () => screen.getByRole('button', { name: `Acknowledge: ${CONTEXT}` })
   const field = () => screen.getByRole('textbox', { name: "Note for the resident's caregivers (optional)" })
 

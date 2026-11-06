@@ -8,8 +8,8 @@ export type ResidentStatus = 'ok' | 'attention' | 'urgent'
 
 /**
  * Alert severity as provided by the backend (never computed by the UI): `critical` for
- * falls and the device's `vitals_alert`, `warning` for the cloud vitals check
- * (docs/data-model.md, `silvercare-alerts`).
+ * falls, the device's `vitals_alert`, and possible falls, `warning` for the cloud vitals
+ * check (docs/data-model.md, `silvercare-alerts`).
  */
 export type AlertSeverity = 'warning' | 'critical'
 
@@ -21,9 +21,11 @@ export type AlertType =
   | 'spo2_low'
   | 'skin_temp_high'
   | 'skin_temp_low'
+  // Raised by the watchdog, always critical, caregivers and nurses at once
+  // (docs/features/possible-fall.md).
+  | 'possible_fall'
   // Planned watchdog alerts (docs/metrics.md, "How the backend uses these"): shown in the
   // demo, not raised by the backend yet.
-  | 'possible_fall'
   | 'inactivity'
   | 'device_offline'
   | 'low_battery'

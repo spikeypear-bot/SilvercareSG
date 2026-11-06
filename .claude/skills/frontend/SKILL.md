@@ -37,6 +37,9 @@ frontend/src/
 - **Role-based views:** route guards read the user's groups. This only decides what to
   show; the API enforces access.
 - Handle loading, empty, and error states on every data view.
+- Whether an alert is still open: use `isOnOpenList` (`features/dashboard/stats.ts`:
+  `open` or `acknowledged`, the data model's open list), in app code and demo data alike.
+  Never `status !== 'resolved'`: `cancelled` closes an alert too, and so may later statuses.
 
 ## Accessibility
 
