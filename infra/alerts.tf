@@ -8,20 +8,28 @@
 # resident's subscribers through the silvercare-alerts SNS topic, filtered by
 # resident_id.
 #
-# Escalation (docs/features/escalation.md): after emailing (or storing an unassigned
-# alert), alert-processor sends an escalation check back to silvercare-alerts with a
-# per-message DelaySeconds of 60 (the queue's own delay stays 0). 60 s later it reads
-# the alert again and, if it is still open and not yet escalated, emails every nurse
-# subscriber through the silvercare-nurses SNS topic (no filter: staff see every
-# resident). No extra queue, function, mapping, or alarm: failed checks reach
-# silvercare-alerts-dlq and its alarm like failed alerts.
+# Nurses (docs/features/escalation.md, docs/features/alert-routing.md): critical alerts
+# and every alert from an unassigned device are emailed to every nurse subscriber at
+# once through the silvercare-nurses SNS topic (no filter: staff see every resident).
+# For a warning from an assigned device, alert-processor sends an escalation check back
+# to silvercare-alerts with a per-message DelaySeconds of 300 (the queue's own delay
+# stays 0). 5 minutes later it reads the alert again and, if it is still open and not
+# yet escalated, emails the nurses. No extra queue, function, mapping, or alarm: failed
+# checks reach silvercare-alerts-dlq and its alarm like failed alerts.
 #
-# Cancel and follow-ups (docs/features/alert-cancel.md): critical-alert sends a
-# `status_update` for the wearable "I'm OK" button (Track B's acknowledge API will send
-# one too). alert-processor sets the matching open alerts to cancelled (or
-# acknowledged) and emails a short follow-up through the same two topics: caregivers
-# always (resident_id filter), nurses only if they were already escalated to. No new
-# resources: failed updates reach silvercare-alerts-dlq like failed alerts.
+# Cancel, acknowledge, and follow-ups (docs/features/alert-cancel.md, alert-routing.md):
+# critical-alert sends a `status_update` for the wearable "I'm OK" button; Track B's
+# API will send one for a caregiver cancel or a nurse acknowledge. alert-processor
+# changes the matching alerts and emails a short follow-up through the same two topics:
+# caregivers (resident_id filter), and for a cancel the nurses if they were emailed or
+# had acknowledged. No new resources: failed updates reach silvercare-alerts-dlq like
+# failed alerts.
+#
+# Device problems (docs/features/watchdog.md): the watchdog (watchdog.tf) sends
+# device_offline, battery_low, and not_worn alerts and system resolves to the same
+# queue. alert-processor emails device problems to the resident's caregivers (alerts
+# topic) and to the ops team (silvercare-ops-devices, encrypted), never to the nurses, and resolves them
+# without email.
 #
 # No critical alert may be lost on the way: critical-alert's failed async invocations
 # and the silvercare_alert rule's failed actions go to silvercare-critical-alert-dlq,
@@ -59,7 +67,7 @@ locals {
   # Per-DLQ alarm text. silvercare-critical-alert-dlq holds Lambda on-failure records
   # and IoT rule error payloads, which have no source queue to redrive to.
   dlq_alarm_descriptions = {
-    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed, an escalation_check may not have emailed the nurses, or a status_update (cancel or acknowledge) may not have been applied or followed up. Inspect it, fix the cause, and redrive it to silvercare-alerts. escalation_check messages are skipped as stale once 15 minutes have passed since the alert was stored, so redriving one later sends no nurse email. A redriven status_update still changes only alerts that are open (cancel: those up to when the press was received)."
+    alerts_dlq         = "silvercare-alerts-dlq has at least one message: an alert may not have been stored or emailed, an escalation_check may not have emailed the nurses, or a status_update (cancel or acknowledge) may not have been applied or followed up. Inspect it, fix the cause, and redrive it to silvercare-alerts. escalation_check messages are skipped as stale once 20 minutes have passed since the alert was stored (all automatic retries finish before that), so redriving one later sends no nurse email. A redriven status_update still changes only alerts that are open (a cancel also acknowledged ones; for the wearable, those up to when the press was received)."
     critical_alert_dlq = "silvercare-critical-alert-dlq has at least one message: a fall or device vitals_alert may not have become an alert, or an alert_cancel may not have cancelled the open alerts. Inspect it, then replay the original payload manually (it cannot be redriven)."
   }
 }
@@ -349,8 +357,9 @@ resource "aws_sns_topic_subscription" "alert_email" {
 # SNS: nurse escalation emails (docs/features/escalation.md, criteria 11-12)
 # ---------------------------------------------------------------------------------------
 
-# Alerts still open 60 s after the first notification (or after being stored, for
-# unassigned devices). Carries the same health data as silvercare-alerts.
+# Critical and unassigned alerts at once, warnings still open 5 minutes after the
+# first notification (docs/features/alert-routing.md), and cancel follow-ups. Carries
+# the same health data as silvercare-alerts.
 resource "aws_sns_topic" "nurses" {
   name = "silvercare-nurses"
   # AWS managed key: free, no key policy to maintain.
@@ -433,7 +442,7 @@ resource "aws_sns_topic_subscription" "nurse_email" {
 }
 
 # ---------------------------------------------------------------------------------------
-# SNS: ops (DLQ alarm emails)
+# SNS: ops (alarm emails only; device problems go to silvercare-ops-devices below)
 # ---------------------------------------------------------------------------------------
 
 resource "aws_sns_topic" "ops" {
@@ -520,6 +529,96 @@ resource "aws_sns_topic_subscription" "ops_email" {
 }
 
 # ---------------------------------------------------------------------------------------
+# SNS: ops device problems (docs/features/watchdog.md; user's decision 2026-11-04)
+# ---------------------------------------------------------------------------------------
+
+# Device-problem emails and their acknowledge follow-ups (alert-processor) and the
+# mass-offline summary (watchdog). A separate topic from silvercare-ops so it can be
+# encrypted: it carries device IDs, opaque resident IDs, heartbeat times, battery level,
+# and a caregiver's masked name (no names or health readings). No alarm publishes here,
+# so the AWS managed key works (free).
+resource "aws_sns_topic" "ops_devices" {
+  name = "silvercare-ops-devices"
+  # AWS managed key: free, no key policy to maintain.
+  kms_master_key_id = "alias/aws/sns"
+}
+
+# Only alert-processor and the watchdog may publish, only the deploy role may subscribe,
+# and nothing without TLS. Same pattern and reasons as the alerts and nurses topic
+# policies (Deny on aws:PrincipalArn, no Allow naming the roles).
+data "aws_iam_policy_document" "ops_devices_topic" {
+  statement {
+    sid       = "DenyPublishFromOthers"
+    effect    = "Deny"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.ops_devices.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [module.alert_processor.role_arn, module.watchdog.role_arn]
+    }
+  }
+
+  # Subscriptions only through Terraform, as for the alerts and nurses topics.
+  statement {
+    sid       = "DenySubscribeFromOthers"
+    effect    = "Deny"
+    actions   = ["sns:Subscribe"]
+    resources = [aws_sns_topic.ops_devices.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.deploy_role_arn]
+    }
+  }
+
+  statement {
+    sid       = "DenyInsecureTransport"
+    effect    = "Deny"
+    actions   = local.sns_topic_actions
+    resources = [aws_sns_topic.ops_devices.arn]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "ops_devices" {
+  arn    = aws_sns_topic.ops_devices.arn
+  policy = data.aws_iam_policy_document.ops_devices_topic.json
+}
+
+# One email subscription per ops_subscribers label, no filter policy: ops see device
+# problems for every resident. Each subscriber confirms from AWS's confirmation email.
+resource "aws_sns_topic_subscription" "ops_devices_email" {
+  for_each = toset(var.ops_subscribers)
+
+  topic_arn = aws_sns_topic.ops_devices.arn
+  protocol  = "email"
+  endpoint  = var.subscriber_emails[each.key]
+}
+
+# ---------------------------------------------------------------------------------------
 # Alarms
 # ---------------------------------------------------------------------------------------
 
@@ -572,8 +671,10 @@ data "archive_file" "alert_processor" {
 # status_notified_at) on its alert in silvercare-alerts (base table, RESIDENT#
 # partitions only); a GetItem on the device's vitals item in silvercare-latest; a
 # PutObject under alerts/; and an SNS Publish to the alerts and nurses topics (alerts,
-# escalations, and status follow-ups). The status updates need no new permission. Nothing else: no indexes, no Scan/DeleteItem, no other prefixes or
-# reads in S3. No KMS permissions: both topics use the AWS managed key aws/sns, whose
+# escalations, and status follow-ups) and to silvercare-ops-devices (device problems and their
+# acknowledge follow-ups, docs/features/watchdog.md). The status updates need no new
+# permission. Nothing else: no indexes, no Scan/DeleteItem, no other prefixes or
+# reads in S3. No KMS permissions: the alerts, nurses, and ops-devices topics use the AWS managed key aws/sns, whose
 # key policy already lets SNS use it for principals in this account (the iam-policy
 # skill asks for KMS grants only for customer-managed keys). The module adds the log
 # group permissions.
@@ -638,13 +739,21 @@ data "aws_iam_policy_document" "alert_processor" {
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.nurses.arn]
   }
+
+  # Device-problem emails and their acknowledge follow-ups (watchdog criteria 13, 14a).
+  statement {
+    sid       = "OpsTopic"
+    effect    = "Allow"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.ops_devices.arn]
+  }
 }
 
 module "alert_processor" {
   source = "./modules/python-lambda"
 
   function_name = local.alert_processor_function_name
-  description   = "Stores alerts from the silvercare-alerts queue in DynamoDB and S3, emails subscribers through SNS, escalates unanswered alerts to nurses, and applies cancels and acknowledges with follow-up emails."
+  description   = "Stores alerts from the silvercare-alerts queue in DynamoDB and S3, emails subscribers through SNS, escalates unanswered alerts to nurses, emails device problems to ops, and applies cancels, acknowledges, and resolves with follow-up emails."
   handler       = "handler.lambda_handler"
   zip_path      = data.archive_file.alert_processor.output_path
   zip_hash      = data.archive_file.alert_processor.output_base64sha256
@@ -659,6 +768,7 @@ module "alert_processor" {
     ALERTS_TOPIC_ARN             = aws_sns_topic.alerts.arn
     ALERTS_QUEUE_URL             = aws_sqs_queue.alerts.url
     NURSES_TOPIC_ARN             = aws_sns_topic.nurses.arn
+    OPS_TOPIC_ARN                = aws_sns_topic.ops_devices.arn
     PORTAL_URL                   = "https://${aws_cloudfront_distribution.frontend.domain_name}"
     POWERTOOLS_SERVICE_NAME      = local.alert_processor_function_name
     POWERTOOLS_METRICS_NAMESPACE = "SilverCare"

@@ -68,8 +68,10 @@ Who does what:
    - bucket policy denies any request without TLS (`aws:SecureTransport = false`)
    - versioning **off** (user's decision: a delete really deletes, e.g. for a PDPA
      erasure request)
-   - one lifecycle rule only: abort incomplete multipart uploads after 1 day. No
-     expiry rule: how long history is kept is Open decision #4.
+   - one lifecycle rule only: abort incomplete multipart uploads after 1 day. As
+     built there is no expiry rule; retention has since been decided (see Privacy) and
+     needs a `telemetry/` expiry rule at 365 days *(proposed)*, added in a later
+     change once daily summaries exist.
    - `force_destroy = false` and `lifecycle { prevent_destroy = true }`
 7. Every checkov skip on the bucket (e.g. versioning, access logging, cross-region
    replication, event notifications, KMS key) has a comment with the reason (user's
@@ -110,7 +112,7 @@ Who does what:
 14. Per record:
     - the body is parsed as JSON (the rule's output: payload plus `device_id`,
       `message`, `received_at`)
-    - `<message>` is the body's `message` if it matches `^[a-z]{1,16}$`, otherwise
+    - `<message>` is the body's `message` if it matches `^[a-z_]{1,16}$`, otherwise
       `unknown`
     - the date comes from `received_at` (epoch milliseconds) if it is a non-negative
       integer, otherwise from the record's SQS `SentTimestamp` attribute
@@ -196,9 +198,21 @@ None. Messages that keep failing land in `silvercare-history-dlq`; there is no a
 - Personal data touched: **every** raw message, including health readings, falls, bed
   and motion events, and the raw acceleration data (`accel_g`, `accel_window`) that
   `silvercare-latest` leaves out, linked to device IDs. Invalid messages are kept too.
-- Retention: S3 history has no expiry until Open decision #4 is decided; the history
-  queue keeps messages up to 4 days (normally under 5 minutes); the DLQ 14 days; Lambda
-  logs 30 days (counts and keys only).
+- Retention (decided 2026-11-01, Open decision #4; see Retention in
+  `docs/data-model.md`):
+  - **Raw telemetry** (`telemetry/`, what this feature writes): downsampled to daily
+    summaries after 90 days *(proposed)*, raw files deleted at 365 days *(proposed)*.
+    Raw readings aren't themselves the clinical record, and keeping every reading for
+    lifetime + 6 years would cost more and serve no clinical purpose.
+  - **Derived records that informed care** (alerts under `alerts/`, daily summaries
+    under `summaries/`, neither built yet): the resident's lifetime + 6 years
+    (MOH Circular 85/2022, Licence Conditions on the Retention Periods of Patient Health Records, under the Healthcare Services Act 2020).
+  - **As built, nothing expires yet.** `infra/history.tf` needs a lifecycle rule
+    expiring `telemetry/` objects at 365 days. Add it in a later Terraform change, only
+    after the daily summary job runs, so no raw data is deleted before it is
+    summarised. It is not changed here.
+  - The history queue keeps messages up to 4 days (normally under 5 minutes); the DLQ
+    14 days; Lambda logs 30 days (counts and keys only).
 - Access: the `history` Lambda can only add files under `telemetry/`. Developers can
   read but not write or delete. Versioning is off, so a deletion (by the account owner)
   is final.
@@ -221,7 +235,8 @@ About **US$1/month**, US$0 when the simulator is stopped. No fixed fees.
 
 - Writing alerts to `alerts/` (comes with `alert-processor`).
 - Lake Formation, the Glue catalog, Athena tables, and deduplication.
-- A retention or expiry rule (Open decision #4).
+- The `telemetry/` expiry rule and the daily summary job (retention is decided; see
+  Privacy).
 - CloudWatch alarms on the DLQ.
 - Replaying DLQ messages (can be done by hand in the SQS console with "redrive").
 

@@ -5,7 +5,7 @@ Live account (run on the host with your own AWS credentials, region ap-southeast
     pip install -r scripts/requirements.txt
     python scripts/seed.py                      # seed, asks you to type "seed"
     python scripts/seed.py --delete             # remove the seed, asks you to type "delete"
-    python scripts/seed.py --reset-passwords    # seed and give all 4 test users new passwords
+    python scripts/seed.py --reset-passwords    # seed and give all 3 test users new passwords
 
 DynamoDB Local (dev container, no prompt, no Cognito or STS):
 
@@ -13,16 +13,25 @@ DynamoDB Local (dev container, no prompt, no Cognito or STS):
     make seed-local ARGS=--delete
 
 Every value comes from scripts/seed-data.json (20 residents, their thresholds, the 40
-device assignments, 4 test users without passwords, and the user <-> resident links);
+device assignments, 3 test users without passwords, and the user <-> resident links);
 the device list is checked against infra/devices/devices.json. The seed file is
 validated before any AWS client is created.
 
-Live steps, after the confirmation prompt: create or update the 4 test users (one per
+Live steps, after the confirmation prompt: create or update the 3 test users (one per
 group, no email sent), write their new passwords to secrets/test-users.txt (merged,
 written atomically, mode 600), then write the registry items with BatchWriteItem,
-paced for the table's 1 WCU. Re-runs overwrite the seeded items. --delete removes the
-seeded items, every link to a seeded resident with linked_by = "seed", the 4 test
-users, and their lines in the passwords file.
+paced for the table's 1 WCU. Re-runs overwrite the seeded items.
+
+Clean-up on every seed run (live and --local): after the links are written, seed links
+(linked_by = "seed") to seeded residents that are no longer in the seed file are
+deleted; links with any other linked_by are never touched. On the live account the
+retired test user test-family@example.com (the family group was removed) is then
+deleted if it still exists, and its line is removed from the passwords file. No other
+user is deleted outside --delete.
+
+--delete removes the seeded items, every link to a seeded resident with
+linked_by = "seed", the 3 test users and the retired user, and their lines in the
+passwords file.
 
 Prints only steps, counts, and IDs: never item contents, names, or passwords. AWS
 errors are shown as operation name and error code only. Exit codes: 0 success, 1 AWS
@@ -75,8 +84,15 @@ USER_POOL_NAME = "silvercare-users"
 DEFAULT_LOCAL_ENDPOINT = "http://dynamodb-local:8000"
 SEED_MARKER = "seed"  # updated_by / linked_by on every seeded item that has one
 
-GROUPS = ("doctor", "nurse", "caregiver", "family")
-LINK_GROUPS = ("caregiver", "family")
+GROUPS = ("doctor", "nurse", "caregiver")
+LINK_GROUPS = ("caregiver",)
+# Test users earlier seeds created that this one no longer has (the family group was
+# removed 2026-11-04): (user_id, exact username, the name the seed gave it, the groups
+# it may be in). Deleted on every live seed run and on --delete, but only while it is
+# still as the seed left it; nothing else is ever deleted by name outside --delete.
+RETIRED_USERS: tuple[tuple[str, str, str, frozenset[str]], ...] = (
+    ("test-family", "test-family@example.com", "Test Family", frozenset({"family"})),
+)
 DEVICE_TYPES = ("wearable", "bedroom")
 
 # Writes are paced for the registry's 1 WCU (criterion 21).
@@ -118,7 +134,7 @@ RESERVED_RESIDENT_NUMBERS = range(
     1, 21
 )  # res-0001 ... res-0020, home-0001 ... home-0020
 RESERVED_LOCAL_SUBS = frozenset(
-    f"00000000-0000-4000-8000-{n:012d}" for n in range(1, 5)
+    f"00000000-0000-4000-8000-{n:012d}" for n in range(1, 4)
 )
 # Synthetic markers every seeded personal-data field must carry.
 DISPLAY_NAME_RE = re.compile(r"^Test Resident [A-Z]\Z")
@@ -397,6 +413,8 @@ def _validate_users(users: list[Any], problems: list[str]) -> dict[str, str]:
             problems.append(f"user {user_id}: email must be an @example.com address")
         elif email in seen_emails:
             problems.append(f"user {user_id}: email used by another user")
+        elif email in {entry[1] for entry in RETIRED_USERS}:
+            problems.append(f"user {user_id}: email belongs to a retired test user")
         else:
             seen_emails.add(email)
         name = user.get("name")
@@ -415,7 +433,7 @@ def _validate_users(users: list[Any], problems: list[str]) -> dict[str, str]:
         if not isinstance(sub, str) or sub not in RESERVED_LOCAL_SUBS:
             problems.append(
                 f"user {user_id}: local_sub must be one of the reserved"
-                " 00000000-0000-4000-8000-00000000000N subs (N = 1 to 4)"
+                " 00000000-0000-4000-8000-00000000000N subs (N = 1 to 3)"
             )
         elif sub in seen_subs:
             problems.append(f"user {user_id}: local_sub used by another user")
@@ -448,7 +466,7 @@ def _validate_links(
         if not user_ok or user_id not in user_groups:
             problems.append(f"{label}: unknown user")
         elif user_groups[user_id] not in LINK_GROUPS:
-            problems.append(f"{label}: only caregiver and family users can be linked")
+            problems.append(f"{label}: only caregiver users can be linked")
         if not resident_ok or resident_id not in resident_ids:
             problems.append(f"{label}: unknown resident")
         if user_ok and resident_ok:
@@ -947,6 +965,53 @@ def find_seed_links(
     ]
 
 
+def link_keys(items: Iterable[dict[str, Any]]) -> set[tuple[str, str]]:
+    """(pk, sk) of the link items (pk = USER#...) among these registry items."""
+    return {
+        (item["pk"]["S"], item["sk"]["S"])
+        for item in items
+        if item["pk"]["S"].startswith("USER#")
+    }
+
+
+def prune_seed_links(
+    client: Any,
+    seed: dict[str, Any],
+    written: Iterable[dict[str, Any]],
+    table: str = TABLE,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Delete the seed links (linked_by = "seed", to seeded residents, found as
+    --delete finds them) whose key is not one of the links just written. Run after
+    the links are written. Links with any other linked_by are never touched: each
+    delete is conditional on linked_by still being "seed", so a link re-made by
+    someone else since it was read is kept. Returns how many were deleted."""
+    from botocore.exceptions import ClientError
+
+    keep = link_keys(written)
+    resident_ids = [resident["resident_id"] for resident in seed["residents"]]
+    stale = [
+        key
+        for key in find_seed_links(client, resident_ids, table=table, sleep=sleep)
+        if (key["pk"]["S"], key["sk"]["S"]) not in keep
+    ]
+    deleted = 0
+    for key in stale:  # a few at most; adaptive retries pace them for 1 WCU
+        try:
+            client.delete_item(
+                TableName=table,
+                Key=key,
+                ConditionExpression="linked_by = :seed",
+                ExpressionAttributeValues={":seed": {"S": SEED_MARKER}},
+            )
+        except ClientError as exc:
+            if _error_code(exc) != "ConditionalCheckFailedException":
+                raise
+            continue
+        deleted += 1
+    return deleted
+
+
 def foreign_devices(
     client: Any,
     seed: dict[str, Any],
@@ -1068,13 +1133,16 @@ def seed_local(
     """Seed a DynamoDB Local table (created if missing) with the local subs.
 
     For integration tests: pass a client pointing at DynamoDB Local and your own table
-    name. Returns the number of items written.
+    name. Like a --local run, it then removes seed links no longer in the seed file.
+    Returns the number of items written (not counting removed links).
     """
     seed = load_seed() if seed is None else seed
     ensure_table(client, table, sleep=sleep)
     check_device_ownership(client, seed, table=table, sleep=sleep)
     items = build_registry_items(seed, local_subs(seed), now or datetime.now(UTC))
-    return write_registry(client, items, table=table, sleep=sleep)
+    count = write_registry(client, items, table=table, sleep=sleep)
+    prune_seed_links(client, seed, items, table=table, sleep=sleep)
+    return count
 
 
 # ---- Cognito ----
@@ -1138,7 +1206,8 @@ def user_groups(client: Any, pool_id: str, email: str) -> set[str]:
 
 
 def set_group(client: Any, pool_id: str, email: str, group: str, new: bool) -> None:
-    """Put the user in group and out of the other three test groups (others untouched)."""
+    """Put the user in group and out of the other seed groups (GROUPS: doctor, nurse,
+    caregiver). Any other group, including a leftover family group, is left alone."""
     current = set() if new else user_groups(client, pool_id, email)
     for other in GROUPS:
         if other != group and other in current:
@@ -1223,6 +1292,41 @@ def delete_users(
         print(f"cognito: {user['user_id']} {state}", file=out)
 
 
+def delete_retired_users(client: Any, pool_id: str, out: TextIO) -> list[str]:
+    """Delete the retired test users (RETIRED_USERS, exact usernames only) that still
+    exist and are as the seed left them (its name, no group outside the allowed ones).
+    One changed by hand (e.g. made a caregiver) is kept: `cognito: <id> kept (changed
+    by hand)`. An absent one prints nothing. Returns the usernames whose
+    passwords-file lines may be removed (deleted or absent, never kept)."""
+    from botocore.exceptions import ClientError
+
+    cleared = []
+    for user_id, username, name, allowed_groups in RETIRED_USERS:
+        try:
+            response = client.admin_get_user(UserPoolId=pool_id, Username=username)
+        except ClientError as exc:
+            if _error_code(exc) != "UserNotFoundException":
+                raise
+            cleared.append(username)
+            continue
+        attributes = {
+            a["Name"]: a.get("Value") for a in response.get("UserAttributes", [])
+        }
+        groups = user_groups(client, pool_id, username)
+        if attributes.get("name") != name or not groups <= allowed_groups:
+            print(f"cognito: {user_id} kept (changed by hand)", file=out)
+            continue
+        try:
+            client.admin_delete_user(UserPoolId=pool_id, Username=username)
+        except ClientError as exc:
+            if _error_code(exc) != "UserNotFoundException":
+                raise
+        else:
+            print(f"cognito: {user_id} deleted (retired)", file=out)
+        cleared.append(username)
+    return cleared
+
+
 # ---- CLI ----
 
 
@@ -1265,7 +1369,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reset-passwords",
         action="store_true",
-        help="give all 4 test users new passwords",
+        help="give all 3 test users new passwords",
     )
     parser.add_argument(
         "--user-pool-id",
@@ -1329,11 +1433,25 @@ def _run_local(
         print(f"registry: table {TABLE} created", file=out)
     check_device_ownership(client, seed, sleep=sleep)
     items = build_registry_items(seed, local_subs(seed), now)
+    _write_and_prune(client, seed, items, out, sleep)
+    return 0
+
+
+def _write_and_prune(
+    client: Any,
+    seed: dict[str, Any],
+    items: list[dict[str, Any]],
+    out: TextIO,
+    sleep: Callable[[float], None],
+) -> None:
+    """Write the seeded items, then (only after the new links exist) remove the seed
+    links that are no longer in the seed file."""
     print(
         f"registry: {write_registry(client, items, sleep=sleep)} items written",
         file=out,
     )
-    return 0
+    removed = prune_seed_links(client, seed, items, sleep=sleep)
+    print(f"registry: {removed} old seed links removed", file=out)
 
 
 def _delete_registry(
@@ -1380,6 +1498,7 @@ def _run_live(
     dynamodb = client_factory("dynamodb")
 
     users = seed["users"]
+    retired = ", ".join(entry[0] for entry in RETIRED_USERS)
     print(f"account: {account}", file=out)
     print(f"region: {REGION}", file=out)
     print(f"user pool: {pool_id}", file=out)
@@ -1388,7 +1507,8 @@ def _run_live(
         print(
             f"plan: delete the seeded items in {TABLE} ({len(seed['residents'])}"
             f" residents, {len(seed['devices'])} devices, seed links), the"
-            f" {len(users)} test users, and their lines in {passwords_path}",
+            f" {len(users)} test users and the retired test user ({retired}) if it"
+            f" exists, and their lines in {passwords_path}",
             file=out,
         )
     else:
@@ -1397,6 +1517,12 @@ def _run_live(
         print(
             f"plan: {action} {len(users)} test users, then write"
             f" {len(build_registry_items(seed, local_subs(seed), now))} items to {TABLE}",
+            file=out,
+        )
+        print(
+            "plan: then clean up: remove seed links that are no longer in the seed"
+            f" file, and delete the retired test user ({retired}) if it exists and"
+            f" its line in {passwords_path}",
             file=out,
         )
     if not args.delete:
@@ -1408,7 +1534,10 @@ def _run_live(
     if args.delete:
         _delete_registry(dynamodb, seed, out, sleep)
         delete_users(cognito, pool_id, users, out)
-        removed = remove_password_lines(passwords_path, [u["email"] for u in users])
+        cleared = delete_retired_users(cognito, pool_id, out)
+        removed = remove_password_lines(
+            passwords_path, [u["email"] for u in users] + cleared
+        )
         print(f"passwords: {removed} lines removed from {passwords_path}", file=out)
         return 0
 
@@ -1422,10 +1551,15 @@ def _run_live(
         if passwords:
             _save_passwords(passwords_path, passwords, out, err)
     items = build_registry_items(seed, subs, now)
-    print(
-        f"registry: {write_registry(dynamodb, items, sleep=sleep)} items written",
-        file=out,
-    )
+    _write_and_prune(dynamodb, seed, items, out, sleep)
+    # Only after the current users exist and their links are written.
+    cleared = delete_retired_users(cognito, pool_id, out)
+    removed = remove_password_lines(passwords_path, cleared)
+    if removed:
+        print(
+            f"passwords: {removed} retired lines removed from {passwords_path}",
+            file=out,
+        )
     return 0
 
 

@@ -26,7 +26,7 @@ from events import (
 )
 
 KEY_RE = re.compile(
-    r"^telemetry/message=(?P<message>[a-z]{1,16})/date=(?P<date>\d{4}-\d{2}-\d{2})/"
+    r"^telemetry/message=(?P<message>[a-z_]{1,16})/date=(?P<date>\d{4}-\d{2}-\d{2})/"
     r"(?P<stamp>\d{8}T\d{6}Z)-(?P<uuid>[0-9a-f-]{36})\.jsonl\.gz$"
 )
 NOW = datetime(2026, 10, 18, 3, 20, 5, tzinfo=UTC)
@@ -97,14 +97,29 @@ def test_parse_body_returns_message_and_object():
     assert handler.parse_body(json.dumps(b)) == ("vitals", b)
 
 
-@pytest.mark.parametrize("message", ["a", "a" * 16, "status", "somethingnew"])
-def test_parse_body_keeps_any_lowercase_message_up_to_16_letters(message):
+@pytest.mark.parametrize(
+    "message",
+    ["a", "a" * 16, "status", "somethingnew", "vitals_alert", "alert_cancel"],
+)
+def test_parse_body_keeps_any_lowercase_message_up_to_16_characters(message):
     assert handler.parse_body(json.dumps(body(message)))[0] == message
 
 
 @pytest.mark.parametrize(
     "message",
-    ["", "a" * 17, "Vitals", "vitals1", "vi-tals", "vitals\n", "../x", 5, None, True],
+    [
+        "",
+        "a" * 17,
+        "vitals_alert_toolong",
+        "Vitals",
+        "vitals1",
+        "vi-tals",
+        "vitals\n",
+        "../x",
+        5,
+        None,
+        True,
+    ],
 )
 def test_parse_body_bad_message_becomes_unknown(message):
     b = body("vitals", message=message)
@@ -366,6 +381,27 @@ def test_unknown_message_type_goes_to_message_unknown(history_bucket):
 
     [key] = all_keys(history_bucket)
     assert key.startswith("telemetry/message=unknown/date=2026-10-18/")
+    assert read_lines(history_bucket, key) == [b]
+
+
+@pytest.mark.parametrize("message", ["vitals_alert", "alert_cancel"])
+def test_message_with_an_underscore_goes_to_its_own_folder(history_bucket, message):
+    b = body(message)
+
+    handler.lambda_handler(sqs_event(record(b)), None)
+
+    [key] = all_keys(history_bucket)
+    assert KEY_RE.match(key)["message"] == message
+    assert read_lines(history_bucket, key) == [b]
+
+
+def test_message_name_over_16_characters_goes_to_message_unknown(history_bucket):
+    b = body("vitals", message="vitals_alert_toolong")
+
+    handler.lambda_handler(sqs_event(record(b)), None)
+
+    [key] = all_keys(history_bucket)
+    assert KEY_RE.match(key)["message"] == "unknown"
     assert read_lines(history_bucket, key) == [b]
 
 

@@ -34,7 +34,9 @@ device's newest entry, runs the cloud check (vitals-alerts criteria 7-11): look 
 resident (registry.py) and their thresholds (thresholds.py, both cached), compare the
 newest two entries (vitals_check.py), and send a warning per finding. A failed send
 raises, so Lambda's async retry runs it again. `device_health_handler` reads no
-registry and raises no alerts.
+registry and raises no alerts; for a wearable it also keeps `worn_false_since` on the
+MSG#status item, which the watchdog reads (latest_store.py; docs/features/watchdog.md,
+criterion 9).
 
 Invalid messages are logged with a reason code and dropped without raising, so they
 aren't retried (and raise no alert). AWS errors are raised, so Lambda's async retry
@@ -109,9 +111,10 @@ def _queue_critical_alert(msg: ValidMessage) -> str:
 
 
 def _queue_cancel(msg: ValidMessage) -> None:
-    """Look up the resident and send the status_update for a wearable alert_cancel."""
+    """Look up the resident (uncached) and send the status_update for a wearable
+    alert_cancel."""
     resident_id = registry.resident_for_device(
-        dynamodb_client(), os.environ["REGISTRY_TABLE"], msg.device_id
+        dynamodb_client(), os.environ["REGISTRY_TABLE"], msg.device_id, fresh=True
     )
     update = alerts.build_cancel_update(msg, resident_id)
     alerts.send_status_update(sqs_client(), os.environ["ALERTS_QUEUE_URL"], update)

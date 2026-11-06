@@ -1,7 +1,7 @@
 # IoT metrics contract
 
-Status: **approved** 2026-10-25. The offline timeout below stays *proposed* until the
-alerting rules are decided.
+Status: **approved** 2026-10-25. The offline timeout below was decided with the
+watchdog feature (2026-11-03).
 
 The contract between devices and the backend. Devices, the simulator, the IoT topic
 rules, and the ingest Lambdas are all built from this file. Change it first.
@@ -122,7 +122,7 @@ below.
 | bedroom | `status` | heartbeat | every 5 min |
 
 A device is considered offline after 15 minutes with no `status` message (three
-missed heartbeats). *(Proposed; confirm with the alerting rules.)*
+missed heartbeats). (Decided 2026-11-03, docs/features/watchdog.md.)
 
 Each message type is routed by one of three IoT rules (`health`, `telemetry`, `alert`);
 see `docs/decisions/0001-iot-rule-routing.md`.
@@ -364,8 +364,18 @@ conditions and thresholds are decided under Open decision #2 (alerting rules). W
 component raises each one is in `docs/decisions/0001-iot-rule-routing.md`.
 
 - **Confirmed fall:** a wearable `fall` event.
-- **Possible fall:** bedroom `bed` → `occupied: false`, then `motion: false` and no
-  `occupied: true` within N minutes, at night. Stronger when the wearable is not worn.
+- **Possible fall (built in docs/features/possible-fall.md):** every 5 minutes the
+  `watchdog` checks every assigned bedroom unit that is not offline: a **critical**
+  `possible_fall` when its newest `bed` entry is `occupied: false`, vacated between
+  22:00 and 06:59:59 SGT, at least 20 minutes ago, its newest `motion` entry is
+  `motion: false` (or there is none), and the resident's wearable is not worn (no
+  wearable, no `status` in the last 15 minutes, or a recent one with `worn: false`; a
+  recent `worn: true` from any of the resident's wearables means no alert). Times are
+  the entry's `ts`, or `received_at` when `clock_skew` is true. Emailed to caregivers
+  and nurses at once; resolved automatically, with a follow-up email, when the newest
+  `bed` entry is `occupied: true` again; the wearable's "I'm OK" also cancels it. A
+  developer can put one unit in test mode for live checks (any time counts as night,
+  2-minute wait, expires after 2 hours).
 - **Abnormal vitals (cloud check, built in docs/features/vitals-alerts.md):**
   `telemetry` compares every wearable `vitals` message with the resident's thresholds
   (their `THRESHOLDS` item in the registry, per limit, else the defaults: heart rate
@@ -381,7 +391,15 @@ component raises each one is in `docs/decisions/0001-iot-rule-routing.md`.
 - **Cancel (built in docs/features/alert-cancel.md):** a wearable `alert_cancel`
   cancels that wearable's open alerts up to the time the press was received
   (`received_at`).
-- **Device problems:** device offline, low battery, wearable not worn for a long time.
+- **Device problems (built in docs/features/watchdog.md):** the `watchdog` Lambda checks
+  every assigned device every 5 minutes against its newest `status`: **device offline**
+  after more than 15 minutes with no `status` (three missed heartbeats); **low battery**
+  when `battery_pct` is below 20 and `charging` is not true (`null`, mains-powered
+  bedroom units, never); **wearable not worn** when `worn` has been false (and
+  `charging` not true) for at least 2 hours, checked between 08:00 and 22:00 SGT. An
+  offline device is not checked for battery or worn. All `warning`, emailed to the ops
+  team and the resident's caregivers (nurses see them in the portal only), never
+  escalated, and resolved without email when the condition clears.
 
 ## Volume
 

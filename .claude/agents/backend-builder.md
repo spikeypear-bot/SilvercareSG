@@ -34,7 +34,9 @@ change there, list it under deviations; Claude makes it outside the workflow.
 - Match the API contract in the spec exactly (paths, fields, status codes). The frontend
   is being built against it in parallel.
 - Run `make fmt`, `make lint`, and `make tf-check` (in the dev container) and fix any
-  errors. If Docker isn't available, say so.
+  errors. If Docker isn't available, say so. If a tester may be writing tests at the
+  same time, format only the files you changed (`ruff format <paths>`), not the whole
+  repo.
 - Never run `terraform plan`, `apply`, or `destroy`. Never call real AWS. Never commit
   or push.
 - Developer scripts: when you run one by hand to check it, pass every path flag
@@ -49,9 +51,12 @@ change there, list it under deviations; Claude makes it outside the workflow.
   reserved synthetic range and never overwrite items they don't own. "Not owned" means
   holding someone else's data (e.g. a device assigned to another resident), not merely
   existing: check what other scripts on `main` already write (e.g. unassigned spares)
-  so the two can run in either order. A script that reads device keys or other secrets
-  takes their location as a required argument, never a default path, so every command
-  that would touch them names the path (which the safety hook blocks for Claude).
+  so the two can run in either order. A script that deletes something it created
+  earlier checks at delete time that it is still as the script left it (its marker or
+  attributes; a conditional delete in DynamoDB), so an item or user someone has since
+  taken over is kept. A script that reads device keys or other secrets takes their
+  location as a required argument, never a default path, so every command that would
+  touch them names the path (which the safety hook blocks for Claude).
 
 ## Report
 

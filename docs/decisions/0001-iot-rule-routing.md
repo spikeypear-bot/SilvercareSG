@@ -86,6 +86,24 @@ wearable's `alert_cancel` ("I'm OK" button). `critical-alert` turns it into a
 device's open alerts and sends follow-up emails. Track B's acknowledge API sends the
 same `status_update` message (`acknowledged`).
 
+Amended 2026-11-04 (`docs/features/alert-routing.md`): critical alerts and alerts from
+unassigned devices are emailed to `silvercare-nurses` at once by `alert-processor`, with
+no escalation check. Only warnings from assigned devices still use the delayed check,
+now `DelaySeconds = 300`. Nurses acknowledge and caregivers cancel, both through
+Track B's API sending a `status_update`.
+
+Amended 2026-11-04 (`docs/features/watchdog.md`): device problems (offline, low
+battery, not worn) are detected by a scheduled `watchdog` Lambda (EventBridge, every 5
+minutes), not by `device-health`. It sends alerts to the alerts queue like the other
+detectors, and resolves them with a `status_update` (`system` / `resolved`), so
+`alert-processor` stays the only writer of alert items. `device-health` only records
+`worn_false_since`.
+
+Amended 2026-11-04 (`docs/features/possible-fall.md`): the watchdog also raises the
+possible fall at night from the newest `bed` and `motion` entries (`by-message`
+index), as a critical alert on the same queue, and resolves it with a `system` /
+`resolved` status update (`reason = back_in_bed`) when the resident is back in bed.
+
 Responsibilities:
 
 - **`device-health`**: validate, add the `status` to the device's latest 5 (the newest
@@ -141,8 +159,15 @@ and write them to S3 in batches.
   twice; the cleaning step removes duplicates by `message_id`.
 - **Alerts** go to the same bucket under `alerts/`, written by `alert-processor`.
 - **Bucket:** all public access blocked, `BucketOwnerEnforced`, SSE-S3, TLS-only bucket
-  policy, in `ap-southeast-1`. How long history is kept is Open decision #4 (retention);
-  the lifecycle rule follows that decision.
+  policy, in `ap-southeast-1`.
+- **Retention** (decided 2026-11-01, Open decision #4):
+  - raw `telemetry/`: downsampled to daily summaries after 90 days and deleted at
+    365 days *(both proposed)*;
+  - alerts (`alerts/`) and daily summaries (`summaries/`): the resident's lifetime +
+    6 years (MOH Circular 85/2022, Licence Conditions on the Retention Periods of Patient Health Records, under the Healthcare Services Act 2020).
+  The bucket's lifecycle rule doesn't do this yet: `infra/history.tf` needs a
+  `telemetry/` expiry at 365 days, added once the daily summary job exists. See
+  Retention in `docs/data-model.md`.
 - **Cost** (US prices from memory, check `ap-southeast-1`): SQS ~1.3M sends plus
   Lambda polling, a little over the 1M free requests, about US$0.50/month; ~43,000 S3
   PUTs (5 types × one file per 5 min) about US$0.25/month; Lambda inside the free tier;

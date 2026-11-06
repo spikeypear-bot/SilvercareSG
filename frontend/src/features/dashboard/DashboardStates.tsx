@@ -2,11 +2,17 @@ import { RefreshCw } from 'lucide-react'
 import { Button } from '../../components/Button'
 import { Notice } from '../../components/Notice'
 
-export function DashboardError({ onRetry }: { onRetry: () => void }) {
+export function DashboardError({
+  onRetry,
+  title = "We couldn't load the dashboard.",
+}: {
+  onRetry: () => void
+  title?: string
+}) {
   return (
     <Notice
       tone="error"
-      title="We couldn't load the dashboard."
+      title={title}
       action={
         <Button variant="secondary" onClick={onRetry}>
           <RefreshCw className="size-5" aria-hidden="true" />

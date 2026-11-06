@@ -23,7 +23,6 @@ No Cognito group uses this feature. There is no API and no screen.
 |---|---|---|
 | staff | nothing (new) | nothing (new) |
 | caregiver | nothing (new) | nothing (new) |
-| family | nothing (new) | nothing (new) |
 
 How access to a specific resident is decided: not applicable. Devices know nothing about
 residents (`docs/metrics.md`); the simulator only uses the seed file to pick each

@@ -17,7 +17,8 @@ if [ "$outcome" != "success" ]; then
   echo "### ❌ Terraform plan failed"
   echo
   echo '```'
-  head -c 4000 "$errfile" || true
+  # Error text can quote IAM user ARNs from Lake Formation grants; PR comments are public.
+  head -c 4000 "$errfile" | sed -E 's#(:user/)[^ "]+#\1<redacted>#g' || true
   echo
   echo '```'
   exit 0

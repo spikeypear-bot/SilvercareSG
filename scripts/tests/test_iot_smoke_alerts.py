@@ -227,6 +227,40 @@ def test_report_alerts_prints_ids_and_expectations_but_no_values(smoke):
         assert value not in stripped, value
 
 
+def _alerts_report(smoke) -> str:
+    import io
+
+    out = io.StringIO()
+    smoke.report_alerts(WEARABLE, alert_messages(smoke), out)
+    return out.getvalue()
+
+
+def test_report_alerts_expects_the_two_critical_alerts_at_the_nurses_at_once(smoke):
+    text = _alerts_report(smoke)
+
+    # docs/features/alert-routing.md, criterion 18.
+    assert "2 'SilverCare CRITICAL alert' emails to the nurse subscribers" in text
+    assert "'Sent to the care centre at once: critical alert.'" in text
+    assert "'The care centre nurse has also been alerted.'" in text
+
+
+def test_report_alerts_expects_one_escalated_email_after_5_minutes(smoke):
+    text = _alerts_report(smoke)
+
+    assert (
+        "about 5 minutes later, 1 'SilverCare ESCALATED alert: High heart rate'" in text
+    )
+    assert "60 s" not in text
+    assert "3 'SilverCare ESCALATED alert'" not in text
+
+
+def test_report_alerts_expects_unassigned_alerts_to_email_only_the_nurses(smoke):
+    text = _alerts_report(smoke)
+
+    assert "emails only the nurses, all 3 at once" in text
+    assert "emails nobody" not in text
+
+
 # ---- main --alerts with a fake connection ----
 
 

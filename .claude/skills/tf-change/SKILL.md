@@ -17,13 +17,25 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
   https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html.
 - Region: ap-southeast-1
 - Encrypt every data store at rest (KMS or AWS-managed keys) and enforce TLS in transit.
+  CloudWatch alarms can't publish to an SNS topic encrypted with `aws/sns`, but Lambdas
+  can: give alarms their own topic and send data-carrying emails through a separate
+  `aws/sns` topic (free) rather than leaving one shared topic unencrypted or paying for a
+  customer-managed key.
 - IAM: follow the `iam-policy` skill (one role per Lambda, no `*` actions or resources).
 - Tag every resource: `project = "silvercare"`, `managed_by = "terraform"`
 - Pin provider versions in `required_providers`, and set `required_version` for Terraform
   (tflint flags it if missing).
 - Outputs: `terraform apply` in `deploy.yml` prints every non-sensitive output to the
   public Actions log. Mark an output `sensitive = true` unless it's fine to publish (it
-  can still be read with `terraform output`).
+  can still be read with `terraform output`). Any `terraform` step in a workflow must also
+  redact stderr, because discarding stdout alone leaves error text in that log.
+- A name Terraform doesn't create (a hard-coded `default`, a `data` lookup) fails only at
+  plan or apply: `make tf-check` never contacts AWS. Create it in Terraform where that's
+  safe; otherwise have the owner confirm it exists in AWS before the first push. Docs saying
+  it exists aren't proof, especially for anything made by hand.
+- A new service that stores or returns data: add its read actions to `DenyDataReads` in
+  `infra/bootstrap/ci-plan-role.tf` (the owner applies it). The plan role has
+  `ReadOnlyAccess`, and any PR from this repo can use it.
 - A `file()` on a missing path errors before any `precondition` runs. To fail with your
   own message, guard it: `fileexists(p) ? file(p) : "<placeholder>"`. Test such logic
   without AWS on `terraform_data` in a scratch dir.

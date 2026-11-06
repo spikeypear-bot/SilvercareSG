@@ -48,6 +48,13 @@ def expected(type_label: str, severity_label: str, reading: str) -> str:
                 f"Resident: {RESIDENT}",
                 WHEN_LINE,
                 reading,
+                # Critical caregiver emails say the nurses were alerted too
+                # (alert-routing criterion 8); warnings don't.
+                *(
+                    ["", "The care centre nurse has also been alerted."]
+                    if severity_label == "Critical"
+                    else []
+                ),
                 "",
                 f"Open the SilverCare portal: {PORTAL}/",
                 "",

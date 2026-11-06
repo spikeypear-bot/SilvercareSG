@@ -38,11 +38,16 @@ def resident_for_device(
     table_name: str,
     device_id: str,
     clock: Callable[[], float] = time.monotonic,
+    fresh: bool = False,
 ) -> str:
-    """The device's resident_id or UNASSIGNED. AWS errors are raised as they are."""
+    """The device's resident_id or UNASSIGNED. AWS errors are raised as they are.
+
+    fresh=True skips the cache (still refreshing it): an "I'm OK" cancel can close the
+    resident's possible-fall alerts too, so a just-reassigned wearable must not act for
+    its previous resident (docs/features/possible-fall.md)."""
     now = clock()
     cached = _cache.get(device_id)
-    if cached is not None and cached[1] > now:
+    if not fresh and cached is not None and cached[1] > now:
         return cached[0]
 
     response = client.get_item(

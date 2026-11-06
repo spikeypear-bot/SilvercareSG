@@ -31,14 +31,29 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 ## Readiness checklist
 
 - [ ] Every acceptance criterion is testable: a tester could write a pass/fail test for it.
+- [ ] Anything the spec says about existing behaviour was checked in the code that runs it,
+      not a comment or memory, and anything about AWS behaviour in AWS's docs. Every
+      "see Open questions" pointer has a matching item.
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
-      **specific resident** is decided.
+      **specific resident** is decided. A new group (e.g. `ops`) also lists which
+      existing access patterns in `docs/data-model.md` it gets and which it's refused,
+      and the API's check order (group → link → read → type rule), so an error code
+      can't reveal that a record the caller may not see exists.
 - [ ] When a group gains a new action (e.g. caregivers acknowledge), the spec says what
       other users see about who did it (name, role, or nothing): that's a who-sees-what
       decision for the user.
 - [ ] A message or contract another component sends (e.g. a queue message from Track B's
       API carrying who did something) states the checks the **sender** must make
       (identity from the verified token, group, resident link): the receiver can't.
+      The sender also validates any user-typed field with the receiver's rules and
+      returns `400` (otherwise it fails later in a DLQ with no error for the user), and
+      never logs request bodies.
+- [ ] A changed delay, retry, or timeout is rechecked against the other timings it
+      interacts with (stale cutoffs, visibility timeout × receive count, DLQ alarms).
+- [ ] Anything that acts on a resident's alert using **device** data (a resolve, a
+      cancel, a follow-up) says what happens after the device is reassigned: data from
+      the new resident must not close or be emailed about the old resident's alert,
+      including through cached device → resident lookups.
 - [ ] Live checks (smoke tests against AWS) don't rely on shared data teammates can
       change (e.g. thresholds: use values that fail any sensible limit), and space out
       messages whose order matters (sent together, they run in parallel). Anything that
@@ -52,7 +67,8 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] Alerting inputs: validation ranges don't reject the emergency itself. Ranges
       copied from routine readings can (heart rate 0 = no pulse, cardiac arrest); for
       each alert, check the worst real reading is still accepted.
-- [ ] Personal data touched is listed, with its retention.
+- [ ] Personal data touched is listed, with its retention, and how one person's data would
+      be erased, checked against how it's really stored (e.g. files batching many devices).
 - [ ] Out of scope is filled in.
 - [ ] Open questions is empty.
 - [ ] Size: at most about two screens and two API routes, or the user agreed to the size.

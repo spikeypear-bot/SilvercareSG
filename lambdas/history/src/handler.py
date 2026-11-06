@@ -36,7 +36,8 @@ from aws_lambda_powertools import Logger
 logger = Logger()
 
 KEY_PREFIX = "telemetry"
-MESSAGE_RE = re.compile(r"[a-z]{1,16}")
+# Underscores are for vitals_alert and alert_cancel.
+MESSAGE_RE = re.compile(r"[a-z_]{1,16}")
 UNKNOWN_MESSAGE = "unknown"
 UNPARSEABLE_MESSAGE = "unparseable"
 CONTENT_TYPE = "application/gzip"

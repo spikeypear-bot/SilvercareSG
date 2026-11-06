@@ -13,6 +13,10 @@ Alert types and severities:
     fall                                  critical
     hr_high, hr_low, spo2_low             warning (cloud check) or critical (device)
     skin_temp_high, skin_temp_low         warning (the device sends no skin temperature)
+    device_offline, battery_low, not_worn warning (device problems, raised by the
+                                          watchdog; docs/features/watchdog.md)
+    possible_fall                         critical (raised by the watchdog;
+                                          docs/features/possible-fall.md)
 
 Vitals `details` are {metric, value, limit, direction} plus `previous_value` for a
 warning or `held_s` for a critical alert. `metric` and `direction` must match the
@@ -20,27 +24,57 @@ alert type; `value`, `limit`, and `previous_value` must be in the metric's valid
 from docs/metrics.md (integers for hr_bpm and spo2_pct), except that a critical
 `hr_low` may have `value` 0 (no pulse); `held_s` is an integer 10-600.
 
+Device-problem `details` (docs/features/watchdog.md, criteria 8, 8a, 12):
+`device_offline` {last_seen, optional grouped}, `battery_low` {battery_pct},
+`not_worn` {since}; `last_seen` and `since` are ISO 8601 ms Z timestamps,
+`battery_pct` an integer 0-100, `grouped` a boolean.
+
+Possible fall (docs/features/possible-fall.md, criterion 9), a critical health alert
+raised by the watchdog: `details` {out_of_bed_since (ISO 8601 ms Z), wearable
+(not_worn, no_recent_status, or no_wearable), optional test_mode (only true)}.
+
 Escalation checks (docs/features/escalation.md, criterion 1) are a second message kind
-on the same queue, sent by alert-processor itself with a 60 s delay:
+on the same queue, sent by alert-processor itself with a 300 s delay (warnings from
+assigned devices only, docs/features/alert-routing.md):
 
     {"kind": "escalation_check", "schema_version": 1, "alert_id": "<uuid>",
      "resident_id": "res-0003", "event_ts": "2026-10-18T03:14:07.360Z"}
 
-Status updates (docs/features/alert-cancel.md, criterion 6) are a third kind, sent
-without delay by `critical-alert` (the wearable "I'm OK" cancel) and later by Track B's
-acknowledge API:
+Status updates (docs/features/alert-cancel.md, criterion 6; changed by
+docs/features/alert-routing.md, criterion 9) are a third kind, sent without delay by
+`critical-alert` (the wearable "I'm OK" cancel) and later by Track B's API (caregiver
+cancel, nurse acknowledge):
 
     {"kind": "status_update", "schema_version": 1, "resident_id": "res-0001",
      "new_status": "cancelled", "changed_at": "2026-11-03T02:00:05.000Z",
      "by_role": "resident", "by": null, "by_name": null,
      "target": {"device_id": "wearable-0001"}}
 
-`target` is {"device_id"} (every open alert from that device) or
-{"alert_id", "event_ts"} (one alert). A `resident` update must be `cancelled` with a
-device target, `by` null and `by_name` null; a `staff` or `caregiver` update must be
-`acknowledged` with an alert target, a Cognito `sub` (UUID) as `by`, and a `by_name`
-of 1-100 characters. `by_name` is a full name: it is used only to build the masked name
-in the follow-up email and never stored or logged.
+`target` is {"device_id"} (every open or acknowledged alert from that device) or
+{"alert_id", "event_ts"} (one alert). The rules per `by_role` (docs/features/watchdog.md,
+criteria 10 and 14a, add the ops and caregiver acknowledge and the system resolve):
+
+    resident   cancelled     device target  by null         by_name null   no note
+    caregiver  cancelled     alert target   by Cognito sub  by_name 1-100  no note
+    caregiver  acknowledged  alert target   by Cognito sub  by_name 1-100  no note
+    nurse      acknowledged  alert target   by Cognito sub  by_name null   note optional
+    ops        acknowledged  alert target   by Cognito sub  by_name null   no note
+    system     resolved      alert target   by null         by_name null   no note,
+                                                                           reason optional
+
+`resolved` comes only from `system` (the watchdog) and `system` only with `resolved`.
+A `system` update may have an optional `reason`, only "back_in_bed" (the possible-fall
+resolve, docs/features/possible-fall.md, criterion 7); a device-problem resolve has no
+`reason` key. Every other role's update must not have the key. Whether the reason fits
+the alert's type is checked by alert-processor after reading the target.
+Which role may change which alert type (device problems or health alerts) depends on
+the stored alert, so alert-processor checks it after reading the target, not here.
+
+`note` (nurse acknowledge only) is absent, null, or 1-500 characters, not only
+whitespace, with no control or other non-printing characters except newline. Any other `by_role` (e.g.
+`staff`, `family`) or combination is rejected. `by_name` is a full name: it is used
+only to build the masked name in the follow-up email and never stored or logged; the
+note is stored on the alert and emailed to caregivers, never logged.
 
 A body without `kind` is an alert message. `parse_message` returns an `Alert`, an
 `EscalationCheck`, a `StatusUpdate`, or a `Rejection`; an unknown `kind` is rejected
@@ -98,16 +132,37 @@ STATUS_UPDATE_FIELDS = (
     "by_name",
     "target",
 )
+# Optional: absent or null means no note (alert-routing criterion 9); `reason` only on
+# a system update (possible-fall criterion 7).
+STATUS_UPDATE_OPTIONAL_FIELDS = ("note", "reason")
+REASON_BACK_IN_BED = "back_in_bed"
+REASONS = frozenset({REASON_BACK_IN_BED})
 STATUS_CANCELLED = "cancelled"
 STATUS_ACKNOWLEDGED = "acknowledged"
-NEW_STATUSES = frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED})
+STATUS_RESOLVED = "resolved"
+NEW_STATUSES = frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED, STATUS_RESOLVED})
 ROLE_RESIDENT = "resident"
-ROLE_STAFF = "staff"
 ROLE_CAREGIVER = "caregiver"
-BY_ROLES = frozenset({ROLE_RESIDENT, ROLE_STAFF, ROLE_CAREGIVER})
+ROLE_NURSE = "nurse"
+ROLE_OPS = "ops"
+ROLE_SYSTEM = "system"
+BY_ROLES = frozenset({ROLE_RESIDENT, ROLE_CAREGIVER, ROLE_NURSE, ROLE_OPS, ROLE_SYSTEM})
+# The new_status values each by_role may send (alert-routing criterion 9; watchdog
+# criteria 10 and 14a).
+ROLE_STATUSES: dict[str, frozenset[str]] = {
+    ROLE_RESIDENT: frozenset({STATUS_CANCELLED}),
+    ROLE_CAREGIVER: frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED}),
+    ROLE_NURSE: frozenset({STATUS_ACKNOWLEDGED}),
+    ROLE_OPS: frozenset({STATUS_ACKNOWLEDGED}),
+    ROLE_SYSTEM: frozenset({STATUS_RESOLVED}),
+}
+# Roles whose `by` is null (no Cognito user); every other role sends a sub.
+ROLES_WITHOUT_BY = frozenset({ROLE_RESIDENT, ROLE_SYSTEM})
 DEVICE_TARGET_FIELDS = frozenset({"device_id"})
 ALERT_TARGET_FIELDS = frozenset({"alert_id", "event_ts"})
 BY_NAME_MAX_LEN = 100
+NOTE_MAX_LEN = 500
+NOTE_NEWLINE = "\n"
 # A Cognito user's sub: a UUID, lowercase.
 SUB_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
@@ -141,6 +196,25 @@ METRIC_RANGES: dict[str, NumberField] = {
 HELD_S = NumberField(integer=True, minimum=10, maximum=600)
 NO_PULSE_VALUE = 0
 
+# Device problems (docs/features/watchdog.md, criterion 12).
+DEVICE_OFFLINE = "device_offline"
+BATTERY_LOW = "battery_low"
+NOT_WORN = "not_worn"
+DEVICE_PROBLEM_TYPES = frozenset({DEVICE_OFFLINE, BATTERY_LOW, NOT_WORN})
+BATTERY_PCT = NumberField(integer=True, minimum=0, maximum=100)
+# alert_type -> (required details fields, optional details fields).
+DEVICE_PROBLEM_DETAILS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    DEVICE_OFFLINE: (("last_seen",), ("grouped",)),
+    BATTERY_LOW: (("battery_pct",), ()),
+    NOT_WORN: (("since",), ()),
+}
+
+# Possible fall (docs/features/possible-fall.md, criterion 9).
+POSSIBLE_FALL = "possible_fall"
+WEARABLE_STATES = frozenset({"not_worn", "no_recent_status", "no_wearable"})
+POSSIBLE_FALL_REQUIRED = ("out_of_bed_since", "wearable")
+POSSIBLE_FALL_OPTIONAL = ("test_mode",)
+
 # Vitals alert_type -> (metric, direction).
 VITALS_TYPES: dict[str, tuple[str, str]] = {
     "hr_high": ("hr_bpm", "above"),
@@ -158,6 +232,10 @@ TYPE_SEVERITIES: dict[str, frozenset[str]] = {
     "spo2_low": SEVERITIES,
     "skin_temp_high": frozenset({SEVERITY_WARNING}),
     "skin_temp_low": frozenset({SEVERITY_WARNING}),
+    DEVICE_OFFLINE: frozenset({SEVERITY_WARNING}),
+    BATTERY_LOW: frozenset({SEVERITY_WARNING}),
+    NOT_WORN: frozenset({SEVERITY_WARNING}),
+    POSSIBLE_FALL: frozenset({SEVERITY_CRITICAL}),
 }
 ALERT_TYPES = frozenset(TYPE_SEVERITIES)
 
@@ -194,8 +272,10 @@ class EscalationCheck:
 
 @dataclass(frozen=True)
 class StatusUpdate:
-    """A validated status_update. Exactly one target: device_id (a cancel), or
-    alert_id + event_ts (an acknowledge). by and by_name are None for the resident."""
+    """A validated status_update. Exactly one target: device_id (a resident cancel),
+    or alert_id + event_ts (a caregiver cancel or acknowledge, a nurse or ops
+    acknowledge, a system resolve). by is None for the resident and the system,
+    by_name is set only for a caregiver, note only for a nurse."""
 
     resident_id: str
     new_status: str
@@ -207,6 +287,8 @@ class StatusUpdate:
     device_id: str | None = None
     alert_id: str | None = None
     event_ts: str | None = None
+    note: str | None = None
+    reason: str | None = None
 
 
 def _reject_constant(value: str) -> Any:
@@ -289,11 +371,63 @@ def _check_vitals_details(alert_type: str, severity: str, details: dict) -> str 
     return None
 
 
+def _check_device_problem_details(alert_type: str, details: dict) -> str | None:
+    """Watchdog criteria 8, 8a, 12: last_seen / since timestamps, battery_pct an
+    integer 0-100, grouped (device_offline only) a boolean."""
+    required, optional = DEVICE_PROBLEM_DETAILS[alert_type]
+    if set(details) - set(required) - set(optional):
+        return "unknown_field:details"
+    for name in required:
+        if name not in details:
+            return f"missing:details.{name}"
+    for name in ("last_seen", "since"):
+        if name in details:
+            if type(details[name]) is not str:
+                return f"wrong_type:details.{name}"
+            if parse_ts(details[name]) is None:
+                return f"invalid:details.{name}"
+    if "battery_pct" in details:
+        reason = _check_number("battery_pct", details["battery_pct"], BATTERY_PCT)
+        if reason:
+            return reason
+    if "grouped" in details and type(details["grouped"]) is not bool:
+        return "wrong_type:details.grouped"
+    return None
+
+
+def _check_possible_fall_details(details: dict) -> str | None:
+    """Possible-fall criterion 9: out_of_bed_since a timestamp, wearable one of three
+    values, optional test_mode only true; nothing else."""
+    if set(details) - set(POSSIBLE_FALL_REQUIRED) - set(POSSIBLE_FALL_OPTIONAL):
+        return "unknown_field:details"
+    for name in POSSIBLE_FALL_REQUIRED:
+        if name not in details:
+            return f"missing:details.{name}"
+    if type(details["out_of_bed_since"]) is not str:
+        return "wrong_type:details.out_of_bed_since"
+    if parse_ts(details["out_of_bed_since"]) is None:
+        return "invalid:details.out_of_bed_since"
+    if type(details["wearable"]) is not str:
+        return "wrong_type:details.wearable"
+    if details["wearable"] not in WEARABLE_STATES:
+        return "invalid:details.wearable"
+    if "test_mode" in details:
+        if type(details["test_mode"]) is not bool:
+            return "wrong_type:details.test_mode"
+        if details["test_mode"] is not True:
+            return "invalid:details.test_mode"
+    return None
+
+
 def _check_details(alert_type: str, severity: str, details: Any) -> str | None:
     if not isinstance(details, dict):
         return "wrong_type:details"
     if alert_type == "fall":
         return _check_fall_details(details)
+    if alert_type == POSSIBLE_FALL:
+        return _check_possible_fall_details(details)
+    if alert_type in DEVICE_PROBLEM_TYPES:
+        return _check_device_problem_details(alert_type, details)
     return _check_vitals_details(alert_type, severity, details)
 
 
@@ -451,38 +585,74 @@ def _check_target(target: Any) -> tuple[dict[str, str] | None, str]:
     return None, "invalid:target"
 
 
-def _check_role_rules(
-    by_role: str, new_status: str, target: dict[str, str], by: Any, by_name: Any
-) -> str | None:
-    """Criterion 6: what each by_role may send."""
-    if by_role == ROLE_RESIDENT:
-        if new_status != STATUS_CANCELLED:
-            return "invalid:new_status"
-        if "device_id" not in target:
-            return "invalid:target"
+def _valid_note(value: Any) -> bool:
+    """1-500 characters, at least one that isn't whitespace, and no control or other
+    non-printing characters except newline (alert-routing criterion 9). Format
+    characters (category Cf) are rejected too: bidi overrides and zero-width
+    characters could make the emailed note read differently from what was typed."""
+    if type(value) is not str or not 1 <= len(value) <= NOTE_MAX_LEN:
+        return False
+    if not value.strip():
+        return False
+    # Line and paragraph separators (Zl, Zp) show as line breaks in many mail clients.
+    return not any(
+        ch != NOTE_NEWLINE
+        and (
+            unicodedata.category(ch).startswith("C")
+            or unicodedata.category(ch) in ("Zl", "Zp")
+        )
+        for ch in value
+    )
+
+
+def _check_role_rules(body: dict, target: dict[str, str]) -> str | None:
+    """Alert-routing criterion 9, watchdog criteria 10 and 14a: what each by_role may
+    send. Only a nurse's update may have a `note` key (absent or null means no note);
+    every other role's must not have the key at all."""
+    by_role, new_status = body["by_role"], body["new_status"]
+    by, by_name = body["by"], body["by_name"]
+    if new_status not in ROLE_STATUSES[by_role]:
+        return "invalid:new_status"
+    expected_target = "device_id" if by_role == ROLE_RESIDENT else "alert_id"
+    if expected_target not in target:
+        return "invalid:target"
+    if by_role in ROLES_WITHOUT_BY:
         if by is not None:
             return "invalid:by"
-        if by_name is not None:
-            return "invalid:by_name"
-        return None
-    if new_status != STATUS_ACKNOWLEDGED:
-        return "invalid:new_status"
-    if "alert_id" not in target:
-        return "invalid:target"
-    if type(by) is not str or not SUB_RE.match(by):
+    elif type(by) is not str or not SUB_RE.match(by):
         return "invalid:by"
-    if not _valid_by_name(by_name):
+    if by_role == ROLE_CAREGIVER:
+        # Caregivers are linked to real residents only; Track B's link check should
+        # already stop this (defence in depth).
+        if body["resident_id"] == UNASSIGNED:
+            return "invalid:resident_id"
+        if not _valid_by_name(by_name):
+            return "invalid:by_name"
+    elif by_name is not None:
         return "invalid:by_name"
+    if by_role == ROLE_NURSE:
+        note = body.get("note")
+        if note is not None and not _valid_note(note):
+            return "invalid:note"
+    elif "note" in body:
+        return "invalid:note"
+    if "reason" in body:
+        # Possible-fall criterion 7: only on a system update, only back_in_bed.
+        if by_role != ROLE_SYSTEM:
+            return "invalid:reason"
+        if type(body["reason"]) is not str or body["reason"] not in REASONS:
+            return "invalid:reason"
     return None
 
 
 def validate_status_update(body: dict) -> StatusUpdate | Rejection:
-    """Check a parsed body with kind status_update against its schema (criterion 6).
-    Reason codes name the field, never its value (by_name is a full name)."""
+    """Check a parsed body with kind status_update against its schema (alert-routing
+    criterion 9). Reason codes name the field, never its value (by_name is a full name,
+    note is free text)."""
     for name in STATUS_UPDATE_FIELDS:
         if name not in body:
             return Rejection(f"missing:{name}")
-    if set(body) - set(STATUS_UPDATE_FIELDS):
+    if set(body) - set(STATUS_UPDATE_FIELDS) - set(STATUS_UPDATE_OPTIONAL_FIELDS):
         return Rejection("unknown_field")
 
     version = body["schema_version"]
@@ -511,9 +681,7 @@ def validate_status_update(body: dict) -> StatusUpdate | Rejection:
     if target is None:
         return Rejection(reason)
 
-    role_reason = _check_role_rules(
-        body["by_role"], body["new_status"], target, body["by"], body["by_name"]
-    )
+    role_reason = _check_role_rules(body, target)
     if role_reason:
         return Rejection(role_reason)
 
@@ -528,6 +696,8 @@ def validate_status_update(body: dict) -> StatusUpdate | Rejection:
         device_id=target.get("device_id"),
         alert_id=target.get("alert_id"),
         event_ts=target.get("event_ts"),
+        note=body.get("note"),
+        reason=body.get("reason"),
     )
 
 
@@ -572,7 +742,8 @@ def log_ids(text: Any) -> dict[str, str | None]:
 
     Anything else is logged as "invalid" (or omitted when absent), so free text from a
     malformed body never reaches the logs. Works for every message kind; for a status
-    update, device_id and alert_id come from `target`. Never `by` or `by_name`.
+    update, device_id and alert_id come from `target`. Never `by`, `by_name`, or
+    `note`.
     """
     body = parse_body(text)
     body = body if isinstance(body, dict) else {}

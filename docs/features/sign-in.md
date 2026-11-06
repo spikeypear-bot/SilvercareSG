@@ -6,28 +6,41 @@ status: built          # draft | ready | built
 
 ## Summary
 
-A Cognito user pool with four groups (`doctor`, `nurse`, `caregiver`, `family`) and a
+A Cognito user pool with groups `doctor`, `nurse`, `caregiver` (and `family`, removed by
+alert-routing, see below) and a
 React sign-in flow (email + password, optional authenticator-app MFA). After signing in,
-users land on a main page whose layout depends on their group: doctors and nurses get
-the **staff dashboard**, caregivers and family get the **family view**. There is no API
-yet, so the main page shows clearly labelled synthetic demo data from one local module.
+users land on a main page whose layout depends on their group: nurses get the **nurse
+dashboard** (alert response), doctors get the **doctor dashboard** (clinical review),
+caregivers get the **caregiver view** ("My residents"; called the family view before
+alert-routing). There is no API yet, so the main page
+shows clearly labelled synthetic demo data from one local module.
+
+**Changed by alert-routing (2026-11-04)** (docs/features/alert-routing.md): the
+`family` group is removed (family members get caregiver accounts; Track B deletes the
+Cognito group), so the frontend now gives a user in only that group the no-access
+screen. Only nurses acknowledge, shown as "the care centre nurse" (a shared account);
+caregivers cancel. Warnings escalate after 5 minutes; critical alerts and alerts from
+unassigned devices go to the care centre nurse at once.
 
 ## Users and access
 
 | Group | View | Can see | Can do |
 |---|---|---|---|
-| doctor | staff dashboard | every (demo) resident, all (demo) open alerts | sign in/out, set up or remove MFA, change password |
-| nurse | staff dashboard | same as doctor | same as doctor |
-| caregiver | family view | only the (demo) residents linked to them | sign in/out, set up or remove MFA, change password |
-| family | family view | only the (demo) residents linked to them | sign in/out, set up or remove MFA, change password |
+| nurse | nurse dashboard | every (demo) resident, all (demo) open and acknowledged alerts | sign in/out, set up or remove MFA, change password; acknowledge and resolve alerts (local state only until the API exists) |
+| doctor | doctor dashboard | every (demo) resident with vitals trends, a summary of the most urgent (demo) alerts | sign in/out, set up or remove MFA, change password; no acknowledge or resolve |
+| caregiver | caregiver view | only the (demo) residents linked to them | sign in/out, set up or remove MFA, change password |
+| family | no-access screen (group removed, see above) | nothing | sign out |
 
-- `doctor` and `nurse` together are what the rest of the docs call **staff**.
-- A user in several groups: if any group is `doctor` or `nurse`, show the staff
-  dashboard; otherwise if any is `caregiver` or `family`, show the family view.
-- A signed-in user with none of the four groups sees a "no access" screen (see Screens).
+- `doctor` and `nurse` together are what the rest of the docs call **staff**: both see
+  every resident. The two dashboards are the **staff dashboards**.
+- A user in several groups: if any group is `nurse`, show the nurse dashboard;
+  otherwise if any is `doctor`, the doctor dashboard; otherwise if any is `caregiver`,
+  the caregiver view. The header role badge follows the same order.
+- A signed-in user with none of the three groups (`family` alone counts as none) sees a
+  "no access" screen (see Screens).
 - How access to a specific resident is decided: in this feature all data is demo data,
-  so nothing is enforced. When the API exists, staff see every resident, and caregiver/
-  family see a resident only after the link check (data-model pattern 13). The group is
+  so nothing is enforced. When the API exists, staff see every resident, and caregivers
+  see a resident only after the link check (data-model pattern 13). The group is
   read from the ID token's `cognito:groups` claim and only selects which view to render.
 - Accounts are created by an admin only (no self sign-up). Admins create users in the
   Cognito console (users are data, not Terraform resources) and add them to a group.
@@ -114,16 +127,20 @@ yet, so the main page shows clearly labelled synthetic demo data from one local 
     and IDs (`res-0001`…, `wearable-0001`…, `bedroom-0001`…).
 19. The UI never computes "normal/abnormal" from vitals. Each demo resident and alert
     carries its own `status` (`ok` | `attention` | `urgent`) and alert `severity`
-    (`info` | `warning` | `critical`), as the API will later provide. Alert thresholds
-    are not defined in this feature.
+    (`warning` | `critical`, as `docs/data-model.md` defines them since the alerting
+    features), as the API will later provide. Alert thresholds are not defined in this
+    feature.
 20. A "Demo data" banner is visible on the main page in both views, with text (not
     only colour): "You are viewing synthetic demo data. No real resident information is
     shown."
-21. Staff dashboard shows 20 demo residents and their open demo alerts; the family view
-    shows the 2 demo residents linked to the signed-in demo account (the same 2 for every
-    caregiver/family user).
+21. The nurse and doctor dashboards show 20 demo residents and their open demo alerts;
+    the caregiver view shows the 2 demo residents linked to the signed-in demo account (the
+    same 2 for every caregiver user).
 22. Statuses and alert severities are always shown with an icon **and** a text label,
-    never colour alone. The alerts list is inside an `aria-live="polite"` region.
+    never colour alone. In the caregiver view the alerts timeline is inside an
+    `aria-live="polite"` region. The staff dashboards instead have one screen-reader
+    announcer per page, fed from the alert data (new alerts, escalations, nurse
+    actions); their alert lists are not live regions, so countdowns aren't read out.
 23. `npm run lint`, `npm run test`, and `npm run build` pass in `frontend/`.
 
 ### Dependencies
@@ -136,9 +153,11 @@ Allowed runtime npm packages (already installed by the app scaffold): `react`,
 
 - Reads: none from AWS. Main page reads only `demoData.ts`. Auth reads the user's own
   Cognito attributes (`name`, `email`) and groups from the ID token.
-- Writes: Cognito only, the user's own password and MFA settings.
-- New access patterns or tables: none. When the API exists, the staff dashboard maps to
-  patterns 5, 8, 9 and the family view to patterns 14, 10–12 in `docs/data-model.md`.
+- Writes: Cognito only, the user's own password and MFA settings. The nurse dashboard's
+  acknowledge and resolve change only local state.
+- New access patterns or tables: none. When the API exists, both staff dashboards map
+  to patterns 5, 8, 9, the nurse dashboard's acknowledge and resolve to pattern 16, and
+  the caregiver view to patterns 14, 10–12 in `docs/data-model.md`.
 
 ## IoT
 
@@ -185,31 +204,64 @@ in `src/components/` (at least: `Button`, `TextField`, `PasswordField`, `Card`,
 - Loading / error: busy buttons; "That code is invalid or has expired." for a bad
   code; generic error for anything else; "Back to sign in" link on every step.
 
-### Main page (`/`), staff dashboard — doctor, nurse
+### Main page (`/`), staff dashboards — shared parts
 
-- Header: logo, "Staff dashboard", user menu (name, role badge e.g. "Doctor",
-  "Account settings", "Sign out").
+Both the nurse and doctor dashboards have:
+
+- Header: logo, page title ("Nurse dashboard" or "Doctor dashboard"), user menu (name,
+  role badge "Nurse" or "Doctor", "Account settings", "Sign out").
+- Staff area tabs: "Dashboard" (this page) and "Devices" (the staff-only devices view,
+  `/devices`), with the current tab marked by `aria-current="page"` and a bar.
 - Demo data banner.
 - Greeting ("Good morning, <name>", based on Asia/Singapore time) and current date.
 - Four stat tiles: Residents monitored, Open alerts (critical count shown too), Devices
   offline, Wearables low on battery (< 20 %, computed from demo `battery_pct`: this is a
   display filter, not an alert threshold).
-- Open alerts panel, newest first: severity badge, alert type (Fall detected, Possible
-  fall, Inactivity, Vitals need attention, Device offline, Low battery), resident name
-  and ID, relative time ("12 min ago") with the exact time in a tooltip/`<time>`.
-  No acknowledge/resolve buttons.
+- Alert rows: severity badge, alert type (the backend's Fall detected, High / Low heart
+  rate, Low blood oxygen, High / Low skin temperature, plus the planned Possible fall,
+  Inactivity, Device offline, Low battery), "Open" or "Acknowledged" label (a
+  cancelled or resolved alert leaves the open list), resident name, resident ID and home ID, relative time ("12 min ago") with the
+  exact time in a tooltip/`<time>`, "Acknowledged by the care centre nurse, <time>"
+  once acknowledged, with the nurse's note under it if there is one ("Message from the
+  care centre:"), and, for an open alert: "Sent to the care centre nurse at once" for a
+  critical alert or one from an unassigned device (not in the nurse dashboard's inbox:
+  the nurse is the recipient, and the Critical badge already says it); for a warning, "Escalated to the
+  care centre nurse" once `escalated_at` is set, or before that a live countdown
+  "Escalates to the care centre nurse in m:ss" to the API's computed `escalates_at`
+  (the 300 s check in `docs/features/escalation.md`, alert-routing.md).
 - Residents panel: search by name or resident ID, filter chips by status
   (All / Urgent / Attention / OK, with counts), and a responsive grid of resident cards:
   initials avatar, name, resident ID, status badge, latest heart rate, SpO2, skin
   temperature, wearable battery and worn/charging state, and "last updated" time.
-  Cards are not clickable yet.
-- Loading: skeleton tiles and cards. Empty: if search/filter matches nothing,
-  `EmptyState` "No residents match your search" with a "Clear filters" button.
-  Error: a notice "We couldn't load the dashboard." with a "Try again" button.
+  Each card links to the staff-only resident page (`/residents/<resident_id>`).
+- Loading: skeleton tiles and panels. Empty: "No residents yet", or if search/filter
+  matches nothing, `EmptyState` "No residents match your search" with a "Clear filters"
+  button; "No open alerts." for an empty alert list. Error: a notice "We couldn't load
+  the dashboard." with a "Try again" button.
 
-### Main page (`/`), family view — caregiver, family
+### Main page (`/`), nurse dashboard — nurse
 
-- Header: logo, "My family", user menu (as above, role badge "Caregiver"/"Family").
+- The stat tiles are toggle buttons that choose the panel below: Open alerts (the
+  default), Devices offline, Wearables low on battery, or Residents.
+- Open alerts inbox: open and acknowledged alerts, critical pinned to the top, then
+  newest first. Each row has "Acknowledge" (open alerts) and "Resolve" buttons, which
+  record the nurse's display name and the time in local state. Resolved alerts move to
+  a collapsed "Resolved since this page opened" list.
+- Devices offline panel (empty: "All devices are online.") and low-battery panel,
+  lowest first (empty: "No wearables are below 20%.").
+
+### Main page (`/`), doctor dashboard — doctor
+
+- The stat tiles are plain cards, not buttons.
+- Open alerts summary: the critical and acknowledged counts, "Nurses respond to
+  alerts", and the 3 most urgent alerts as tiles, with no acknowledge or resolve
+  buttons.
+- Residents panel as above, with a sparkline of the last 5 readings for heart rate,
+  SpO2, and skin temperature on each card.
+
+### Main page (`/`), caregiver view — caregiver
+
+- Header: logo, "My residents", user menu (as above, role badge "Caregiver").
 - Demo data banner, greeting.
 - One large card per linked resident: initials avatar, name, status badge with a plain
   sentence ("All readings look normal" / "Needs attention" / "Urgent: check now",
@@ -217,11 +269,17 @@ in `src/components/` (at least: `Button`, `TextField`, `PasswordField`, `Card`,
   temperature, activity) each with a small inline SVG sparkline of the last 5 readings
   (matching DynamoDB's latest-5) and the time of the latest reading, device status
   (wearable battery, worn/charging, bedroom sensor online/offline), and a "Recent
-  alerts" timeline for that resident (up to 5).
-- Loading: skeleton cards. Empty: `EmptyState` "No residents are linked to your account
-  yet. Your care provider can link you." Error: as staff.
+  alerts" timeline for that resident (up to 5). Each alert shows its severity, type,
+  and time; "Sent to the care centre nurse at once" while a critical alert (or one from
+  an unassigned device) is open, explaining who else was alerted; and, once
+  acknowledged, "Acknowledged by the care centre nurse, <time>" with the nurse's note
+  if there is one (main's rule: everyone who can see the alert sees the note). Display
+  only: no acknowledge, resolve, or cancel buttons (the caregiver Cancel button is
+  Track B's).
+- Loading: skeleton cards with "Loading your residents' information". Empty: `EmptyState` "No residents are linked to your account
+  yet. Your care provider can link you." Error: as the staff dashboards.
 
-### No access (`/`, signed in but none of the four groups)
+### No access (`/`, signed in but none of the three groups; `family` alone counts as none)
 
 - Shows: logo, "Your account isn't set up yet", "Ask your care provider to assign you a
   role.", and a "Sign out" button.
@@ -236,18 +294,38 @@ in `src/components/` (at least: `Button`, `TextField`, `PasswordField`, `Card`,
 
 ## Alerts and notifications
 
-None delivered. Demo alerts are display-only; alerting rules are still Open decision #2.
+None delivered by the portal. Demo alerts are display-only apart from the nurse
+dashboard's local acknowledge and resolve; the escalation countdown only displays the
+demo `escalates_at` / `escalated_at`. Alert emails and escalation are backend features
+(`docs/features/alerts-core.md`, `vitals-alerts.md`, `escalation.md`).
 
 ## Privacy
 
 - Personal data touched: the user's own email, name, and group (from Cognito/ID token);
-  password and TOTP secret go only to Cognito via Amplify. No resident data (demo only).
-- Retention: Cognito accounts stay until an admin deletes them (user-data retention is
-  still Open decision #4 in `CLAUDE.md`). Tokens: Amplify's default token storage
+  password and TOTP secret go only to Cognito via Amplify. No real resident data (demo
+  only). On screen: the synthetic residents' readings and alerts; in the caregiver view,
+  for the linked residents' alerts only, when the care centre nurse acknowledged and
+  their note (`ack_note`, free text that may hold health or logistics details). The
+  caregiver view's alert timeline is an `aria-live` region, so a note that arrives with
+  new data is read out to that caregiver's own screen reader.
+- The shared nurse account's Cognito `name` is "Care centre nurse" (set by the admin),
+  so a resolve by the nurse shows "Resolved by Care centre nurse" and no individual
+  nurse is named; the app has no special case for it.
+- Retention (decided 2026-11-01, Open decision #4): when a user leaves (offboarding),
+  an admin **disables** their Cognito account, so they can't sign in, then **deletes**
+  it 90 days later. Accounts are not patient health records, and PDPA data
+  minimisation applies, so they aren't kept longer. Both are manual admin steps in the
+  Cognito console; nothing deletes accounts automatically, so the admin tracks the
+  90 days. Deleting an account doesn't break the threshold change history: it
+  captures the staff member's name when it's written (`changed_by_name`,
+  `updated_by_name`). Alerts store only the `sub` (docs/features/alert-cancel.md); an
+  acknowledge is always shown as "the care centre nurse", and once the account is
+  deleted an old resolve or caregiver cancel shows "Former staff member" or "Former
+  caregiver" (see Actor names in `docs/data-model.md`). Tokens: Amplify's default token storage
   (browser `localStorage`), ID/access tokens expire after 60 min, refresh after 7 days;
   sign-out clears them and revokes the refresh token.
 - Must not be logged or shown: no `console.log` of tokens, emails, names, passwords,
-  codes, or TOTP secrets. No personal data in URLs, query strings, or page titles (page
+  codes, TOTP secrets, or the nurse's note. No personal data in URLs, query strings, or page titles (page
   title is "SilverCare" plus the page name only). The TOTP secret is shown only on the
   setup screen and not stored by the app. QR code is generated in the browser (no
   external QR service).
@@ -256,8 +334,8 @@ None delivered. Demo alerts are display-only; alerting rules are still Open deci
 
 ## Out of scope
 
-- API Gateway, Lambdas, real resident data, resident detail pages, acknowledging or
-  resolving alerts.
+- API Gateway, Lambdas, real resident data, resident detail pages, saving acknowledged
+  or resolved alerts (the nurse dashboard keeps them in local state only).
 - Self sign-up, admin screens for creating users or linking them to residents.
 - Hosted UI / OAuth / social login, SMS or email MFA, SES.
 - Required MFA for staff (MFA is optional pool-wide for now).

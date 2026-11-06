@@ -43,7 +43,7 @@ describe('profile', () => {
     ['doctor', 'Doctor'],
     ['nurse', 'Nurse'],
     ['caregiver', 'Caregiver'],
-    ['family', 'Family'],
+    ['family', 'No role'],
     ['noGroup', 'No role'],
   ] as const)('shows name, email, and role for a %s user', async (key, role) => {
     const account = TEST_USERS[key]

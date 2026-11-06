@@ -186,15 +186,26 @@ def check_body(**overrides: Any) -> str:
     return json.dumps(check_message(**overrides), separators=(",", ":"))
 
 
-# ---- status updates (docs/features/alert-cancel.md, criterion 6) ----
+# ---- status updates (docs/features/alert-cancel.md, criterion 6; changed by
+# docs/features/alert-routing.md, criterion 9) ----
 
-# A synthetic Cognito sub (lowercase UUID) and a synthetic full name for acknowledges.
-STAFF_SUB = "a1b2c3d4-0000-4000-8000-00000000abcd"
+# Synthetic Cognito subs (lowercase UUIDs) and a synthetic full name for cancels.
+NURSE_SUB = "a1b2c3d4-0000-4000-8000-00000000abcd"
 CAREGIVER_SUB = "a1b2c3d4-0000-4000-8000-00000000cafe"
-STAFF_NAME = "Test Nurse Alpha"
 CAREGIVER_NAME = "Test Caregiver Beta"
+CAREGIVER_MASKED = "Te** Ca******* Be**"
+NOTE = "Synthetic note: ambulance on the way, 8 minutes."
 # The cancel press reached AWS IoT 52.64 s after the default alert's event_ts.
 CHANGED_AT = "2026-10-18T03:15:00.000Z"
+
+
+def _apply(body: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    for name, value in overrides.items():
+        if value is DELETE:
+            body.pop(name, None)
+        else:
+            body[name] = value
+    return body
 
 
 def cancel_message(**overrides: Any) -> dict[str, Any]:
@@ -211,32 +222,170 @@ def cancel_message(**overrides: Any) -> dict[str, Any]:
         "by_name": None,
         "target": {"device_id": DEVICE},
     }
-    for name, value in overrides.items():
-        if value is DELETE:
-            body.pop(name, None)
-        else:
-            body[name] = value
-    return body
+    return _apply(body, overrides)
 
 
-def ack_message(by_role: str = "staff", **overrides: Any) -> dict[str, Any]:
-    """A valid acknowledge (alert target) of the default alert by staff or a
-    caregiver."""
-    staff = by_role == "staff"
-    fields: dict[str, Any] = {
-        "new_status": "acknowledged",
-        "by_role": by_role,
-        "by": STAFF_SUB if staff else CAREGIVER_SUB,
-        "by_name": STAFF_NAME if staff else CAREGIVER_NAME,
-        "target": {"alert_id": ALERT_ID, "event_ts": EVENT_TS},
-    }
-    fields.update(overrides)
-    return cancel_message(**fields)
+def caregiver_cancel_message(**overrides: Any) -> dict[str, Any]:
+    """A valid caregiver cancel (alert target, sub, name claim, no note key) of the
+    default alert. Pass a field as DELETE to remove it."""
+    body = cancel_message(
+        by_role="caregiver",
+        by=CAREGIVER_SUB,
+        by_name=CAREGIVER_NAME,
+        target={"alert_id": ALERT_ID, "event_ts": EVENT_TS},
+    )
+    return _apply(body, overrides)
+
+
+def nurse_ack_message(note: Any = DELETE, **overrides: Any) -> dict[str, Any]:
+    """A valid nurse acknowledge (alert target, sub, by_name null) of the default
+    alert. `note` is absent unless given (None sends "note": null)."""
+    body = cancel_message(
+        new_status="acknowledged",
+        by_role="nurse",
+        by=NURSE_SUB,
+        by_name=None,
+        target={"alert_id": ALERT_ID, "event_ts": EVENT_TS},
+    )
+    if note is not DELETE:
+        body["note"] = note
+    return _apply(body, overrides)
+
+
+def _compact(body: dict[str, Any]) -> str:
+    return json.dumps(body, separators=(",", ":"))
 
 
 def cancel_body(**overrides: Any) -> str:
-    return json.dumps(cancel_message(**overrides), separators=(",", ":"))
+    return _compact(cancel_message(**overrides))
 
 
-def ack_body(by_role: str = "staff", **overrides: Any) -> str:
-    return json.dumps(ack_message(by_role, **overrides), separators=(",", ":"))
+def caregiver_cancel_body(**overrides: Any) -> str:
+    return _compact(caregiver_cancel_message(**overrides))
+
+
+def nurse_ack_body(note: Any = DELETE, **overrides: Any) -> str:
+    return _compact(nurse_ack_message(note, **overrides))
+
+
+# ---- device problems (docs/features/watchdog.md, criteria 8, 8a, 10, 14a) ----
+
+OPS_SUB = "a1b2c3d4-0000-4000-8000-0000000000ee"
+# The watchdog's run that saw the problem, and its last-heartbeat / since times.
+DP_EVENT_TS = "2026-11-04T01:40:00.000Z"
+DP_RECEIVED_AT = "2026-11-04T02:00:00.000Z"
+DP_CHANGED_AT = "2026-11-04T02:05:00.000Z"
+
+DEVICE_PROBLEM_DETAILS: dict[str, dict[str, Any]] = {
+    "device_offline": {"last_seen": DP_EVENT_TS},
+    "battery_low": {"battery_pct": 15},
+    "not_worn": {"since": DP_EVENT_TS},
+}
+DEVICE_PROBLEM_TYPES = tuple(DEVICE_PROBLEM_DETAILS)
+
+
+def device_problem_message(
+    alert_type: str = "battery_low", **overrides: Any
+) -> dict[str, Any]:
+    """A valid watchdog alert message (A1 format, severity warning). `details` may be
+    overridden; pass a field as DELETE to remove it."""
+    fields: dict[str, Any] = {
+        "alert_type": alert_type,
+        "severity": "warning",
+        "event_ts": DP_EVENT_TS,
+        "received_at": DP_RECEIVED_AT,
+        "details": dict(DEVICE_PROBLEM_DETAILS[alert_type]),
+    }
+    fields.update(overrides)
+    return alert_message(**fields)
+
+
+def device_problem_body(alert_type: str = "battery_low", **overrides: Any) -> str:
+    return _compact(device_problem_message(alert_type, **overrides))
+
+
+def ops_ack_message(**overrides: Any) -> dict[str, Any]:
+    """A valid ops acknowledge (alert target, sub, by_name null, no note key) of the
+    default alert at DP_EVENT_TS."""
+    body = cancel_message(
+        new_status="acknowledged",
+        changed_at=DP_CHANGED_AT,
+        by_role="ops",
+        by=OPS_SUB,
+        by_name=None,
+        target={"alert_id": ALERT_ID, "event_ts": DP_EVENT_TS},
+    )
+    return _apply(body, overrides)
+
+
+def caregiver_ack_message(**overrides: Any) -> dict[str, Any]:
+    """A valid caregiver acknowledge (alert target, sub, name claim, no note key)."""
+    body = ops_ack_message(
+        by_role="caregiver", by=CAREGIVER_SUB, by_name=CAREGIVER_NAME
+    )
+    return _apply(body, overrides)
+
+
+def resolve_message(**overrides: Any) -> dict[str, Any]:
+    """The watchdog's system resolve (alert target, by and by_name null, no note)."""
+    body = ops_ack_message(new_status="resolved", by_role="system", by=None)
+    return _apply(body, overrides)
+
+
+def ops_ack_body(**overrides: Any) -> str:
+    return _compact(ops_ack_message(**overrides))
+
+
+def caregiver_ack_body(**overrides: Any) -> str:
+    return _compact(caregiver_ack_message(**overrides))
+
+
+def resolve_body(**overrides: Any) -> str:
+    return _compact(resolve_message(**overrides))
+
+
+# ---- possible fall (docs/features/possible-fall.md, criteria 7-13) ----
+
+PF_DEVICE = "bedroom-0007"
+PF_DEVICE_2 = "bedroom-0008"
+# Vacated 02:10:00 SGT; the watchdog's run 20 minutes later; back in bed at 02:45 SGT.
+PF_EVENT_TS = "2026-11-03T18:10:00.000Z"
+PF_RECEIVED_AT = "2026-11-03T18:30:00.000Z"
+PF_CHANGED_AT = "2026-11-03T18:45:00.000Z"
+PF_BED_ID = "c2a1d4f0-0000-4000-8000-0000000000b1"
+
+
+def possible_fall_message(**overrides: Any) -> dict[str, Any]:
+    """A valid watchdog possible_fall message (critical, bedroom unit). `details`
+    may be overridden; pass a field as DELETE to remove it."""
+    fields: dict[str, Any] = {
+        "alert_type": "possible_fall",
+        "severity": "critical",
+        "device_id": PF_DEVICE,
+        "event_ts": PF_EVENT_TS,
+        "received_at": PF_RECEIVED_AT,
+        "source_message_id": PF_BED_ID,
+        "details": {"out_of_bed_since": PF_EVENT_TS, "wearable": "not_worn"},
+    }
+    fields.update(overrides)
+    return alert_message(**fields)
+
+
+def possible_fall_body(**overrides: Any) -> str:
+    return _compact(possible_fall_message(**overrides))
+
+
+def back_in_bed_message(**overrides: Any) -> dict[str, Any]:
+    """The watchdog's back-in-bed resolve of the default possible fall."""
+    body = cancel_message(
+        new_status="resolved",
+        changed_at=PF_CHANGED_AT,
+        by_role="system",
+        target={"alert_id": ALERT_ID, "event_ts": PF_EVENT_TS},
+    )
+    body["reason"] = "back_in_bed"
+    return _apply(body, overrides)
+
+
+def back_in_bed_body(**overrides: Any) -> str:
+    return _compact(back_in_bed_message(**overrides))

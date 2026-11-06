@@ -7,7 +7,7 @@ import { Logo } from './Logo'
 import { Spinner } from './Spinner'
 
 interface AppHeaderProps {
-  /** Page title, e.g. "Staff dashboard". Rendered as the page's h1. */
+  /** Page title, e.g. "Nurse dashboard". Rendered as the page's h1. */
   title: string
 }
 

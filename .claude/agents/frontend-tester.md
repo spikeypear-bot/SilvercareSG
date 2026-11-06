@@ -45,7 +45,8 @@ Review these in the changed components, and test them where you can:
    machine, so never assert something a `useEffect` does (`document.title`, focus,
    storage, timers) straight after a `findBy*` or a user event: wrap it in
    `await waitFor(...)`. Don't lower the timeouts in `src/test/setup.ts` or
-   `vite.config.ts`.
+   `vite.config.ts`. To assert an element is empty use `toBeEmptyDOMElement()`:
+   `toHaveTextContent('')` matches any text.
 3. From `frontend/`, run `npm run test` twice, plus `npm run lint` and `npm run build`. A
    test that passes once and fails once is flaky: fix the test before reporting.
 

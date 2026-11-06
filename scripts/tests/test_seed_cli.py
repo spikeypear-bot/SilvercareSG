@@ -1,4 +1,4 @@
-"""scripts/seed.py end to end through main() (criteria 3, 9-19, 22).
+"""scripts/seed.py end to end through main() (criteria 3, 9-19, 15a, 22).
 
 Live mode runs against moto DynamoDB, Cognito, and STS (conftest's live fixture);
 passwords files live under tmp_path only.
@@ -23,14 +23,15 @@ EMAILS = {
     "test-doctor": "test-doctor@example.com",
     "test-nurse": "test-nurse@example.com",
     "test-caregiver": "test-caregiver@example.com",
-    "test-family": "test-family@example.com",
 }
 GROUP_OF = {
     "test-doctor": "doctor",
     "test-nurse": "nurse",
     "test-caregiver": "caregiver",
-    "test-family": "family",
 }
+# The test user earlier seeds created in the removed family group (criterion 15a).
+RETIRED = "test-family@example.com"
+RETIRED_PW = "Retired-Synthetic-Pw-01"
 HANDMADE = "handmade-doctor@example.com"
 KNOWN_PW = "Known-Synthetic-Pw-01"
 WRITE_OPS = {
@@ -231,11 +232,27 @@ def bad_seed_file(seed, tmp_path, mutate):
         ),
         (
             lambda d: d["links"].append(
-                {"user_id": "test-family", "resident_id": "res-0404"}
+                {"user_id": "test-caregiver", "resident_id": "res-0404"}
             ),
             "res-0404",
         ),
         (lambda d: d.__setitem__("devices", d["devices"][:-1]), "bedroom-0020"),
+        (
+            lambda d: d["users"][2].__setitem__("email", RETIRED),
+            "test-caregiver: email belongs to a retired test user",
+        ),
+        (
+            lambda d: d["users"].append(
+                {
+                    "user_id": "test-family",
+                    "email": RETIRED,
+                    "name": "Test Family",
+                    "group": "family",
+                    "local_sub": "00000000-0000-4000-8000-000000000004",
+                }
+            ),
+            "test-family: email belongs to a retired test user",
+        ),
     ],
     ids=[
         "dup-resident",
@@ -243,6 +260,8 @@ def bad_seed_file(seed, tmp_path, mutate):
         "unknown-user",
         "unknown-resident",
         "missing-device",
+        "retired-email",
+        "old-family-user",
     ],
 )
 @pytest.mark.parametrize("mode", ["live", "local", "delete"])
@@ -319,7 +338,7 @@ def test_unhashable_link_id_exits_2_not_a_crash(seed, tmp_path, pwfile):
         seed,
         tmp_path,
         lambda d: d["links"].append(
-            {"user_id": ["test-family"], "resident_id": "res-0001"}
+            {"user_id": ["test-caregiver"], "resident_id": "res-0001"}
         ),
     )
     factory = FactorySpy()
@@ -403,7 +422,7 @@ def test_passwords_file_in_repo_outside_secrets_refused_for_delete(seed):
 # ---- criteria 9-11: a fresh live seed ----
 
 
-def test_fresh_seed_creates_four_users_each_in_one_group(
+def test_fresh_seed_creates_three_users_each_in_one_group(
     seed, clients, pool_id, cog, pwfile
 ):
     code, out, err = run(seed, seed_args(pwfile), clients=clients)
@@ -417,13 +436,15 @@ def test_fresh_seed_creates_four_users_each_in_one_group(
         status = cog.admin_get_user(UserPoolId=pool_id, Username=email)["UserStatus"]
         assert status == "CONFIRMED"
         assert f"cognito: {user_id} created" in out
+    assert len(re.findall(r"^cognito: test-[a-z]+ created$", out, re.MULTILINE)) == 3
+    assert not user_exists(cog, pool_id, RETIRED)
 
 
 def test_users_are_created_silently_then_password_then_group(seed, clients, pwfile):
     run(seed, seed_args(pwfile), clients=clients)
     calls = clients["cognito-idp"].calls
     creates = [kw for op, kw in calls if op == "admin_create_user"]
-    assert len(creates) == 4
+    assert len(creates) == 3
     assert all(kw["MessageAction"] == "SUPPRESS" for kw in creates)
     for email in EMAILS.values():
         ops = [
@@ -446,7 +467,7 @@ def test_users_are_created_silently_then_password_then_group(seed, clients, pwfi
     assert all(kw["Permanent"] is True for kw in sets)
 
 
-def test_fresh_seed_passwords_file_has_four_working_passwords(
+def test_fresh_seed_passwords_file_has_three_working_passwords(
     seed, clients, pool_id, app_id, cog, pwfile
 ):
     code, out, _err = run(seed, seed_args(pwfile), clients=clients)
@@ -458,7 +479,7 @@ def test_fresh_seed_passwords_file_has_four_working_passwords(
         assert group == GROUP_OF[user_id]
         assert len(password) == 20
         assert signs_in(cog, pool_id, app_id, email, password)
-    assert f"passwords: 4 written to {pwfile}" in out
+    assert f"passwords: 3 written to {pwfile}" in out
     assert oct(os.stat(pwfile).st_mode & 0o777) == oct(0o600)
     assert oct(os.stat(pwfile.parent).st_mode & 0o777) == oct(0o700)
 
@@ -474,7 +495,6 @@ def test_no_password_is_printed(seed, clients, pwfile, capsys):
 
 def test_links_use_the_cognito_subs(seed, clients, pool_id, cog, db, pwfile):
     run(seed, seed_args(pwfile), clients=clients)
-    family_sub = attrs(cog, pool_id, EMAILS["test-family"])["sub"]
     caregiver_sub = attrs(cog, pool_id, EMAILS["test-caregiver"])["sub"]
     links = {
         (i["pk"]["S"], i["sk"]["S"])
@@ -482,13 +502,11 @@ def test_links_use_the_cognito_subs(seed, clients, pool_id, cog, db, pwfile):
         if i["pk"]["S"].startswith("USER#")
     }
     assert links == {
-        (f"USER#{family_sub}", "RESIDENT#res-0002"),
-        (f"USER#{family_sub}", "RESIDENT#res-0005"),
         (f"USER#{caregiver_sub}", "RESIDENT#res-0001"),
         (f"USER#{caregiver_sub}", "RESIDENT#res-0002"),
         (f"USER#{caregiver_sub}", "RESIDENT#res-0003"),
     }
-    assert len(scan(db)) == 85
+    assert len(scan(db)) == 83
 
 
 # ---- criterion 9: finding the pool ----
@@ -637,7 +655,7 @@ def test_delete_prompt_refuses_anything_but_delete(
     assert code == 1
     assert "nothing was written" in out
     assert all_clients_untouched_by_writes(clients)
-    assert len(scan(db)) == 85
+    assert len(scan(db)) == 83
     assert all(user_exists(cog, pool_id, e) for e in EMAILS.values())
     assert pwfile.read_text() == before
 
@@ -675,6 +693,8 @@ def test_rerun_is_idempotent(seed, clients, pool_id, app_id, cog, db, pwfile):
     assert {e: attrs(cog, pool_id, e)["sub"] for e in EMAILS.values()} == subs
     for user_id in EMAILS:
         assert f"cognito: {user_id} exists, kept" in out
+    assert "registry: 0 old seed links removed" in out
+    assert "cognito: test-family" not in out
     ops = clients["cognito-idp"].ops()
     assert "admin_create_user" not in ops and "admin_set_user_password" not in ops
     for email, (_, password) in password_lines(pwfile).items():
@@ -691,7 +711,7 @@ def existing_nurse(cog, pool_id, pwfile):
         pool_id,
         EMAILS["test-nurse"],
         "Test Nurse Renamed",
-        ["nurse", "doctor", "family", "beta-testers"],
+        ["nurse", "doctor", "caregiver", "family", "beta-testers"],
     )
     pwfile.parent.mkdir(mode=0o700)
     pwfile.write_text(
@@ -714,7 +734,7 @@ def test_existing_user_keeps_password_without_reset(
         if op == "admin_set_user_password"
     ]
     assert existing_nurse not in sets
-    assert f"passwords: 3 written to {pwfile}" in out
+    assert f"passwords: 2 written to {pwfile}" in out
 
 
 def test_existing_users_line_and_other_lines_are_kept(
@@ -727,14 +747,22 @@ def test_existing_users_line_and_other_lines_are_kept(
         f"{HANDMADE} doctor Hand-Made-Pw-01",
         f"{existing_nurse} nurse {KNOWN_PW}",
     ]
-    assert len(password_lines(pwfile)) == 5
+    assert len(password_lines(pwfile)) == 4
 
 
 def test_existing_user_is_moved_to_its_group_only(
     seed, clients, pool_id, cog, pwfile, existing_nurse
 ):
+    # Out of the other seed groups (doctor, caregiver); a leftover family membership
+    # and any other group are left alone.
     run(seed, seed_args(pwfile), clients=clients)
-    assert groups(cog, pool_id, existing_nurse) == {"nurse", "beta-testers"}
+    assert groups(cog, pool_id, existing_nurse) == {"nurse", "family", "beta-testers"}
+    removed = sorted(
+        kw["GroupName"]
+        for op, kw in clients["cognito-idp"].calls
+        if op == "admin_remove_user_from_group"
+    )
+    assert removed == ["caregiver", "doctor"]
 
 
 def test_existing_user_attributes_are_not_changed(
@@ -745,7 +773,7 @@ def test_existing_user_attributes_are_not_changed(
     assert "admin_update_user_attributes" not in clients["cognito-idp"].ops()
 
 
-def test_reset_passwords_gives_all_four_new_passwords(
+def test_reset_passwords_gives_all_three_new_passwords(
     seed, clients, pool_id, app_id, cog, pwfile, existing_nurse
 ):
     assert run(seed, seed_args(pwfile), clients=clients)[0] == 0
@@ -758,8 +786,8 @@ def test_reset_passwords_gives_all_four_new_passwords(
         assert after[email][1] != before[email][1]
         assert signs_in(cog, pool_id, app_id, email, after[email][1])
     assert after[HANDMADE] == before[HANDMADE]
-    assert f"passwords: 4 written to {pwfile}" in out
-    assert out.count("exists, password reset") == 4
+    assert f"passwords: 3 written to {pwfile}" in out
+    assert out.count("exists, password reset") == 3
 
 
 # ---- hand-made users ----
@@ -905,7 +933,7 @@ def test_passwords_file_write_failure_prints_no_password(
     code, out, err = run(seed, seed_args(pwfile), clients=clients)
     assert code == 1
     assert "could not write the passwords file" in err
-    assert len(set_passwords) == 4
+    assert len(set_passwords) == 3
     for password in set_passwords:
         assert password not in out and password not in err
     assert pwfile.read_text() == f"{HANDMADE} doctor Hand-Made-Pw-01\n"
@@ -936,8 +964,9 @@ def test_delete_removes_users_items_and_password_lines(
     assert scan(db) == []
     assert not any(user_exists(cog, pool_id, e) for e in EMAILS.values())
     assert seeded_live.read_text() == f"{HANDMADE} doctor Hand-Made-Pw-01\n"
-    assert "registry: 5 seed links deleted" in out
-    assert "passwords: 4 lines removed" in out
+    assert "registry: 3 seed links deleted" in out
+    assert "passwords: 3 lines removed" in out
+    assert "cognito: test-family" not in out  # retired user absent: nothing printed
 
 
 def test_delete_removes_passwords_file_when_empty(seed, clients, seeded_live):
@@ -948,21 +977,28 @@ def test_delete_removes_passwords_file_when_empty(seed, clients, seeded_live):
 def test_delete_after_user_deleted_by_hand_leaves_no_seed_links(
     seed, clients, pool_id, cog, db, seeded_live
 ):
-    cog.admin_delete_user(UserPoolId=pool_id, Username=EMAILS["test-family"])
+    cog.admin_delete_user(UserPoolId=pool_id, Username=EMAILS["test-caregiver"])
     code, out, err = run(seed, seed_args(seeded_live, "--delete"), clients=clients)
     assert code == 0, err
     assert seed_links(db) == []
     assert scan(db) == []
-    assert "cognito: test-family already gone" in out
+    assert "cognito: test-caregiver already gone" in out
 
 
 def test_delete_after_user_recreated_by_hand_leaves_no_seed_links(
     seed, clients, pool_id, cog, db, seeded_live
 ):
-    # The family user is deleted and re-seeded: its old links keep the old sub.
-    cog.admin_delete_user(UserPoolId=pool_id, Username=EMAILS["test-family"])
-    assert run(seed, seed_args(seeded_live), clients=clients)[0] == 0
-    assert len(seed_links(db)) == 7
+    # The caregiver is deleted by hand and re-seeded: the re-seed prunes the links
+    # under the old sub (criterion 15a), so only the new sub's links are left.
+    old_sub = attrs(cog, pool_id, EMAILS["test-caregiver"])["sub"]
+    cog.admin_delete_user(UserPoolId=pool_id, Username=EMAILS["test-caregiver"])
+    code, out, _ = run(seed, seed_args(seeded_live), clients=clients)
+    assert code == 0
+    assert "registry: 3 old seed links removed" in out
+    new_sub = attrs(cog, pool_id, EMAILS["test-caregiver"])["sub"]
+    assert new_sub != old_sub
+    assert {i["pk"]["S"] for i in seed_links(db)} == {f"USER#{new_sub}"}
+    assert len(seed_links(db)) == 3
     code, _, _ = run(seed, seed_args(seeded_live, "--delete"), clients=clients)
     assert code == 0
     assert seed_links(db) == []
@@ -988,7 +1024,7 @@ def test_delete_twice_succeeds(seed, clients, db, seeded_live):
     code, out, _ = run(seed, seed_args(seeded_live, "--delete"), clients=clients)
     assert code == 0
     assert (
-        len(re.findall(r"^cognito: test-[a-z]+ already gone$", out, re.MULTILINE)) == 4
+        len(re.findall(r"^cognito: test-[a-z]+ already gone$", out, re.MULTILINE)) == 3
     )
 
 
@@ -1027,6 +1063,400 @@ def test_delete_leaves_foreign_items_and_links(seed, clients, db, seeded_live):
     assert sorted(scan(db), key=str) == sorted(foreign, key=str)
 
 
+# ---- criterion 15a: clean-up of old seed links and the retired user ----
+
+NEAR_MISSES = ("handmade-family@example.com", "test-family@example.org")
+OUTPUT_LINE = re.compile(
+    r"^(account|region|user pool|plan|cognito|passwords|registry): "
+)
+
+
+@pytest.fixture
+def retired_user(cog, pool_id):
+    """test-family as the seed left it before 2026-11-04: Test Family, in family."""
+    make_user(cog, pool_id, RETIRED, "Test Family", ["family"], RETIRED_PW)
+    return RETIRED
+
+
+@pytest.fixture
+def handmade_family(cog, pool_id):
+    """Users teammates made by hand in the leftover family group."""
+    for email in NEAR_MISSES:
+        make_user(cog, pool_id, email, "Hand Made Relative", ["family"])
+    return NEAR_MISSES
+
+
+@pytest.fixture
+def pw_with_retired(pwfile):
+    pwfile.parent.mkdir(mode=0o700)
+    pwfile.write_text(
+        f"# synthetic test users\n{HANDMADE} doctor Hand-Made-Pw-01\n"
+        f"{RETIRED} family {RETIRED_PW}\n"
+    )
+    os.chmod(pwfile, 0o600)
+    return pwfile
+
+
+def link(sub, resident_id, linked_by="seed", relationship="family"):
+    return {
+        "pk": {"S": f"USER#{sub}"},
+        "sk": {"S": f"RESIDENT#{resident_id}"},
+        "relationship": {"S": relationship},
+        "linked_at": {"S": "2026-10-30T00:00:00Z"},
+        "linked_by": {"S": linked_by},
+        "gsi1_pk": {"S": f"RESIDENT#{resident_id}"},
+        "gsi1_sk": {"S": f"USER#{sub}"},
+    }
+
+
+def put(db, items):
+    for item in items:
+        db.put_item(TableName=TABLE, Item=item)
+
+
+def keys(items):
+    return {(i["pk"]["S"], i["sk"]["S"]) for i in items}
+
+
+def old_family_links(sub):
+    """The links the seed wrote for test-family before 2026-11-04."""
+    return [link(sub, "res-0002"), link(sub, "res-0005")]
+
+
+def cognito_lines(out, user_id):
+    return [ln for ln in out.splitlines() if ln.startswith(f"cognito: {user_id} ")]
+
+
+def test_old_family_seed_links_are_pruned_on_live_seed(
+    seed, clients, pool_id, cog, db, pwfile, retired_user
+):
+    sub = attrs(cog, pool_id, retired_user)["sub"]
+    put(db, old_family_links(sub))
+    code, out, err = run(seed, seed_args(pwfile), clients=clients)
+    assert code == 0, err
+    assert "registry: 2 old seed links removed" in out
+    assert not keys(scan(db)) & keys(old_family_links(sub))
+    caregiver_sub = attrs(cog, pool_id, EMAILS["test-caregiver"])["sub"]
+    assert {i["pk"]["S"] for i in seed_links(db)} == {f"USER#{caregiver_sub}"}
+
+
+def test_prune_keeps_other_linked_by_and_non_seeded_residents(
+    seed, clients, pool_id, cog, db, pwfile
+):
+    kept = [
+        link("handmade-sub", "res-0002", linked_by="admin"),
+        link("handmade-sub", "res-0005", linked_by="caregiver-portal"),
+        link("old-seed-sub", "res-9001"),  # seed link, but not to a seeded resident
+    ]
+    put(db, kept + [link("old-seed-sub", "res-0005")])
+    code, out, _ = run(seed, seed_args(pwfile), clients=clients)
+    assert code == 0
+    assert "registry: 1 old seed links removed" in out
+    stored = {(i["pk"]["S"], i["sk"]["S"]): i for i in scan(db)}
+    for item in kept:
+        assert stored[(item["pk"]["S"], item["sk"]["S"])] == item
+    assert ("USER#old-seed-sub", "RESIDENT#res-0005") not in stored
+
+
+def test_link_removed_from_seed_file_is_pruned_exactly_live(
+    seed, tmp_path, clients, pool_id, cog, db, seeded_live
+):
+    put(db, [link("handmade-sub", "res-0002", linked_by="admin")])
+    before = keys(scan(db))
+    path = bad_seed_file(
+        seed,
+        tmp_path,
+        lambda d: d.__setitem__(
+            "links", [lk for lk in d["links"] if lk["resident_id"] != "res-0002"]
+        ),
+    )
+    code, out, err = run(
+        seed, seed_args(seeded_live, "--seed-file", str(path)), clients=clients
+    )
+    assert code == 0, err
+    assert "registry: 1 old seed links removed" in out
+    caregiver_sub = attrs(cog, pool_id, EMAILS["test-caregiver"])["sub"]
+    assert before - keys(scan(db)) == {(f"USER#{caregiver_sub}", "RESIDENT#res-0002")}
+    assert keys(scan(db)) - before == set()
+
+
+def test_local_prunes_old_seed_links(seed, moto):
+    client = boto_client("dynamodb")
+    factory = local_factory(client)
+    assert run(seed, ["--local"], client_factory=factory)[0] == 0
+    old_sub = "00000000-0000-4000-8000-000000000004"
+    admin = link(old_sub, "res-0006", linked_by="admin")
+    put(client, old_family_links(old_sub) + [admin])
+    code, out, _ = run(seed, ["--local"], client_factory=factory)
+    assert code == 0
+    assert "registry: 2 old seed links removed" in out
+    stored = keys(scan(client))
+    assert not stored & keys(old_family_links(old_sub))
+    assert keys([admin]) <= stored
+    code, out, _ = run(seed, ["--local"], client_factory=factory)
+    assert "registry: 0 old seed links removed" in out
+
+
+def test_retired_user_is_deleted_on_seed(
+    seed, clients, pool_id, cog, pwfile, retired_user
+):
+    code, out, err = run(seed, seed_args(pwfile), clients=clients)
+    assert code == 0, err
+    assert not user_exists(cog, pool_id, retired_user)
+    assert cognito_lines(out, "test-family") == [
+        "cognito: test-family deleted (retired)"
+    ]
+    for email in EMAILS.values():
+        assert user_exists(cog, pool_id, email)
+
+
+def test_only_the_exact_retired_username_is_deleted(
+    seed, clients, pool_id, app_id, cog, pwfile, retired_user, handmade_family
+):
+    before = {e: attrs(cog, pool_id, e) for e in handmade_family}
+    assert run(seed, seed_args(pwfile), clients=clients)[0] == 0
+    deleted = [
+        kw["Username"]
+        for op, kw in clients["cognito-idp"].calls
+        if op == "admin_delete_user"
+    ]
+    assert deleted == [RETIRED]
+    for email in handmade_family:
+        touched = [
+            op
+            for op, kw in clients["cognito-idp"].calls
+            if kw.get("Username", "").lower() == email
+        ]
+        assert touched == []
+        assert attrs(cog, pool_id, email) == before[email]
+        assert groups(cog, pool_id, email) == {"family"}
+        assert signs_in(cog, pool_id, app_id, email, KNOWN_PW)
+
+
+def test_absent_retired_user_prints_nothing_and_succeeds(
+    seed, clients, pwfile, handmade_family
+):
+    code, out, err = run(seed, seed_args(pwfile), clients=clients)
+    assert code == 0, err
+    assert cognito_lines(out, "test-family") == []
+    assert "retired lines removed" not in out
+    assert "admin_delete_user" not in clients["cognito-idp"].ops()
+
+
+def test_retired_password_line_is_removed_and_other_lines_kept(
+    seed, clients, pwfile, retired_user, pw_with_retired
+):
+    code, out, _ = run(seed, seed_args(pwfile), clients=clients)
+    assert code == 0
+    text = pwfile.read_text().splitlines()
+    assert text[:2] == ["# synthetic test users", f"{HANDMADE} doctor Hand-Made-Pw-01"]
+    lines = password_lines(pwfile)
+    assert RETIRED not in lines
+    assert set(lines) == {HANDMADE, *EMAILS.values()}
+    assert f"passwords: 1 retired lines removed from {pwfile}" in out
+    assert os.stat(pwfile).st_mode & 0o777 == 0o600
+    assert sorted(p.name for p in pwfile.parent.iterdir()) == ["test-users.txt"]
+
+
+def test_retired_password_line_is_removed_when_user_already_gone(
+    seed, clients, pwfile, pw_with_retired
+):
+    code, out, _ = run(seed, seed_args(pwfile), clients=clients)
+    assert code == 0
+    assert RETIRED not in password_lines(pwfile)
+    assert f"passwords: 1 retired lines removed from {pwfile}" in out
+
+
+def test_passwords_file_untouched_when_no_retired_line(seed, clients, seeded_live):
+    os.chmod(seeded_live, 0o644)
+    text, before = seeded_live.read_text(), os.stat(seeded_live)
+    code, out, _ = run(seed, seed_args(seeded_live), clients=clients)
+    assert code == 0
+    after = os.stat(seeded_live)
+    assert seeded_live.read_text() == text
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert after.st_mode & 0o777 == 0o644
+    assert "passwords:" not in out
+
+
+@pytest.mark.parametrize(
+    ("name", "group_names"),
+    [
+        ("Test Family", ["caregiver"]),
+        ("Test Family", ["family", "caregiver"]),
+        ("Test Family", ["family", "beta-testers"]),
+        ("Real Relative Renamed", ["family"]),
+    ],
+    ids=["moved-to-caregiver", "family-and-caregiver", "extra-group", "renamed"],
+)
+def test_retired_user_changed_by_hand_is_kept_with_its_line_and_links(
+    seed, clients, pool_id, app_id, cog, db, pw_with_retired, name, group_names
+):
+    if "beta-testers" in group_names:
+        cog.create_group(UserPoolId=pool_id, GroupName="beta-testers")
+    make_user(cog, pool_id, RETIRED, name, group_names, RETIRED_PW)
+    sub = attrs(cog, pool_id, RETIRED)["sub"]
+    own_links = [
+        link(sub, "res-0006", linked_by="admin", relationship="caregiver"),
+        link(sub, "res-0007", linked_by="admin", relationship="caregiver"),
+    ]
+    put(db, own_links)
+    before = attrs(cog, pool_id, RETIRED)
+    code, out, err = run(seed, seed_args(pw_with_retired), clients=clients)
+    assert code == 0, err
+    assert cognito_lines(out, "test-family") == [
+        "cognito: test-family kept (changed by hand)"
+    ]
+    assert attrs(cog, pool_id, RETIRED) == before
+    assert groups(cog, pool_id, RETIRED) == set(group_names)
+    assert signs_in(cog, pool_id, app_id, RETIRED, RETIRED_PW)
+    assert password_lines(pw_with_retired)[RETIRED] == ("family", RETIRED_PW)
+    assert "retired lines removed" not in out
+    assert "admin_delete_user" not in clients["cognito-idp"].ops()
+    stored = {(i["pk"]["S"], i["sk"]["S"]): i for i in scan(db)}
+    for item in own_links:
+        assert stored[(item["pk"]["S"], item["sk"]["S"])] == item
+
+
+def test_retired_user_in_no_group_and_unchanged_is_deleted(
+    seed, clients, pool_id, cog, pwfile
+):
+    make_user(cog, pool_id, RETIRED, "Test Family", [], RETIRED_PW)
+    code, out, _ = run(seed, seed_args(pwfile), clients=clients)
+    assert code == 0
+    assert not user_exists(cog, pool_id, RETIRED)
+    assert "cognito: test-family deleted (retired)" in out
+
+
+def test_retired_user_deleted_only_after_users_and_links_exist(
+    seed, clients, pool_id, cog, db, pwfile, retired_user
+):
+    put(db, old_family_links(attrs(cog, pool_id, retired_user)["sub"]))
+    shared = []
+    for recorder in clients.values():
+        recorder.calls = shared
+    assert run(seed, seed_args(pwfile), clients=clients)[0] == 0
+    ops = [(op, kw.get("Username")) for op, kw in shared]
+    [retired_delete] = [
+        i for i, (op, user) in enumerate(ops) if op == "admin_delete_user"
+    ]
+    assert ops[retired_delete] == ("admin_delete_user", RETIRED)
+    for earlier in (
+        "admin_create_user",
+        "admin_set_user_password",
+        "admin_add_user_to_group",
+        "batch_write_item",
+        "delete_item",  # the old-link prune
+    ):
+        positions = [i for i, (op, _) in enumerate(ops) if op == earlier]
+        assert positions, earlier
+        assert max(positions) < retired_delete, earlier
+
+
+def test_registry_failure_keeps_the_retired_user_and_its_line(
+    seed, clients, pool_id, cog, pw_with_retired, retired_user
+):
+    clients["dynamodb"].fail = {"batch_write_item": (1, "InternalServerError", "x")}
+    code, _, err = run(seed, seed_args(pw_with_retired), clients=clients)
+    assert code == 1
+    assert "error: BatchWriteItem failed (InternalServerError)" in err
+    assert user_exists(cog, pool_id, retired_user)
+    assert password_lines(pw_with_retired)[RETIRED] == ("family", RETIRED_PW)
+
+
+def test_cognito_failure_keeps_the_retired_user(
+    seed, clients, pool_id, cog, pwfile, retired_user
+):
+    clients["cognito-idp"] = LeakyCognito(
+        clients["cognito-idp"]._client, "admin_add_user_to_group", 2
+    )
+    code, _, _ = run(seed, seed_args(pwfile), clients=clients)
+    assert code == 1
+    assert user_exists(cog, pool_id, retired_user)
+
+
+def test_aborted_prompt_keeps_the_retired_user(
+    seed, clients, pool_id, cog, pw_with_retired, retired_user
+):
+    before = pw_with_retired.read_text()
+    code, _, _ = run(
+        seed,
+        ["--passwords-file", str(pw_with_retired)],
+        clients=clients,
+        input_fn=lambda p: "no",
+    )
+    assert code == 1
+    assert user_exists(cog, pool_id, retired_user)
+    assert pw_with_retired.read_text() == before
+    assert all_clients_untouched_by_writes(clients)
+
+
+def test_cleanup_output_has_no_passwords_or_item_contents(
+    seed, clients, pool_id, cog, db, pw_with_retired, retired_user, capsys
+):
+    put(db, old_family_links(attrs(cog, pool_id, retired_user)["sub"]))
+    code, out, err = run(seed, seed_args(pw_with_retired), clients=clients)
+    assert code == 0
+    assert err == ""
+    captured = capsys.readouterr()
+    secrets_ = [RETIRED_PW, "Hand-Made-Pw-01"]
+    secrets_ += [pw for _, pw in password_lines(pw_with_retired).values()]
+    for text in (out, err, captured.out, captured.err):
+        for value in secrets_:
+            assert value not in text
+        for marker in (*CONTENT_MARKERS, "Test Family", "linked_at", "relationship"):
+            assert marker not in text
+    for line in out.splitlines():
+        assert OUTPUT_LINE.match(line), line
+
+
+def test_delete_removes_the_retired_user_and_its_line(
+    seed, clients, pool_id, cog, seeded_live, retired_user, handmade_family
+):
+    with seeded_live.open("a") as handle:
+        handle.write(
+            f"{RETIRED} family {RETIRED_PW}\n{HANDMADE} doctor Hand-Made-Pw-01\n"
+        )
+    code, out, err = run(seed, seed_args(seeded_live, "--delete"), clients=clients)
+    assert code == 0, err
+    assert not user_exists(cog, pool_id, retired_user)
+    assert "cognito: test-family deleted (retired)" in out
+    assert "passwords: 4 lines removed" in out
+    assert seeded_live.read_text() == f"{HANDMADE} doctor Hand-Made-Pw-01\n"
+    for email in handmade_family:
+        assert user_exists(cog, pool_id, email)
+        assert groups(cog, pool_id, email) == {"family"}
+
+
+def test_delete_keeps_retired_user_changed_by_hand(
+    seed, clients, pool_id, cog, seeded_live
+):
+    make_user(cog, pool_id, RETIRED, "Test Family", ["caregiver"], RETIRED_PW)
+    with seeded_live.open("a") as handle:
+        handle.write(f"{RETIRED} family {RETIRED_PW}\n")
+    code, out, _ = run(seed, seed_args(seeded_live, "--delete"), clients=clients)
+    assert code == 0
+    assert user_exists(cog, pool_id, RETIRED)
+    assert "cognito: test-family kept (changed by hand)" in out
+    assert "passwords: 3 lines removed" in out
+    assert password_lines(seeded_live) == {RETIRED: ("family", RETIRED_PW)}
+
+
+def test_retired_email_in_seed_file_with_injected_clients_makes_no_call(
+    seed, tmp_path, pwfile, clients
+):
+    path = bad_seed_file(
+        seed, tmp_path, lambda d: d["users"][0].__setitem__("email", RETIRED)
+    )
+    code, _, err = run(
+        seed, seed_args(pwfile, "--seed-file", str(path)), clients=clients
+    )
+    assert code == 2
+    assert "retired" in err
+    assert all(r.calls == [] for r in clients.values())
+    assert not pwfile.parent.exists()
+
+
 # ---- criterion 22: output and exit codes ----
 
 
@@ -1034,7 +1464,8 @@ def test_output_has_counts_and_ids_only(seed, clients, pwfile):
     code, out, err = run(seed, seed_args(pwfile), clients=clients)
     assert code == 0
     assert err == ""
-    assert "registry: 85 items written" in out
+    assert "registry: 83 items written" in out
+    assert "registry: 0 old seed links removed" in out
     for marker in CONTENT_MARKERS:
         assert marker not in out
     for line in out.splitlines():
@@ -1111,18 +1542,16 @@ def test_local_skips_cognito_sts_and_prompt(seed, moto, pwfile):
     assert code == 0, err
     assert factory.calls == [("dynamodb", True)]
     assert f"registry: table {TABLE} created" in out
-    assert "registry: 85 items written" in out
-    assert len(scan(client)) == 85
+    assert "registry: 83 items written" in out
+    assert "registry: 0 old seed links removed" in out
+    assert len(scan(client)) == 83
 
 
 def test_local_links_use_fixed_synthetic_subs(seed, moto):
     client = boto_client("dynamodb")
     run(seed, ["--local"], client_factory=local_factory(client))
     users = {i["pk"]["S"] for i in scan(client) if i["pk"]["S"].startswith("USER#")}
-    assert users == {
-        "USER#00000000-0000-4000-8000-000000000003",
-        "USER#00000000-0000-4000-8000-000000000004",
-    }
+    assert users == {"USER#00000000-0000-4000-8000-000000000003"}
 
 
 def test_local_writes_no_passwords_file(seed, moto, tmp_path):
@@ -1138,10 +1567,10 @@ def test_local_rerun_and_delete(seed, moto):
     code, out, _ = run(seed, ["--local"], client_factory=factory)
     assert code == 0
     assert "created" not in out
-    assert len(scan(client)) == 85
+    assert len(scan(client)) == 83
     code, out, _ = run(seed, ["--local", "--delete"], client_factory=factory)
     assert code == 0
-    assert "registry: 5 seed links deleted" in out
+    assert "registry: 3 seed links deleted" in out
     assert scan(client) == []
 
 
@@ -1206,5 +1635,5 @@ def test_full_live_run_with_real_factory_lands_in_singapore(
         monkeypatch.setenv("AWS_REGION", "us-west-2")
         code, _out, err = run(seed, seed_args(pwfile))
         assert code == 0, err
-        assert len(scan(sg_ddb)) == 85
+        assert len(scan(sg_ddb)) == 83
         assert boto_client("dynamodb", "us-west-2").list_tables()["TableNames"] == []

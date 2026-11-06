@@ -1,4 +1,5 @@
-"""Registry writes, queries, re-runs, delete, pacing (criteria 8, 15, 16, 19, 21).
+"""Registry writes, queries, re-runs, clean-up, delete, pacing (criteria 8, 15, 15a,
+16, 19, 21).
 
 DynamoDB is moto (conftest's ddb fixture). No real AWS.
 """
@@ -17,7 +18,8 @@ TABLE = "silvercare-registry"
 NOW = datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC)
 LATER = datetime(2026, 11, 2, 4, 5, 6, tzinfo=UTC)
 TIMESTAMP_FIELDS = {"created_at", "updated_at", "assigned_at", "linked_at"}
-FAMILY_SUB = "00000000-0000-4000-8000-000000000004"
+# The local sub the removed test-family user had before 2026-11-04.
+OLD_FAMILY_SUB = "00000000-0000-4000-8000-000000000004"
 CAREGIVER_SUB = "00000000-0000-4000-8000-000000000003"
 
 FOREIGN_ITEMS = [
@@ -112,7 +114,7 @@ def data(seed):
 @pytest.fixture
 def seeded(seed, ddb, data):
     count = seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep)
-    assert count == 85
+    assert count == 83
     return ddb
 
 
@@ -149,12 +151,8 @@ def test_pattern_10_devices_of_res_0002(seeded):
     ]
 
 
-def test_pattern_14_family_users_residents(seeded):
-    items = query(seeded, None, "pk", f"USER#{FAMILY_SUB}", "RESIDENT#", "sk")
-    assert sorted(i["sk"]["S"] for i in items) == [
-        "RESIDENT#res-0002",
-        "RESIDENT#res-0005",
-    ]
+def test_pattern_14_old_family_sub_has_no_links(seeded):
+    assert query(seeded, None, "pk", f"USER#{OLD_FAMILY_SUB}", "RESIDENT#", "sk") == []
 
 
 def test_pattern_14_caregiver_users_residents(seeded):
@@ -170,11 +168,18 @@ def test_pattern_15_users_of_res_0002(seeded):
     items = query(
         seeded, "by-resident", "gsi1_pk", "RESIDENT#res-0002", "USER#", "gsi1_sk"
     )
-    assert sorted(i["gsi1_sk"]["S"] for i in items) == [
-        f"USER#{CAREGIVER_SUB}",
-        f"USER#{FAMILY_SUB}",
+    assert [i["gsi1_sk"]["S"] for i in items] == [f"USER#{CAREGIVER_SUB}"]
+    assert [i["relationship"]["S"] for i in items] == ["caregiver"]
+
+
+def test_only_the_caregiver_is_linked(seeded):
+    links = sorted(
+        (i["pk"]["S"], i["sk"]["S"], i["relationship"]["S"]) for i in seed_links(seeded)
+    )
+    assert links == [
+        (f"USER#{CAREGIVER_SUB}", f"RESIDENT#res-000{n}", "caregiver")
+        for n in (1, 2, 3)
     ]
-    assert {i["relationship"]["S"] for i in items} == {"caregiver", "family"}
 
 
 def test_thresholds_are_stored_as_numbers(seeded):
@@ -195,7 +200,7 @@ def test_rerun_is_identical_except_timestamps(seed, seeded, data):
     first = scan(seeded)
     seed.seed_local(seeded, table=TABLE, seed=data, now=LATER, sleep=no_sleep)
     second = scan(seeded)
-    assert len(second) == 85
+    assert len(second) == 83
     assert without_timestamps(first) == without_timestamps(second)
     profile = keyed(second)[("RESIDENT#res-0001", "PROFILE")]
     assert profile["updated_at"] == {"S": "2026-11-02T04:05:06Z"}
@@ -222,7 +227,230 @@ def test_seed_never_touches_foreign_items(seed, ddb, data):
     stored = keyed(scan(ddb))
     for item in FOREIGN_ITEMS:
         assert stored[(item["pk"]["S"], item["sk"]["S"])] == item
-    assert len(stored) == 85 + len(FOREIGN_ITEMS)
+    assert len(stored) == 83 + len(FOREIGN_ITEMS)
+
+
+# ---- criterion 15a: clean-up of seed links the seed file no longer has ----
+
+
+def link_item(sub, resident_id, linked_by="seed", relationship="family"):
+    item = {
+        "pk": {"S": f"USER#{sub}"},
+        "sk": {"S": f"RESIDENT#{resident_id}"},
+        "relationship": {"S": relationship},
+        "linked_at": {"S": "2026-10-30T00:00:00Z"},
+        "gsi1_pk": {"S": f"RESIDENT#{resident_id}"},
+        "gsi1_sk": {"S": f"USER#{sub}"},
+    }
+    if linked_by is not None:
+        item["linked_by"] = {"S": linked_by}
+    return item
+
+
+# The links the seed wrote for test-family before 2026-11-04 (live subs differ from
+# the local one, so one of each).
+OLD_FAMILY_LINKS = [
+    link_item(OLD_FAMILY_SUB, "res-0002"),
+    link_item(OLD_FAMILY_SUB, "res-0005"),
+    link_item("fa000000-0000-4000-8000-000000000000", "res-0005"),
+]
+
+
+def put_items(client, items):
+    for item in items:
+        client.put_item(TableName=TABLE, Item=item)
+
+
+def link_set(client):
+    return {
+        (i["pk"]["S"], i["sk"]["S"])
+        for i in scan(client)
+        if i["pk"]["S"].startswith("USER#") and i["sk"]["S"].startswith("RESIDENT#")
+    }
+
+
+def key_of(item):
+    return (item["pk"]["S"], item["sk"]["S"])
+
+
+def test_seed_removes_old_family_seed_links(seed, ddb, data):
+    seed.ensure_table(ddb, TABLE, sleep=no_sleep)
+    put_items(ddb, OLD_FAMILY_LINKS)
+    seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep)
+    assert link_set(ddb) == {
+        (f"USER#{CAREGIVER_SUB}", f"RESIDENT#res-000{n}") for n in (1, 2, 3)
+    }
+    assert len(scan(ddb)) == 83
+
+
+def test_seed_local_count_does_not_include_removed_links(seed, ddb, data):
+    seed.ensure_table(ddb, TABLE, sleep=no_sleep)
+    put_items(ddb, OLD_FAMILY_LINKS)
+    assert seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep) == 83
+
+
+def test_prune_returns_the_number_of_old_seed_links_removed(seed, seeded, data):
+    put_items(seeded, OLD_FAMILY_LINKS)
+    items = seed.build_registry_items(data, seed.local_subs(data), LATER)
+    seed.write_registry(seeded, items, table=TABLE, sleep=no_sleep)
+    assert seed.prune_seed_links(seeded, data, items, table=TABLE, sleep=no_sleep) == 3
+    assert not link_set(seeded) & {key_of(i) for i in OLD_FAMILY_LINKS}
+
+
+def test_prune_keeps_links_with_another_linked_by(seed, seeded, data):
+    kept = [
+        link_item(OLD_FAMILY_SUB, "res-0006", linked_by="admin"),
+        link_item("ab000000-0000-4000-8000-000000000000", "res-0002", linked_by=""),
+        link_item("ac000000-0000-4000-8000-000000000000", "res-0003", linked_by="Seed"),
+        link_item("ad000000-0000-4000-8000-000000000000", "res-0004", linked_by=None),
+    ]
+    put_items(seeded, kept + OLD_FAMILY_LINKS)
+    seed.seed_local(seeded, table=TABLE, seed=data, now=LATER, sleep=no_sleep)
+    stored = keyed(scan(seeded))
+    for item in kept:
+        assert stored[key_of(item)] == item
+    for item in OLD_FAMILY_LINKS:
+        assert key_of(item) not in stored
+
+
+def test_prune_keeps_seed_links_to_residents_outside_the_seed(seed, seeded, data):
+    outside = link_item(OLD_FAMILY_SUB, "res-9001")
+    put_items(seeded, [outside])
+    seed.seed_local(seeded, table=TABLE, seed=data, now=LATER, sleep=no_sleep)
+    assert keyed(scan(seeded))[key_of(outside)] == outside
+
+
+def test_prune_keeps_foreign_items(seed, seeded, data):
+    put_foreign(seeded)
+    put_items(seeded, OLD_FAMILY_LINKS)
+    seed.seed_local(seeded, table=TABLE, seed=data, now=LATER, sleep=no_sleep)
+    stored = keyed(scan(seeded))
+    for item in FOREIGN_ITEMS:
+        assert stored[key_of(item)] == item
+    assert len(stored) == 83 + len(FOREIGN_ITEMS)
+
+
+def test_rerun_prunes_nothing(seed, seeded, data):
+    items = seed.build_registry_items(data, seed.local_subs(data), LATER)
+    seed.write_registry(seeded, items, table=TABLE, sleep=no_sleep)
+    assert seed.prune_seed_links(seeded, data, items, table=TABLE, sleep=no_sleep) == 0
+    assert len(seed_links(seeded)) == 3
+
+
+def test_link_removed_from_seed_file_is_pruned_exactly(seed, seeded, data):
+    put_foreign(seeded)
+    before = keyed(scan(seeded))
+    data["links"] = [lk for lk in data["links"] if lk["resident_id"] != "res-0002"]
+    seed.seed_local(seeded, table=TABLE, seed=data, now=NOW, sleep=no_sleep)
+    after = keyed(scan(seeded))
+    removed = (f"USER#{CAREGIVER_SUB}", "RESIDENT#res-0002")
+    assert set(before) - set(after) == {removed}
+    assert set(after) == set(before) - {removed}
+    for key in after:
+        assert after[key] == before[key]  # same NOW: everything else unchanged
+
+
+def test_prune_with_no_stale_links_makes_no_write(seed, seeded, data):
+    from conftest import Recorder
+
+    recorder = Recorder(seeded)
+    items = seed.build_registry_items(data, seed.local_subs(data), LATER)
+    seed.prune_seed_links(recorder, data, items, table=TABLE, sleep=no_sleep)
+    assert "batch_write_item" not in recorder.ops()
+    assert "delete_item" not in recorder.ops()
+
+
+def test_prune_runs_after_the_new_links_are_written(seed, ddb, data):
+    from conftest import Recorder
+
+    seed.ensure_table(ddb, TABLE, sleep=no_sleep)
+    put_items(ddb, OLD_FAMILY_LINKS)
+    recorder = Recorder(ddb)
+    seed.seed_local(recorder, table=TABLE, seed=data, now=NOW, sleep=no_sleep)
+    ops = recorder.ops()
+    puts = [
+        request
+        for op, kw in recorder.calls
+        if op == "batch_write_item"
+        for request in kw["RequestItems"][TABLE]
+    ]
+    assert all(set(request) == {"PutRequest"} for request in puts)
+    assert len(puts) == 83
+    deletes = [i for i, op in enumerate(ops) if op == "delete_item"]
+    assert len(deletes) == 3
+    last_write = max(i for i, op in enumerate(ops) if op == "batch_write_item")
+    assert last_write < min(deletes)
+
+
+def test_each_prune_delete_is_conditional_on_linked_by_seed(seed, seeded, data):
+    from conftest import Recorder
+
+    put_items(seeded, OLD_FAMILY_LINKS)
+    recorder = Recorder(seeded)
+    items = seed.build_registry_items(data, seed.local_subs(data), LATER)
+    seed.prune_seed_links(recorder, data, items, table=TABLE, sleep=no_sleep)
+    deletes = [kw for op, kw in recorder.calls if op == "delete_item"]
+    assert sorted((kw["Key"]["pk"]["S"], kw["Key"]["sk"]["S"]) for kw in deletes) == (
+        sorted(key_of(i) for i in OLD_FAMILY_LINKS)
+    )
+    for kw in deletes:
+        assert kw["TableName"] == TABLE
+        assert kw["ConditionExpression"] == "linked_by = :seed"
+        assert kw["ExpressionAttributeValues"] == {":seed": {"S": "seed"}}
+
+
+def test_link_relinked_by_someone_else_before_delete_is_kept(
+    seed, seeded, data, monkeypatch
+):
+    # Found as a seed link, then re-made by an admin before the conditional delete.
+    old, relinked = OLD_FAMILY_LINKS[0], OLD_FAMILY_LINKS[1]
+    put_items(seeded, [old, relinked])
+    real_find = seed.find_seed_links
+
+    def find_then_relink(client, resident_ids, **kwargs):
+        found = real_find(client, resident_ids, **kwargs)
+        assert {(k["pk"]["S"], k["sk"]["S"]) for k in found} >= {
+            key_of(old),
+            key_of(relinked),
+        }
+        put_items(seeded, [{**relinked, "linked_by": {"S": "admin"}}])
+        return found
+
+    monkeypatch.setattr(seed, "find_seed_links", find_then_relink)
+    items = seed.build_registry_items(data, seed.local_subs(data), LATER)
+    removed = seed.prune_seed_links(seeded, data, items, table=TABLE, sleep=no_sleep)
+    assert removed == 1
+    stored = keyed(scan(seeded))
+    assert key_of(old) not in stored
+    assert stored[key_of(relinked)]["linked_by"] == {"S": "admin"}
+
+
+def test_link_gone_before_delete_is_not_counted(seed, seeded, data, monkeypatch):
+    gone = OLD_FAMILY_LINKS[0]
+    put_items(seeded, [gone])
+    real_find = seed.find_seed_links
+
+    def find_then_vanish(client, resident_ids, **kwargs):
+        found = real_find(client, resident_ids, **kwargs)
+        seeded.delete_item(TableName=TABLE, Key={"pk": gone["pk"], "sk": gone["sk"]})
+        return found
+
+    monkeypatch.setattr(seed, "find_seed_links", find_then_vanish)
+    items = seed.build_registry_items(data, seed.local_subs(data), LATER)
+    assert seed.prune_seed_links(seeded, data, items, table=TABLE, sleep=no_sleep) == 0
+    assert key_of(gone) not in keyed(scan(seeded))  # nothing re-created
+
+
+def test_prune_raises_other_delete_errors(seed, seeded, data):
+    from conftest import Recorder
+
+    put_items(seeded, OLD_FAMILY_LINKS)
+    recorder = Recorder(
+        seeded, fail={"delete_item": (1, "ProvisionedThroughputExceededException", "x")}
+    )
+    items = seed.build_registry_items(data, seed.local_subs(data), LATER)
+    with pytest.raises(ClientError):
+        seed.prune_seed_links(recorder, data, items, table=TABLE, sleep=no_sleep)
 
 
 # ---- device ownership: never move a device assigned outside the seed ----
@@ -254,7 +482,7 @@ def test_seed_assigns_unassigned_spares(seed, ddb, data):
     put_device(ddb, "wearable-0004")
     put_device(ddb, "bedroom-0020")
     assert seed.foreign_devices(ddb, data, table=TABLE, sleep=no_sleep) == []
-    assert seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep) == 85
+    assert seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep) == 83
     assert device_resident(ddb, "wearable-0004") == "res-0004"
     assert device_resident(ddb, "bedroom-0020") == "res-0020"
 
@@ -291,7 +519,7 @@ def test_delete_removes_unassigned_seed_device(seed, seeded, data):
 
 def test_delete_removes_everything_the_seed_owns(seed, seeded, data):
     links, others = seed.delete_seed(seeded, data, table=TABLE, sleep=no_sleep)
-    assert (links, others) == (5, 80)
+    assert (links, others) == (3, 80)
     assert scan(seeded) == []
 
 
@@ -307,10 +535,10 @@ def test_delete_on_partly_deleted_seed_succeeds(seed, seeded, data):
         seeded.delete_item(TableName=TABLE, Key=key)
     seeded.delete_item(
         TableName=TABLE,
-        Key={"pk": {"S": f"USER#{FAMILY_SUB}"}, "sk": {"S": "RESIDENT#res-0002"}},
+        Key={"pk": {"S": f"USER#{CAREGIVER_SUB}"}, "sk": {"S": "RESIDENT#res-0002"}},
     )
     links, _ = seed.delete_seed(seeded, data, table=TABLE, sleep=no_sleep)
-    assert links == 4
+    assert links == 2
     assert scan(seeded) == []
 
 
@@ -334,7 +562,7 @@ def test_delete_finds_seed_links_of_any_sub(seed, seeded, data):
         },
     )
     links, _ = seed.delete_seed(seeded, data, table=TABLE, sleep=no_sleep)
-    assert links == 6
+    assert links == 4
     assert seed_links(seeded) == []
 
 
@@ -342,8 +570,8 @@ def test_find_seed_links_reads_linked_by(seed, seeded, data):
     put_foreign(seeded)
     ids = [r["resident_id"] for r in data["residents"]]
     found = seed.find_seed_links(seeded, ids, table=TABLE, sleep=no_sleep)
-    assert len(found) == 5
-    assert all(k["pk"]["S"].startswith("USER#00000000-") for k in found)
+    assert len(found) == 3
+    assert {k["pk"]["S"] for k in found} == {f"USER#{CAREGIVER_SUB}"}
 
 
 def test_delete_does_not_touch_other_tables(seed, seeded, data):
@@ -442,7 +670,7 @@ def test_ensure_table_creates_missing_table(seed, moto):
 
 def test_ensure_table_keeps_existing_table(seed, seeded):
     assert seed.ensure_table(seeded, TABLE, sleep=no_sleep) is False
-    assert len(scan(seeded)) == 85
+    assert len(scan(seeded)) == 83
 
 
 def test_seed_local_creates_table_and_writes(seed, moto, data):
@@ -450,16 +678,16 @@ def test_seed_local_creates_table_and_writes(seed, moto, data):
 
     client = boto_client("dynamodb")
     assert (
-        seed.seed_local(client, table="fresh", seed=data, now=NOW, sleep=no_sleep) == 85
+        seed.seed_local(client, table="fresh", seed=data, now=NOW, sleep=no_sleep) == 83
     )
-    assert len(scan(client, "fresh")) == 85
+    assert len(scan(client, "fresh")) == 83
 
 
 def test_seed_local_default_seed_is_the_committed_file(seed, moto):
     from conftest import boto_client
 
     client = boto_client("dynamodb")
-    assert seed.seed_local(client, table="fresh", sleep=no_sleep) == 85
+    assert seed.seed_local(client, table="fresh", sleep=no_sleep) == 83
 
 
 # ---- criterion 21: batching and retries (fake client, no moto) ----

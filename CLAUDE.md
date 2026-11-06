@@ -15,7 +15,6 @@ structure, not code that exists yet. Update this file as decisions land.
   workflow, say in a line which one and why.
 - Ask me before making product decisions: what data is collected, who can see what,
   alert thresholds, retention.
-- Never run `git commit` or `git push`. I commit and push myself.
 - After fixing a bug, a reviewer finding, or a mistake I corrected, run the
   `improve-agents` skill: fix the skill, agent, or workflow that let it happen, without
   asking me, within that skill's guardrails. Changes are logged in
@@ -44,7 +43,9 @@ structure, not code that exists yet. Update this file as decisions land.
   limits inside the always-free tier (25 RCU / 25 WCU across all tables and indexes),
   no auto scaling. Tables, keys, and access patterns are in `docs/data-model.md`.
 - **History and analytics:** every telemetry message and alert also goes to S3 for
-  analysis; the data is cleaned later with AWS Lake Formation. Each IoT rule also sends
+  analysis. A daily `clean` Lambda runs Athena SQL that writes clean Parquet tables to a
+  separate bucket, and Lake Formation governs Athena access (`docs/features/clean-data.md`).
+  Each IoT rule also sends
   messages to an SQS queue, and a `history` Lambda writes them to S3 in 5-minute
   batches (`docs/decisions/0001-iot-rule-routing.md`, History path). Firehose and
   Kinesis are not used: they need AWS's paid plan.
@@ -54,13 +55,25 @@ structure, not code that exists yet. Update this file as decisions land.
   A US$40/month AWS Budget (`infra/bootstrap/budget.tf`) emails alerts at 50/80/100% of
   actual and 100% of forecast spend, counted before credits.
 - **Auth:** one Cognito user pool (`silvercare-users`) with groups `doctor`, `nurse`,
-  `caregiver`, `family`. "Staff" in the docs means `doctor` or `nurse`: they get the
-  staff dashboard and see every resident. `caregiver` and `family` get the family view
-  and see only linked residents. Sign-in is email + password, MFA (authenticator app)
-  optional. Groups decide what a user can see; the API enforces it, the UI only hides
-  things.
+  `caregiver` (team decision 2026-11-04: `family` is removed, family members get
+  caregiver accounts; Track B removes the group). "Staff" in the docs means `doctor` or
+  `nurse`: they get the staff dashboard and see every resident. Nurses are a care centre
+  (one or two nurses, one shared account, "care centre nurse" in emails and the UI) who
+  watch alerts and acknowledge them; doctors (individual accounts) read resident data
+  and set alert thresholds. The staff dashboard has two views: nurses get the nurse
+  dashboard (alert response: acknowledge and resolve) and doctors the doctor dashboard
+  (clinical review: trends, editing thresholds); a user in both groups gets the nurse
+  view. `caregiver` gets the family view, sees only linked residents (several caregivers
+  per resident), and can cancel their alerts; the frontend gives a user still in the
+  `family` group the no-access screen. A new `ops` group (team decision 2026-11-04, added
+  by Track B) gets an ops view of device problems (offline, low battery, not worn) for
+  every resident and can acknowledge them; caregivers can acknowledge their residents'
+  device problems too. Sign-in is email + password, MFA (authenticator app) optional.
+  Groups decide what a user can see; the API enforces it, the UI only hides things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
-  caregiver/family views and the staff dashboard, chosen by Cognito group. Static build
+  caregiver/family views and the nurse and doctor dashboards, chosen by Cognito group,
+  plus staff-only pages: the resident page (`/residents/<resident_id>`) and the devices
+  view (`/devices`), a tab in the staff area. Static build
   hosted on S3 behind CloudFront (no server-side rendering).
 
 ## Repo layout *(planned)*
@@ -106,7 +119,7 @@ GitHub Actions workflows in `.github/workflows/`:
 |---|---|---|
 | `checks.yml` | every PR, and before every deploy | builds the dev image, then `make lint`, `make test`, `make test-integration`, `make tf-check`; frontend lint/test/build once `frontend/` exists. No secrets or AWS access. |
 | `plan.yml` | every PR from this repo (not forks) | `terraform plan` with the read-only `silvercare-cicd-plan` role; posts a PR comment listing what will be created, updated, replaced, or **destroyed** |
-| `deploy.yml` | push to `main` | runs `checks.yml`, then `terraform plan` + `apply` with the `silvercare-cicd` role, then builds `frontend/` with the Cognito IDs from the Terraform outputs and uploads it to the S3 bucket (every deploy) |
+| `deploy.yml` | push to `main` | runs `checks.yml`, then `terraform plan` + `apply` with the `silvercare-cicd` role, then builds `frontend/` with the Cognito IDs from the Terraform outputs and uploads it to the S3 bucket (every deploy), then runs the clean-data self-check (pass or fail only) |
 
 Implications:
 
@@ -175,7 +188,7 @@ under Singapore's PDPA. Treat it accordingly:
   the shared password or MFA (only the account owner can). MFA is optional. Because the
   user is shared, CloudTrail can't tell developers apart. Data reads and the shared user
   are acceptable while all data is synthetic; revisit both before any real resident data
-  arrives.
+  arrives (full list: "Before any real resident data arrives" in `docs/data-model.md`).
 - The `pdpa-check` skill has the full checklist.
 
 ## Claude setup
@@ -184,7 +197,7 @@ under Singapore's PDPA. Treat it accordingly:
   - builders: `backend-builder`, `frontend-builder` (used by `build-feature`)
   - testers: `lambda-tester`, `frontend-tester`
   - reviewers (read-only): `iac-reviewer`, `privacy-reviewer`
-- `.claude/hooks/guard.sh` blocks `git commit`/`push`, the `aws` CLI, Terraform commands
+- `.claude/hooks/guard.sh` blocks, the `aws` CLI, Terraform commands
   that change infrastructure or state, anything touching `~/.aws`, and anything touching
   device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test|simulate`,
   and the simulator without `--dry-run`).
@@ -196,13 +209,20 @@ under Singapore's PDPA. Treat it accordingly:
 - Feature flow, one feature at a time:
   1. Write the spec with the `feature-spec` skill → `docs/features/<name>.md`, `status: ready`
   2. Ask Claude to run the `build-feature` workflow with the feature name
-  3. Review the diff and run it locally, then commit yourself
+  3. Review the diff and run it locally
 - Before a PR, ask Claude to run the `pre-pr-check` workflow.
 
 ## Open decisions
 
 Record the outcome here (and remove the item) once decided. Numbers stay fixed because
-other docs refer to them (#1, the metrics contract, was approved 2026-10-25).
+other docs refer to them (#1, the metrics contract, was approved 2026-10-25; #4, data
+retention, was decided 2026-11-01, see Retention in `docs/data-model.md`: patient
+health records, meaning the threshold change history and derived records that informed
+care (alerts, daily summaries), are kept for the patient's lifetime + 6 years, per MOH
+Circular 85/2022 under the Healthcare Services Act 2020; raw S3 telemetry is
+downsampled to daily summaries after 90 days and deleted at 365 days (both figures
+proposed); Cognito accounts are disabled at a user's offboarding and deleted 90 days
+later; DynamoDB keeps at most the latest 5 messages per device and type).
 
 2. **Alerting rules:** which conditions trigger alerts (e.g. fall, inactivity, abnormal
    vitals) and how alerts are delivered (push, SMS, email). (Decided: wearables also
@@ -210,8 +230,5 @@ other docs refer to them (#1, the metrics contract, was approved 2026-10-25).
    10 s, on top of the cloud's per-resident check; see `docs/metrics.md`.)
 3. **User onboarding:** how caregivers/family are linked to residents. (Decided: accounts
    are created by an admin only, no self sign-up.)
-4. **Data retention:** how long history in S3, resolved alerts in DynamoDB, and user
-   data are kept. (Decided: DynamoDB keeps at most the latest 5 messages per device and
-   type.)
 5. **Lambda packaging for third-party packages**, if a function ever needs more than
    the standard library, boto3, and Powertools.
