@@ -99,7 +99,10 @@ jobs:
           TF_VAR_alert_subscribers: ${{ vars.ALERT_SUBSCRIBERS || '{}' }}
           TF_VAR_ops_subscribers: ${{ vars.OPS_SUBSCRIBERS || '[]' }}
           TF_VAR_nurse_subscribers: ${{ vars.NURSE_SUBSCRIBERS || '[]' }}
-        run: terraform plan -no-color -out=tfplan > /dev/null
+        # stdout is discarded; error text can quote IAM user ARNs, and logs are public.
+        run: |
+          set -o pipefail
+          terraform plan -no-color -out=tfplan 2>&1 >/dev/null | sed -E 's#(:user/)[^ "]+#\1<redacted>#g'
 
       - name: Summarise plan
         if: steps.tf.outputs.present == 'true'
@@ -107,7 +110,10 @@ jobs:
 
       - name: Terraform apply
         if: steps.tf.outputs.present == 'true'
-        run: terraform apply -no-color tfplan
+        # Error text can quote IAM user ARNs from Lake Formation grants; logs are public.
+        run: |
+          set -o pipefail
+          terraform apply -no-color tfplan 2>&1 | sed -E 's#(:user/)[^ "]+#\1<redacted>#g'
 
       # The frontend is uploaded on every deploy, not only when frontend/ changed: the
       # build embeds Terraform outputs (Cognito IDs), and this also refills an empty bucket.
@@ -148,3 +154,20 @@ jobs:
           aws cloudfront create-invalidation --distribution-id "$distribution" \
             --paths "/index.html" > /dev/null
           echo "Frontend uploaded and the cache for /index.html cleared." >> "$GITHUB_STEP_SUMMARY"
+
+      # Runs the real cleaning SQL on synthetic cases (docs/features/clean-data.md,
+      # criterion 17). Prints only pass or fail. A failure doesn't undo the apply.
+      - name: Clean data self-check
+        if: steps.tf.outputs.present == 'true'
+        run: |
+          meta="$RUNNER_TEMP/self-check-meta.json"
+          if aws lambda invoke --function-name silvercare-clean \
+              --cli-binary-format raw-in-base64-out --cli-read-timeout 310 \
+              --payload '{"self_check": true}' "$RUNNER_TEMP/self-check.json" \
+              > "$meta" 2> /dev/null \
+              && ! jq -e 'has("FunctionError")' "$meta" > /dev/null; then
+            echo "Clean data self-check passed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Clean data self-check failed. Check the silvercare-clean logs."
+            exit 1
+          fi

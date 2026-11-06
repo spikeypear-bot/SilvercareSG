@@ -861,11 +861,15 @@ and Athena (docs/features/ingest-history.md; the History path in
   so a delete really deletes (e.g. for a PDPA erasure request). One lifecycle rule:
   abort incomplete multipart uploads after 1 day. Retention is decided (see
   [Retention](#retention)) but not in Terraform yet: `telemetry/` needs an expiry
-  rule at 365 days *(proposed)*, added only once daily summaries exist.
+  rule at 365 days *(proposed)*, added only once daily summaries exist. The clean job must
+  refuse dates older than that limit in the same change: a re-run deletes a date's output
+  first, so with its raw files gone it would leave that date empty.
 - **Key layout:**
   `telemetry/message=<message>/date=<yyyy-mm-dd>/<yyyymmddTHHMMSSZ>-<uuid4>.jsonl.gz`.
-  `<message>` is the body's `message` if it matches `^[a-z]{1,16}$`, else `unknown`;
-  bodies that aren't a JSON object go to `unparseable`. `<date>` is the UTC date of
+  `<message>` is the body's `message` if it matches `^[a-z_]{1,16}$`, else `unknown`;
+  bodies that aren't a JSON object go to `unparseable`. Files written before underscores
+  were allowed hold `vitals_alert` and `alert_cancel` under `unknown`, the only names this
+  affected; they aren't moved, and the clean job reads them from there. `<date>` is the UTC date of
   `received_at` (else the SQS sent time). The timestamp is when the file was written;
   the UUID is random, so keys hold no device or resident IDs.
 - **Alerts:** `alerts/date=<yyyy-mm-dd>/<alert_id>.json`, one object per alert:
@@ -903,8 +907,83 @@ and Athena (docs/features/ingest-history.md; the History path in
   queue. It may only add objects under `telemetry/`. `alert-processor` writes
   `alerts/` only.
 - **Readers:** developers (the shared IAM user's `ReadProjectBuckets` statement; read
-  only, no write or delete), e.g. `scripts/ingest-check.py --history`. Lake Formation
-  and Athena later.
+  only, no write or delete), e.g. `scripts/ingest-check.py --history`. The `clean`
+  Lambda, through Athena, reads `telemetry/` only (see [S3 clean layer](#s3-clean-layer)).
+
+## S3 clean layer
+
+The first layer of the data lake (raw → clean → curated), built by the daily `clean`
+Lambda from one UTC day of `telemetry/` (docs/features/clean-data.md). Raw files are
+never changed. Clean data identifies devices only: linking to residents is for the later
+curated layer. No DynamoDB access, so no RCU or WCU use.
+
+- **Buckets** in `ap-southeast-1`, both with all public access blocked,
+  `BucketOwnerEnforced`, SSE-S3, a TLS-only bucket policy, and versioning off:
+  - `silvercare-clean-<account_id>`: `tables/<table>/date=<yyyy-mm-dd>/`, Parquet
+    (Snappy). Expires at 365 days *(proposed)*, see [Retention](#retention).
+  - `silvercare-athena-results-<account_id>`: `clean/` for the Lambda, `analysis/` for
+    developers. Objects expire after 7 days.
+- **Glue database** `silvercare_lake`:
+  - `raw_telemetry`: one `line string` column (text input, gzip read automatically),
+    partitioned by `message` and `date`, at `s3://silvercare-history-<account_id>/telemetry/`.
+    `alerts/` is not part of it.
+  - The eight clean tables and `rejected` below, each partitioned by `date` (the raw
+    file's `date`, from `received_at`).
+
+| Table | From raw `message` | Columns besides the common ones |
+|---|---|---|
+| `vitals` | `vitals` | `hr_bpm` int, `spo2_pct` int, `skin_temp_c` double, `activity_pct` int, `accel_g` string (JSON), `accel_valid` boolean |
+| `vitals_alert` | `vitals_alert` | `metric` string, `value` int, `limit` int, `direction` string, `held_s` int |
+| `fall` | `fall` | `confidence` double, `peak_g` double, `still_s` int, `accel_window` string (JSON), `accel_valid` boolean |
+| `alert_cancel` | `alert_cancel` | none |
+| `wearable_status` | `status`, wearable | `battery_pct` int, `worn` boolean, `charging` boolean, `fw_version` string |
+| `bedroom_status` | `status`, bedroom | `battery_pct` int, `fw_version` string |
+| `motion` | `motion` | `motion` boolean |
+| `bed` | `bed` | `occupied` boolean |
+
+- **Common columns:** `message_id` string, `device_id` string, `ts` timestamp,
+  `received_at` timestamp, `schema_version` int, `clock_skew` boolean (`ts` more than 5
+  minutes from `received_at`).
+- **What is kept:** a line is in a clean table only if ingest's `validate_event` would
+  accept it, ignoring its accelerometer checks. A line under `unknown` whose `message`
+  names a contract type is processed as that type, for that date. Within a table and date
+  the earliest `received_at` per `message_id` is kept, across the type's own partition and
+  `unknown`; a duplicate landing on another date isn't removed.
+- **Fields:** unknown fields are dropped, at the top level and inside the accelerometer
+  columns, which are rebuilt from known fields only. `accel_g` is `{"x":…,"y":…,"z":…}`,
+  with `accel_valid` true when all three are numbers from −16 to 16. `accel_window` is
+  `hz`, `start_offset_ms`, and `samples`, with `accel_valid` true when they are 25, −1000,
+  and 50 arrays of 3 numbers from −16 to 16. Otherwise `accel_valid` is false and the
+  column is null, and the message stays in its table.
+- **`rejected`:** `message` (the raw partition), `reason`, `raw_line`, and `date`. Every
+  line that fails validation, every line under `unparseable`, and every line under
+  `unknown` that doesn't name a contract type (`unknown_message`), exact duplicates once.
+  `reason` uses ingest's `Rejection` strings plus `unknown_message` and `unparseable`.
+  `raw_line` holds the message as received.
+- **Writes:** for each table the job deletes the date's folder, then writes it again, so
+  a re-run replaces that date. It is the only writer.
+- **Access:**
+
+  | Who | Through Athena and the catalog (Lake Formation) | Direct S3 |
+  |---|---|---|
+  | `silvercare-clean` role | runs queries in `silvercare-clean`; reads `raw_telemetry`, adds partitions | read `telemetry/` (no write or delete); list, write, and delete `tables/` in the clean bucket; own results prefix |
+  | Developers | run queries in `silvercare-analysis`; the eight clean tables only, not `raw_telemetry` or `rejected` | read everything, including `rejected` and raw, through `ReadProjectBuckets`; write only to `analysis/` results |
+
+  Lake Formation doesn't limit direct S3 reads. That matches today's rule while all data
+  is synthetic.
+- **Retention:** clean tables, `rejected` included, expire 365 days after a file is
+  written *(proposed, see [Retention](#retention))*. Athena result files last 7 days; Athena keeps query text in its history for 45 days.
+- **Erasure: not solved.** Raw files batch many devices together, so erasing one device
+  means rewriting those files without it and re-running the affected dates. Those rewrites
+  restart the expiry clock for every other device on those dates, so the tool must account
+  for that. `unparseable` lines have no parsed `device_id`, but `raw_body` may still contain
+  one as text, so the tool must search that text or rely on expiry. Athena results and
+  query history age out rather than being erased.
+- **Before any real resident data arrives:**
+  - the per-device erasure tool above exists
+  - direct S3 reads can be traced (who read which object, when): none are recorded today
+  - the shared developer user and its read access are reviewed
+  - raw telemetry's expiry rule exists
 
 ## Capacity
 
@@ -980,6 +1059,8 @@ critical-alert and `silvercare-iot-rules`.
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
 | Threshold change history *(proposed)* | the resident's lifetime + 6 years (MOH Circular 85/2022); kept after offboarding | TTL `expires_at` = date of death + 6 years, set when a date of death is recorded (no field for it yet); no expiry until then |
 | History (S3 `telemetry/`, raw) | daily summaries made by 90 days, raw deleted at 365 days *(both proposed)* | S3 lifecycle expiry on `telemetry/` at 365 days (not in Terraform yet) |
+| Clean tables (S3 `silvercare-clean-<account_id>`, `tables/`, `rejected` included) | 365 days after a file is written *(proposed)*, matching raw; re-running a date restarts its clock | S3 lifecycle expiry on `tables/` |
+| Athena results and query history | result files 7 days; query text 45 days (AWS's fixed limit) | S3 lifecycle expiry; AWS ages out the history |
 | Alert copies and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; finding one resident's objects and the date of death are gaps (see [S3 history](#s3-history)); no expiry rule until then |
 | Failed fall and `vitals_alert` events (SQS `silvercare-critical-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
 | Latest device `vitals_alert`s | 5 per device | write rule |
