@@ -30,8 +30,9 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
   can still be read with `terraform output`). Any `terraform` step in a workflow must also
   redact stderr, because discarding stdout alone leaves error text in that log.
 - A name Terraform doesn't create (a hard-coded `default`, a `data` lookup) fails only at
-  apply: `make tf-check` never contacts AWS. Create it in Terraform where that's safe;
-  otherwise list it for the owner to confirm exists before merging.
+  plan or apply: `make tf-check` never contacts AWS. Create it in Terraform where that's
+  safe; otherwise have the owner confirm it exists in AWS before the first push. Docs saying
+  it exists aren't proof, especially for anything made by hand.
 - A new service that stores or returns data: add its read actions to `DenyDataReads` in
   `infra/bootstrap/ci-plan-role.tf` (the owner applies it). The plan role has
   `ReadOnlyAccess`, and any PR from this repo can use it.

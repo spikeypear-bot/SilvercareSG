@@ -67,6 +67,7 @@ _UUID_V4 = (
 _TS = r'\A"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z"\z'
 _TS_FORMAT = "%Y-%m-%dT%H:%i:%s.%fZ"
 _CLOCK_SKEW_MS = 300_000
+_MS_PER_DAY = 86_400_000
 _ACCEL_AXIS_LIMIT = 16
 _ACCEL_AXES = ("x", "y", "z")
 _FALL_WINDOW_HZ = 25
@@ -242,11 +243,14 @@ def _validated(source: str) -> str:
         f"CASE WHEN regexp_like({ts}, {_quote(_TS)}) AND substr({ts}, 2, 4) <> '0000'"
         f" THEN try(date_parse(substr({ts}, 2, 24), {_quote(_TS_FORMAT)})) END"
     )
+    # Whole days, then the remainder: Athena's date_add fails on a value this large in one
+    # step, though current Trino accepts it. try() hides that failure as a NULL.
+    received_ms = f"try_cast({received} AS bigint)"
     received_value = (
-        f"CASE WHEN regexp_like({received}, {_quote(_INT)})"
-        f" AND try_cast({received} AS bigint) >= 0"
-        f" THEN try(date_add('millisecond', try_cast({received} AS bigint),"
-        " TIMESTAMP '1970-01-01 00:00:00.000')) END"
+        f"CASE WHEN regexp_like({received}, {_quote(_INT)}) AND {received_ms} >= 0"
+        f" THEN try(date_add('millisecond', {received_ms} % {_MS_PER_DAY},"
+        f" date_add('day', {received_ms} / {_MS_PER_DAY},"
+        " TIMESTAMP '1970-01-01 00:00:00.000'))) END"
     )
     parsed = (
         "SELECT line, raw_message,"
