@@ -1,7 +1,7 @@
-import { useId, useRef, type ReactNode } from 'react'
-import { Activity, Droplet, HeartPulse, Thermometer, UserCheck } from 'lucide-react'
-import { Avatar } from '../../components/Avatar'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Activity, CircleX, Droplet, HeartPulse, Thermometer, UserCheck } from 'lucide-react'
 import { Button } from '../../components/Button'
+import { Avatar } from '../../components/Avatar'
 import { Card } from '../../components/Card'
 import { EmptyState } from '../../components/EmptyState'
 import { RelativeTime } from '../../components/RelativeTime'
@@ -9,8 +9,16 @@ import { Skeleton } from '../../components/Skeleton'
 import { StatusBadge } from '../../components/StatusBadge'
 import { formatClockTime, formatExactTime } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
-import type { Resident, ResidentAlert, VitalsReading } from '../../types/dashboard'
-import { AcknowledgedLines, EscalatedText } from './AlertRow'
+import type { DashboardData, Resident, ResidentAlert, VitalsReading } from '../../types/dashboard'
+import { useAuth } from '../auth/useAuth'
+import { AlertAnnouncer } from './AlertAnnouncer'
+import {
+  AcknowledgedLines,
+  CancelledLine,
+  LifecycleLabel,
+  ResolvedLine,
+  RoutingLine,
+} from './AlertRow'
 import { BatteryLevel, BedroomStatusText, WearableStatusText } from './DeviceStatus'
 import { DashboardError, LoadingStatus } from './DashboardStates'
 import {
@@ -20,24 +28,24 @@ import {
   formatSpo2,
   formatTemp,
 } from './labels'
-import { useAuth } from '../auth/useAuth'
 import { MainLayout } from './MainLayout'
 import { Sparkline } from './Sparkline'
-import { isDeviceProblem, sentToNurseAtOnce } from './stats'
+import { isDeviceProblem, isOnOpenList } from './stats'
+import { describeAlert, useAlertAnnouncer } from './useAlertAnnouncer'
 import { useDashboardData } from './useDashboardData'
+import { useEscalationWatcher } from './useEscalationWatcher'
 
 const MAX_RECENT_ALERTS = 5
 
 /**
  * The caregiver view (`/` for the `caregiver` group): the residents linked to the account.
- * The caregiver can acknowledge an open device problem (user's decision 2026-11-05); health
- * alerts are display only here (the nurse acknowledges them; the caregiver Cancel button
- * is Track B's).
+ * A caregiver can cancel an open or acknowledged alert, after confirming
+ * (docs/features/alert-actions-ui.md); local state only until the API exists. Device
+ * problems have no cancel: the caregiver acknowledges an open one instead (user's
+ * decisions 2026-11-05, docs/data-model.md pattern 16).
  */
 export function CaregiverView() {
-  const { data, loading, error, retry, acknowledgeDeviceProblem } = useDashboardData('family')
-  const { user } = useAuth()
-  const caregiverName = user?.name || 'Caregiver'
+  const { data, loading, error, retry, cancelAlert, acknowledgeDeviceProblem } = useDashboardData('family')
 
   let content: ReactNode
   if (error) {
@@ -50,21 +58,59 @@ export function CaregiverView() {
     )
   } else {
     content = (
+      <CaregiverContent data={data} onCancel={cancelAlert} onAcknowledge={acknowledgeDeviceProblem} />
+    )
+  }
+
+  return <MainLayout title="My residents">{content}</MainLayout>
+}
+
+function CaregiverContent({
+  data,
+  onCancel,
+  onAcknowledge,
+}: {
+  data: DashboardData
+  onCancel: (alertId: string, by: string) => void
+  /** Acknowledges an open device problem; `by` is display only, never sent. */
+  onAcknowledge: (alertId: string, by: string) => void
+}) {
+  const { user } = useAuth()
+  // Display only, never sent: the API takes who cancelled from the token.
+  const caregiverName = user?.name ?? ''
+  const residentsById = useMemo(
+    () => new Map(data.residents.map((r) => [r.resident_id, r])),
+    [data.residents],
+  )
+  // The page's one screen-reader announcer, fed from the alert data and the cancels.
+  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById)
+  useEscalationWatcher(data.alerts, (alert) =>
+    announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
+  )
+
+  return (
+    <>
+      <AlertAnnouncer message={message} />
       <ul className="grid gap-6 lg:grid-cols-2">
         {data.residents.map((resident) => (
           <li key={resident.resident_id}>
             <ResidentOverview
               resident={resident}
               alerts={data.alerts.filter((a) => a.resident_id === resident.resident_id)}
-              onAcknowledge={(alertId) => acknowledgeDeviceProblem(alertId, caregiverName)}
+              onCancel={(alert) => {
+                onCancel(alert.alert_id, caregiverName)
+                announce(`Alert cancelled: ${describeAlert(alert, residentsById)}.`)
+              }}
+              onAcknowledge={(alert) => {
+                onAcknowledge(alert.alert_id, caregiverName)
+                announce(`Acknowledged: ${describeAlert(alert, residentsById)}.`)
+              }}
             />
           </li>
         ))}
       </ul>
-    )
-  }
-
-  return <MainLayout title="My residents">{content}</MainLayout>
+    </>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -103,14 +149,18 @@ const VITALS: readonly VitalDef[] = [
   },
 ]
 
-interface ResidentOverviewProps {
+function ResidentOverview({
+  resident,
+  alerts,
+  onCancel,
+  onAcknowledge,
+}: {
   resident: Resident
   alerts: ResidentAlert[]
+  onCancel: (alert: ResidentAlert) => void
   /** Acknowledges one of this resident's open device problems. */
-  onAcknowledge: (alertId: string) => void
-}
-
-function ResidentOverview({ resident, alerts, onAcknowledge }: ResidentOverviewProps) {
+  onAcknowledge: (alert: ResidentAlert) => void
+}) {
   const headingId = useId()
   const recentHeadingRef = useRef<HTMLHeadingElement>(null)
   // vitals are newest first; sparklines read oldest to newest.
@@ -168,53 +218,36 @@ function ResidentOverview({ resident, alerts, onAcknowledge }: ResidentOverviewP
         </div>
 
         <div className="flex flex-col gap-2">
-          {/* Takes focus after an acknowledge: the button goes away. */}
-          <h3 ref={recentHeadingRef} tabIndex={-1} className="text-base font-semibold text-slate-900">
+          <h3
+            ref={recentHeadingRef}
+            tabIndex={-1}
+            className="rounded text-base font-semibold text-slate-900 focus-visible:ring-4 focus-visible:ring-teal-600/40 focus-visible:outline-none"
+          >
             Recent alerts
           </h3>
-          <div aria-live="polite">
+          {/* Not a live region: the page's one announcer reads out new alerts and cancels. */}
+          <div>
             {recentAlerts.length === 0 ? (
               <p className="text-base text-slate-600">No recent alerts.</p>
             ) : (
               <ol className="flex flex-col gap-3 border-l-2 border-slate-200 pl-4">
                 {recentAlerts.map((alert) => (
-                  <li key={alert.alert_id} className="relative flex flex-col gap-1">
-                    <span
-                      aria-hidden="true"
-                      className="absolute top-2 -left-[1.4rem] size-2.5 rounded-full bg-slate-400"
-                    />
-                    <div className="flex flex-wrap items-center gap-2">
-                      <StatusBadge tone={alert.severity} />
-                      <span className="text-base font-medium text-slate-900">
-                        {ALERT_TYPE_LABELS[alert.alert_type]}
-                      </span>
-                    </div>
-                    <span className="text-sm text-slate-600">
-                      <RelativeTime iso={alert.event_ts} now={now} />
-                    </span>
-                    {/* Explains the routing to the caregiver, who isn't the nurse. */}
-                    {alert.status === 'open' && alert.escalated_at && sentToNurseAtOnce(alert) && (
-                      <EscalatedText atOnce />
-                    )}
-                    <AcknowledgedLines alert={alert} now={now} />
-                    {alert.status === 'open' && isDeviceProblem(alert) && (
-                      <div className="pt-1">
-                        <Button
-                          variant="secondary"
-                          onClick={() => {
-                            onAcknowledge(alert.alert_id)
-                            recentHeadingRef.current?.focus()
-                          }}
-                        >
-                          <UserCheck className="size-5" aria-hidden="true" />
-                          Acknowledge
-                          <span className="sr-only">
-                            : {ALERT_TYPE_LABELS[alert.alert_type]}, {resident.name}
-                          </span>
-                        </Button>
-                      </div>
-                    )}
-                  </li>
+                  <RecentAlertItem
+                    key={alert.alert_id}
+                    alert={alert}
+                    resident={resident}
+                    now={now}
+                    onCancel={() => {
+                      onCancel(alert)
+                      // The item's buttons go away; move focus somewhere stable.
+                      recentHeadingRef.current?.focus()
+                    }}
+                    onAcknowledge={() => {
+                      onAcknowledge(alert)
+                      // The Acknowledge button goes away, as after a cancel.
+                      recentHeadingRef.current?.focus()
+                    }}
+                  />
                 ))}
               </ol>
             )}
@@ -222,6 +255,115 @@ function ResidentOverview({ resident, alerts, onAcknowledge }: ResidentOverviewP
         </div>
       </article>
     </Card>
+  )
+}
+
+/**
+ * One alert in a resident's "Recent alerts": severity, type, lifecycle, time, the lines
+ * for its state, and, while it is open or acknowledged, "Cancel alert" with a
+ * confirmation step (docs/features/alert-actions-ui.md, criteria 10-14). A device problem
+ * has no cancel; while it is open it has "Acknowledge" instead (user's decisions 2026-11-05).
+ */
+function RecentAlertItem({
+  alert,
+  resident,
+  now,
+  onCancel,
+  onAcknowledge,
+}: {
+  alert: ResidentAlert
+  resident: Resident
+  now: Date
+  onCancel: () => void
+  onAcknowledge: () => void
+}) {
+  const promptId = useId()
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const keepRef = useRef<HTMLButtonElement>(null)
+  const [confirming, setConfirming] = useState(false)
+  const returnFocusToCancel = useRef(false)
+  const typeLabel = ALERT_TYPE_LABELS[alert.alert_type]
+  const context = `${typeLabel}, ${resident.name}`
+  // Main's cancel rule: open or acknowledged (docs/data-model.md, Status updates), health
+  // alerts only (pattern 16).
+  const canCancel = isOnOpenList(alert) && !isDeviceProblem(alert)
+  const canAcknowledge = alert.status === 'open' && isDeviceProblem(alert)
+
+  useEffect(() => {
+    if (confirming) {
+      // The safe choice gets focus.
+      keepRef.current?.focus()
+    } else if (returnFocusToCancel.current) {
+      returnFocusToCancel.current = false
+      cancelRef.current?.focus()
+    }
+  }, [confirming])
+
+  return (
+    <li className="relative flex flex-col gap-1">
+      <span
+        aria-hidden="true"
+        className="absolute top-2 -left-[1.4rem] size-2.5 rounded-full bg-slate-400"
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge tone={alert.severity} />
+        <span className="text-base font-medium text-slate-900">{typeLabel}</span>
+        <LifecycleLabel alert={alert} />
+      </div>
+      <span className="text-sm text-slate-600">
+        <RelativeTime iso={alert.event_ts} now={now} />
+      </span>
+      {/* Explains the routing to the caregiver, who isn't the nurse; before a warning
+          escalates, how long they have to cancel it. */}
+      <RoutingLine alert={alert} audience="caregiver" />
+      <AcknowledgedLines alert={alert} now={now} />
+      <CancelledLine alert={alert} now={now} />
+      <ResolvedLine alert={alert} now={now} />
+      {canAcknowledge && (
+        <div className="pt-1">
+          <Button variant="secondary" onClick={onAcknowledge}>
+            <UserCheck className="size-5" aria-hidden="true" />
+            Acknowledge<span className="sr-only">: {context}</span>
+          </Button>
+        </div>
+      )}
+      {canCancel && !confirming && (
+        <div className="pt-1">
+          <Button ref={cancelRef} variant="secondary" onClick={() => setConfirming(true)}>
+            <CircleX className="size-5" aria-hidden="true" />
+            Cancel alert<span className="sr-only">: {context}</span>
+          </Button>
+        </div>
+      )}
+      {canCancel && confirming && (
+        <div
+          role="group"
+          aria-labelledby={promptId}
+          className="mt-1 flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3"
+        >
+          <p id={promptId} className="text-base text-slate-900">
+            Cancel this alert? It will no longer be escalated to the care centre nurse. This
+            resident's caregivers, and the care centre nurse if they were alerted, will be
+            emailed that you cancelled it.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="danger" onClick={onCancel}>
+              Yes, cancel alert<span className="sr-only">: {context}</span>
+            </Button>
+            <Button
+              ref={keepRef}
+              variant="secondary"
+              onClick={() => {
+                returnFocusToCancel.current = true
+                setConfirming(false)
+              }}
+            >
+              Keep alert<span className="sr-only">: {context}</span>
+            </Button>
+          </div>
+        </div>
+      )}
+    </li>
   )
 }
 

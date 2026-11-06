@@ -97,11 +97,14 @@ from synthetic demo data, and actions change local state only.
    Empty: "No alerts for this resident in the last 30 days."
 9. Nurses get Acknowledge (open health alerts) and Resolve (open and acknowledged
    health alerts) buttons in the alert history; device problems, cancelled, and
-   resolved alerts have none (user's decisions 2026-11-05). Acknowledge
-   records the time (shown as the care centre nurse); resolve records the time, shown
-   as "Resolved, <time>" (no name: the API takes the actor from the token); resolving
-   moves focus to the section heading. Doctors see no alert buttons. The required
-   resolve note box comes with the alert-actions UI (on `frontend-views`).
+   resolved alerts have none (user's decisions 2026-11-05, kept at the 2026-11-07
+   merge). Acknowledge
+   opens the optional note form (`docs/features/alert-actions-ui.md`) and records the
+   time and note (shown as the care centre nurse); resolve records the signed-in
+   user's display name and the time; resolving
+   moves focus to the section heading. Doctors see no alert buttons. With the API a
+   resolve also needs a note (data-model.md, Track B route: resolve); the portal has no
+   resolve note box yet.
 10. **Vitals thresholds** (pattern 18): heart rate min/max, SpO2 min, skin temperature
     min/max, and "Last changed by <name>, <time>". Nurses see them read-only with "Only
     doctors can change thresholds."

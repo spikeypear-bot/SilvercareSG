@@ -40,8 +40,17 @@ fi
 
 if printf '%s' "$cmd" | grep -Eq 'devices/keys' ||
    printf '%s' "$cmd" | grep -Eq "${s}secrets(/|${end})" ||
-   printf '%s' "$cmd" | grep -Eq "${s}make${args}[[:space:]]+(device-keys|device-certs|smoke-test)${end}"; then
-  block "Claude must not read or create device private keys or anything in secrets/. The user runs the device-keys, device-certs, and smoke-test targets."
+   printf '%s' "$cmd" | grep -Eq "${s}g?make${args}[[:space:]]+(device-keys|device-certs|smoke-test|simulate)${end}"; then
+  block "Claude must not read or create device private keys or anything in secrets/. The user runs the device-keys, device-certs, smoke-test, and simulate targets (simulate-dry-run is fine)."
+fi
+
+# A live simulator run connects with the device keys. --endpoint is the live-only flag
+# (dry-run refuses it), so block it next to anything that can start the simulator,
+# however it is invoked (path, cd + main.py, -m main, import main). Backstop only:
+# a live run also needs --keys-dir <secrets/...>, which the rule above blocks.
+if printf '%s' "$cmd" | grep -Eq -- '--endpoint' &&
+   printf '%s' "$cmd" | grep -Eq 'simulator|main\.py|-m[[:space:]]+main|import[[:space:]]+main'; then
+  block "Claude may run the simulator only as a dry-run (no --endpoint). The user runs live simulations (make simulate)."
 fi
 
 exit 0

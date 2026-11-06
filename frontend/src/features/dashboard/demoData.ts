@@ -32,7 +32,7 @@ import type {
   WearableDevice,
 } from '../../types/resident'
 import type { FleetDevice } from '../../types/devices'
-import { isDeviceProblem } from './stats'
+import { isDeviceProblem, isOnOpenList } from './stats'
 
 /** The demo residents linked to every caregiver account (the caregiver view). */
 export const FAMILY_LINKED_RESIDENT_IDS: readonly string[] = ['res-0002', 'res-0005']
@@ -86,21 +86,23 @@ const ok = (overrides: Partial<ResidentSeed> = {}): ResidentSeed => ({
 // One entry per resident, in resident-ID order (Test Resident A = res-0001, ...).
 const SEEDS: readonly ResidentSeed[] = [
   ok({ hr: 68, battery: 82, activity: 22 }), // A
-  // B: wearable off the wrist (the not_worn alert below).
-  ok({ status: 'attention', hr: 64, activity: 0, battery: 64, temp: 33.1, worn: false }), // B (family)
+  // B: wearable off the wrist (the not_worn alert below); urgent for its open critical
+  // possible fall.
+  ok({ status: 'urgent', hr: 64, activity: 0, battery: 64, temp: 33.1, worn: false }), // B (family)
   ok({ status: 'urgent', hr: 96, spo2: 95, activity: 3, battery: 71 }), // C
   ok({ hr: 75, spo2: 98, battery: 45, activity: 30, bedroomBattery: 9 }), // D: bedroom sensor low
   ok({ hr: 70, spo2: 97, temp: 34.0, battery: 91, activity: 26 }), // E (family)
   ok({ status: 'attention', hr: 78, battery: 15, activity: 12, bedroomLastSeenMin: 26 * 60 }), // F
   ok({ status: 'urgent', hr: 128, spo2: 94, temp: 34.6, battery: 77, activity: 5 }), // G
-  // H: an open possible-fall warning (below), so attention.
-  ok({ status: 'attention', hr: 66, battery: 77, activity: 9 }), // H
+  // H: an open spo2_low warning (below) and SpO2 just under the default 92, so attention.
+  ok({ status: 'attention', hr: 66, spo2: 91, battery: 77, activity: 9 }), // H: SpO2 just under the default 92
   // I: bedroom sensor offline, wearable fine.
   ok({ status: 'attention', hr: 74, battery: 69, bedroomLastSeenMin: 70 }), // I
   ok({ hr: 71, battery: 58, worn: false, charging: true, vitalsAgeMin: 35 }), // J
   ok({ hr: 80, spo2: 96, battery: 88, activity: 41 }), // K
-  // L: wearable offline just past the 15 min timeout.
-  ok({ status: 'attention', hr: 88, battery: 54, activity: 2, wearableLastSeenMin: 18, vitalsAgeMin: 18 }), // L
+  // L: wearable offline just past the 15 min timeout; urgent for its open critical possible
+  // fall.
+  ok({ status: 'urgent', hr: 88, battery: 54, activity: 2, wearableLastSeenMin: 18, vitalsAgeMin: 18 }), // L
   // M: an acknowledged low-battery warning (below) still counts, so attention.
   ok({ status: 'attention', hr: 69, battery: 12, activity: 15 }), // M
   ok({ hr: 73, spo2: 99, battery: 69, activity: 20 }), // N
@@ -145,8 +147,10 @@ interface AlertSeed {
 }
 
 const ALERT_SEEDS: readonly AlertSeed[] = [
-  // Mid-countdown on every page load: 2:30 into the 5-minute escalation delay.
-  { resident: 8, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 2.5 },
+  // Mid-countdown on every page load: 2:30 into the 5-minute escalation delay. A cloud
+  // vitals check warning: possible falls are critical, so they never count down
+  // (docs/features/possible-fall.md).
+  { resident: 8, type: 'spo2_low', severity: 'warning', device: 'wearable', minutesAgo: 2.5 },
   { resident: 3, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 4 },
   {
     resident: 7,
@@ -156,7 +160,7 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
     minutesAgo: 9,
     acknowledged: { minutesAgo: 6, note: 'Synthetic note: ambulance on the way, 8 minutes.' },
   },
-  { resident: 12, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 15 },
+  { resident: 12, type: 'possible_fall', severity: 'critical', device: 'bedroom', minutesAgo: 15 },
   { resident: 17, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 22 },
   { resident: 19, type: 'spo2_low', severity: 'warning', device: 'wearable', minutesAgo: 27 },
   { resident: 2, type: 'not_worn', severity: 'warning', device: 'wearable', minutesAgo: 38 },
@@ -178,7 +182,12 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
     minutesAgo: 125,
     acknowledged: { minutesAgo: 110 },
   },
-  { resident: 2, type: 'possible_fall', severity: 'warning', device: 'bedroom', minutesAgo: 410 },
+  { resident: 2, type: 'possible_fall', severity: 'critical', device: 'bedroom', minutesAgo: 410 },
+  // The caregiver view's demo countdown: B is linked to every caregiver, and this warning
+  // has 3:00 left on every page load. B has no earlier inactivity warning (the one 38 min
+  // ago is not_worn, another type), so this is a new alert. Last, so the IDs above stay
+  // stable.
+  { resident: 2, type: 'inactivity', severity: 'warning', device: 'bedroom', minutesAgo: 2 },
 ]
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRST'
@@ -379,7 +388,7 @@ function withValue(t: VitalsThresholds, field: ThresholdKey, value: number): Vit
 const HISTORY_TYPES: ReadonlyArray<{ type: AlertType; severity: AlertSeverity; device: 'wearable' | 'bedroom' }> = [
   { type: 'battery_low', severity: 'warning', device: 'wearable' },
   { type: 'hr_high', severity: 'warning', device: 'wearable' },
-  { type: 'possible_fall', severity: 'warning', device: 'bedroom' },
+  { type: 'possible_fall', severity: 'critical', device: 'bedroom' },
   { type: 'device_offline', severity: 'warning', device: 'bedroom' },
   { type: 'fall', severity: 'critical', device: 'wearable' },
   { type: 'not_worn', severity: 'warning', device: 'wearable' },
@@ -512,8 +521,9 @@ function bedroomDevice(resident: Resident, alerts: ResidentAlert[], i: number): 
   const base = Date.parse(bedroom.ts)
   const at = (minutes: number) => new Date(base - minutes * 60_000).toISOString()
   // A possible fall starts with the bed being vacated (data-model `event_ts`), so an
-  // unresolved one is the newest `bed` event.
-  const possibleFall = alerts.find((a) => a.alert_type === 'possible_fall' && a.status !== 'resolved')
+  // open or acknowledged one is the newest `bed` event. A cancelled or resolved one
+  // isn't: the resident may be back in bed since.
+  const possibleFall = alerts.find((a) => a.alert_type === 'possible_fall' && isOnOpenList(a))
   const bedTimes = possibleFall
     ? [possibleFall.event_ts, ...BED_MINUTES.slice(0, 4).map((m) => minutesBefore(new Date(possibleFall.event_ts), m * 3))]
     : BED_MINUTES.map(at)

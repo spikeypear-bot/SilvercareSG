@@ -1,8 +1,9 @@
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { axeViolations } from '../../test/axe'
 import { demoDataFor } from '../../test/dashboardMock'
 import type { ResidentAlert } from '../../types/dashboard'
-import { AcknowledgedLines, AlertRow } from './AlertRow'
+import { AcknowledgedLines, AlertRow, RoutingLine } from './AlertRow'
 import { sentToNurseAtOnce } from './stats'
 import { ALERT_TYPE_LABELS } from './labels'
 
@@ -12,8 +13,8 @@ function baseAlert(overrides: Partial<ResidentAlert> = {}): ResidentAlert {
   return {
     alert_id: 'alert-test-001',
     resident_id: 'res-0008',
-    device_id: 'bedroom-test-008',
-    alert_type: 'possible_fall',
+    device_id: 'wearable-test-008',
+    alert_type: 'spo2_low',
     severity: 'warning',
     status: 'open',
     event_ts: new Date(NOW.getTime() - 30_000).toISOString(),
@@ -62,9 +63,13 @@ describe('AlertRow', () => {
     const onAcknowledge = vi.fn()
     const onResolve = vi.fn()
     renderRow({ actions: { onAcknowledge, onResolve } })
-    await user.click(screen.getByRole('button', { name: 'Acknowledge: Possible fall, Test Resident H' }))
+    await user.click(screen.getByRole('button', { name: 'Acknowledge: Low blood oxygen, Test Resident H' }))
+    // Acknowledge only opens the note form; submitting it (same name) acknowledges.
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Acknowledge: Low blood oxygen, Test Resident H' }))
     expect(onAcknowledge).toHaveBeenCalledTimes(1)
-    await user.click(screen.getByRole('button', { name: 'Resolve: Possible fall, Test Resident H' }))
+    expect(onAcknowledge).toHaveBeenCalledWith(undefined)
+    await user.click(screen.getByRole('button', { name: 'Resolve: Low blood oxygen, Test Resident H' }))
     expect(onResolve).toHaveBeenCalledTimes(1)
   })
 
@@ -89,7 +94,12 @@ describe('AlertRow alert types', () => {
     ['device_offline', 'Device offline'],
     ['battery_low', 'Low battery'],
   ] as const)('%s shows "%s" and names the buttons with it', (type, label) => {
-    renderRow({ alert: baseAlert({ alert_type: type }), actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() } })
+    // A possible fall is always critical (docs/features/possible-fall.md), never a warning.
+    const severity = type === 'possible_fall' ? 'critical' : 'warning'
+    renderRow({
+      alert: baseAlert({ alert_type: type, severity }),
+      actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() },
+    })
     const row = screen.getByRole('listitem')
     expect(within(row).getByText(label)).toBeInTheDocument()
     expect(row).not.toHaveTextContent('Vitals need attention')
@@ -682,37 +692,75 @@ describe('sentToNurseAtOnce', () => {
   })
 })
 
-describe('AlertRow showSentAtOnce', () => {
+describe('AlertRow readerIsRecipient (the nurse inbox)', () => {
   const escalatedAt = () => new Date(Date.now() - 30_000).toISOString()
+  const inTwoMinutes = () => new Date(Date.now() + 120_000).toISOString()
 
-  it('defaults to true: a critical open alert shows "Sent to the care centre nurse at once"', () => {
-    renderRow({ alert: baseAlert({ severity: 'critical', alert_type: 'fall', escalated_at: escalatedAt() }) })
+  it('defaults to false: the routing lines show for a reader who is not the recipient', () => {
+    const { unmount } = renderRow({
+      alert: baseAlert({ severity: 'critical', alert_type: 'fall', escalated_at: escalatedAt() }),
+    })
     expect(screen.getByText('Sent to the care centre nurse at once')).toBeInTheDocument()
+    unmount()
+    const second = renderRow({ alert: baseAlert({ severity: 'warning', escalated_at: escalatedAt() }) })
+    expect(screen.getByText('Escalated to the care centre nurse')).toBeInTheDocument()
+    second.unmount()
+    renderRow({ alert: baseAlert({ escalates_at: inTwoMinutes() }) })
+    expect(screen.getByRole('timer')).toHaveTextContent(/^Escalates to the care centre nurse in \d:\d{2}$/)
+    expect(screen.queryByText('Not yet escalated')).not.toBeInTheDocument()
   })
 
   it.each([
     ['a critical alert', { severity: 'critical', alert_type: 'fall' }],
     ['an unassigned warning', { severity: 'warning', resident_id: 'unassigned' }],
-  ] as const)('false hides the at-once line for %s, and adds no other escalation line', (_, fields) => {
-    renderRow({ alert: baseAlert({ ...fields, escalated_at: escalatedAt() }), showSentAtOnce: false })
+    ['an assigned warning', { severity: 'warning' }],
+  ] as const)('hides the routing line for %s that has escalated, and adds no label', (_, fields) => {
+    renderRow({ alert: baseAlert({ ...fields, escalated_at: escalatedAt() }), readerIsRecipient: true })
     const row = screen.getByRole('listitem')
-    expect(row).not.toHaveTextContent(/Sent to the care centre nurse|at once|Escalat/)
+    expect(row).not.toHaveTextContent(/Sent to the care centre nurse|at once|Escalat|Not yet escalated/)
     expect(screen.queryByRole('timer')).not.toBeInTheDocument()
   })
 
-  it('false still shows "Escalated to the care centre nurse" for an escalated assigned warning', () => {
-    renderRow({ alert: baseAlert({ severity: 'warning', escalated_at: escalatedAt() }), showSentAtOnce: false })
-    expect(screen.getByText('Escalated to the care centre nurse')).toBeInTheDocument()
+  it('shows a quiet "Not yet escalated" with no timer, instead of the countdown', () => {
+    renderRow({ alert: baseAlert({ escalates_at: inTwoMinutes() }), readerIsRecipient: true })
+    const label = screen.getByText('Not yet escalated')
+    expect(label.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+    expect(label).toHaveClass('text-slate-600')
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument()
+    // (The row's own event time, e.g. "10:29 am", is still shown; only the countdown is gone.)
+    expect(screen.getByRole('listitem')).not.toHaveTextContent(/Escalates|Escalated/)
   })
 
-  it('false still shows the countdown, and the acknowledge line and note', () => {
-    const { unmount } = renderRow({
-      alert: baseAlert({ escalates_at: new Date(Date.now() + 120_000).toISOString() }),
-      showSentAtOnce: false,
-    })
-    expect(screen.getByRole('timer')).toHaveTextContent(/^Escalates to the care centre nurse in \d:\d{2}$/)
-    unmount()
+  it('"Not yet escalated" goes away when escalates_at passes, with nothing in its place', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    try {
+      vi.setSystemTime(NOW)
+      renderRow({
+        alert: baseAlert({ escalates_at: new Date(NOW.getTime() + 3_000).toISOString() }),
+        readerIsRecipient: true,
+      })
+      expect(screen.getByText('Not yet escalated')).toBeInTheDocument()
+      act(() => vi.advanceTimersByTime(3_000))
+      expect(screen.queryByText('Not yet escalated')).not.toBeInTheDocument()
+      expect(screen.getByRole('listitem')).not.toHaveTextContent(/Escalat/)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
 
+  it('no label on an alert that is not open, or has no escalates_at', () => {
+    const { unmount } = renderRow({
+      alert: baseAlert({ status: 'acknowledged', acknowledged_at: NOW.toISOString(), escalates_at: inTwoMinutes() }),
+      readerIsRecipient: true,
+    })
+    expect(screen.queryByText('Not yet escalated')).not.toBeInTheDocument()
+    unmount()
+    renderRow({ alert: baseAlert(), readerIsRecipient: true })
+    expect(screen.queryByText('Not yet escalated')).not.toBeInTheDocument()
+  })
+
+  it('still shows the acknowledge line and note', () => {
     renderRow({
       alert: baseAlert({
         status: 'acknowledged',
@@ -721,11 +769,50 @@ describe('AlertRow showSentAtOnce', () => {
         acknowledged_at: new Date(NOW.getTime() - 60_000).toISOString(),
         ack_note: 'Synthetic note: on the way.',
       }),
-      showSentAtOnce: false,
+      readerIsRecipient: true,
     })
     const row = screen.getByRole('listitem')
     expect(row).toHaveTextContent(/Acknowledged by the care centre nurse, 1 min ago/)
     expect(within(row).getByText('Synthetic note: on the way.')).toBeInTheDocument()
+  })
+})
+
+describe('RoutingLine for a caregiver', () => {
+  const renderLine = (alert: ResidentAlert) =>
+    render(
+      <div data-testid="line">
+        <RoutingLine alert={alert} audience="caregiver" />
+      </div>,
+    )
+
+  it('the countdown tells the caregiver how long they have to cancel, as m:ss', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    try {
+      vi.setSystemTime(NOW)
+      renderLine(baseAlert({ escalates_at: new Date(NOW.getTime() + 275_000).toISOString() }))
+      expect(screen.getByRole('timer')).toHaveTextContent(
+        /^The care centre nurse will be alerted in 4:35 unless you cancel this alert$/,
+      )
+      act(() => vi.advanceTimersByTime(210_000))
+      expect(screen.getByRole('timer')).toHaveTextContent('in 1:05 unless')
+      act(() => vi.advanceTimersByTime(65_000))
+      expect(screen.queryByRole('timer')).not.toBeInTheDocument()
+      expect(screen.getByTestId('line')).toHaveTextContent('Escalated to the care centre nurse')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the at-once and escalated lines, and nothing for an alert that is not open', () => {
+    const { unmount } = renderLine(baseAlert({ severity: 'critical', escalated_at: NOW.toISOString() }))
+    expect(screen.getByTestId('line')).toHaveTextContent('Sent to the care centre nurse at once')
+    unmount()
+    const second = renderLine(baseAlert({ escalated_at: NOW.toISOString() }))
+    expect(screen.getByTestId('line')).toHaveTextContent('Escalated to the care centre nurse')
+    second.unmount()
+    renderLine(baseAlert({ status: 'cancelled', escalates_at: new Date(Date.now() + 60_000).toISOString() }))
+    expect(screen.getByTestId('line')).toBeEmptyDOMElement()
   })
 })
 
@@ -752,5 +839,130 @@ describe('AcknowledgedLines', () => {
     renderLines(baseAlert({ status: 'acknowledged', acknowledged_at: acknowledgedAt, ack_note: 'Synthetic note' }))
     expect(screen.getByText('Message from the care centre:')).toBeInTheDocument()
     expect(screen.getByText('Synthetic note')).toHaveClass('whitespace-pre-line')
+  })
+})
+
+describe('acknowledge note form (alert-actions-ui, criteria 1-7)', () => {
+  const CONTEXT = 'Low blood oxygen, Test Resident H'
+  const ackButton = () => screen.getByRole('button', { name: `Acknowledge: ${CONTEXT}` })
+  const field = () => screen.getByRole('textbox', { name: "Note for the resident's caregivers (optional)" })
+
+  function setup() {
+    const user = userEvent.setup()
+    const onAcknowledge = vi.fn()
+    const onResolve = vi.fn()
+    renderRow({ actions: { onAcknowledge, onResolve } })
+    return { user, onAcknowledge, onResolve }
+  }
+
+  it('Acknowledge opens the form with the field focused, the hint, and both buttons; Resolve stays', async () => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    const form = screen.getByRole('form', { name: `Acknowledge: ${CONTEXT}` })
+    expect(field()).toHaveFocus()
+    expect(field()).toHaveAttribute('maxLength', '500')
+    expect(field()).toHaveAccessibleDescription(
+      "Emailed to this resident's caregivers and shown to them in the portal.",
+    )
+    expect(within(form).getByRole('button', { name: `Acknowledge: ${CONTEXT}` })).toHaveAttribute('type', 'submit')
+    expect(within(form).getByRole('button', { name: /^Cancel/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Resolve: ${CONTEXT}` })).toBeInTheDocument()
+    // The opening button is replaced by the form's own submit button.
+    expect(screen.getAllByRole('button', { name: `Acknowledge: ${CONTEXT}` })).toHaveLength(1)
+  })
+
+  it('Cancel closes the form without acknowledging and returns focus to Acknowledge', async () => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    await user.type(field(), 'Synthetic draft')
+    await user.click(screen.getByRole('button', { name: /^Cancel/ }))
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    expect(screen.queryByRole('form')).not.toBeInTheDocument()
+    expect(ackButton()).toHaveFocus()
+    expect(screen.getByRole('listitem')).not.toHaveTextContent('Synthetic draft')
+  })
+
+  it('submitting an empty or whitespace-only note acknowledges with no note', async () => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    await user.type(field(), '   ')
+    await user.click(ackButton())
+    expect(onAcknowledge).toHaveBeenCalledExactlyOnceWith(undefined)
+    expect(screen.queryByRole('form')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Resolve: ${CONTEXT}` })).toHaveFocus()
+  })
+
+  it('submitting a note passes it normalised (CRLF to LF, trimmed)', async () => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    fireEvent.change(field(), { target: { value: '  Synthetic note: on the way.\r\nAbout 8 minutes.  ' } })
+    await user.click(ackButton())
+    expect(onAcknowledge).toHaveBeenCalledExactlyOnceWith('Synthetic note: on the way.\nAbout 8 minutes.')
+  })
+
+  it('shows "N of 500 characters" only from 400 characters, linked to the field', async () => {
+    const { user } = setup()
+    await user.click(ackButton())
+    fireEvent.change(field(), { target: { value: 'a'.repeat(399) } })
+    expect(screen.queryByText(/of 500 characters/)).not.toBeInTheDocument()
+    fireEvent.change(field(), { target: { value: 'a'.repeat(400) } })
+    const count = screen.getByText('400 of 500 characters')
+    expect(field().getAttribute('aria-describedby')?.split(' ')).toContain(count.id)
+    fireEvent.change(field(), { target: { value: 'a'.repeat(500) } })
+    expect(screen.getByText('500 of 500 characters')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['a tab', 'Synthetic\tnote'],
+    ['a zero-width space', 'Synthetic\u200bnote'],
+    ['a bidi override', 'Synthetic \u202enote'],
+  ])('refuses %s with an inline error, focus in the field, and no acknowledge', async (_, value) => {
+    const { user, onAcknowledge } = setup()
+    await user.click(ackButton())
+    fireEvent.change(field(), { target: { value } })
+    await user.click(ackButton())
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    const error = screen.getByText('Remove hidden or control characters from the note.')
+    expect(field()).toHaveAttribute('aria-invalid', 'true')
+    expect(field().getAttribute('aria-describedby')?.split(' ')).toContain(error.id)
+    expect(field()).toHaveFocus()
+    // Editing clears the error.
+    await user.type(field(), 'x')
+    expect(screen.queryByText('Remove hidden or control characters from the note.')).not.toBeInTheDocument()
+    expect(field()).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('an acknowledged alert has no Acknowledge button, so no form', () => {
+    renderRow({
+      alert: baseAlert({ status: 'acknowledged', acknowledged_at: NOW.toISOString() }),
+      actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() },
+    })
+    expect(screen.queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('form')).not.toBeInTheDocument()
+  })
+
+  it('never shows a Cancel alert button (cancel is for caregivers only)', () => {
+    renderRow({ actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() } })
+    expect(screen.queryByRole('button', { name: /Cancel alert/ })).not.toBeInTheDocument()
+  })
+
+  it('has no axe violations with the form open and showing an error', async () => {
+    const { user } = setup()
+    await user.click(ackButton())
+    fireEvent.change(field(), { target: { value: 'Synthetic\tnote' } })
+    await user.click(ackButton())
+    expect(screen.getByText('Remove hidden or control characters from the note.')).toBeInTheDocument()
+    // The rendered container, as the other axe tests do (a lone row has no page landmarks).
+    expect(await axeViolations(screen.getByRole('listitem').closest('ul') as HTMLElement)).toEqual([])
+  }, 30_000)
+})
+
+describe('CancelledLine and ResolvedLine (used by AlertRow and the caregiver view)', () => {
+  it('a caregiver cancel with an empty name falls back to "a caregiver"', () => {
+    renderRow({
+      alert: baseAlert({ status: 'cancelled', cancelled_at: NOW.toISOString(), cancelled_by_role: 'caregiver', cancelled_by: '' }),
+    })
+    expect(screen.getByRole('listitem')).toHaveTextContent('Cancelled by a caregiver (caregiver), just now')
   })
 })

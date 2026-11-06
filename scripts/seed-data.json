@@ -1,0 +1,884 @@
+{
+  "_comment": "Synthetic seed data for scripts/seed.py (docs/features/seed-data.md). Nothing here is real personal data. No passwords.",
+  "residents": [
+    {
+      "resident_id": "res-0001",
+      "home_id": "home-0001",
+      "display_name": "Test Resident A",
+      "year_of_birth": 1935,
+      "medical_notes": "Synthetic note: uses a walking frame.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact A1",
+          "relationship": "daughter",
+          "phone": "+65 0000 0001"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 72,
+        "spo2_pct": 97,
+        "skin_temp_c": 33.4
+      }
+    },
+    {
+      "resident_id": "res-0002",
+      "home_id": "home-0002",
+      "display_name": "Test Resident B",
+      "year_of_birth": 1936,
+      "medical_notes": "Synthetic note: takes afternoon naps.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact B1",
+          "relationship": "son",
+          "phone": "+65 0000 0002"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 68,
+        "spo2_pct": 96,
+        "skin_temp_c": 33.1
+      }
+    },
+    {
+      "resident_id": "res-0003",
+      "home_id": "home-0003",
+      "display_name": "Test Resident C",
+      "year_of_birth": 1937,
+      "medical_notes": "Synthetic note: prefers soft food.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact C1",
+          "relationship": "niece",
+          "phone": "+65 0000 0003"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 76,
+        "spo2_pct": 98,
+        "skin_temp_c": 33.8
+      }
+    },
+    {
+      "resident_id": "res-0004",
+      "home_id": "home-0004",
+      "display_name": "Test Resident D",
+      "year_of_birth": 1938,
+      "medical_notes": "Synthetic note: low normal SpO2.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact D1",
+          "relationship": "nephew",
+          "phone": "+65 0000 0004"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 85
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 74,
+        "spo2_pct": 91,
+        "skin_temp_c": 33.0
+      }
+    },
+    {
+      "resident_id": "res-0005",
+      "home_id": "home-0005",
+      "display_name": "Test Resident E",
+      "year_of_birth": 1939,
+      "medical_notes": "Synthetic note: wears hearing aids.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact E1",
+          "relationship": "spouse",
+          "phone": "+65 0000 0005"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 65,
+        "spo2_pct": 97,
+        "skin_temp_c": 32.9
+      }
+    },
+    {
+      "resident_id": "res-0006",
+      "home_id": "home-0006",
+      "display_name": "Test Resident F",
+      "year_of_birth": 1940,
+      "medical_notes": "Synthetic note: enjoys morning walks.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact F1",
+          "relationship": "daughter",
+          "phone": "+65 0000 0006"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 70,
+        "spo2_pct": 95,
+        "skin_temp_c": 34.0
+      }
+    },
+    {
+      "resident_id": "res-0007",
+      "home_id": "home-0007",
+      "display_name": "Test Resident G",
+      "year_of_birth": 1941,
+      "medical_notes": "Synthetic note: high resting heart rate.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact G1",
+          "relationship": "son",
+          "phone": "+65 0000 0007"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 140
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 105,
+        "spo2_pct": 97,
+        "skin_temp_c": 33.6
+      }
+    },
+    {
+      "resident_id": "res-0008",
+      "home_id": "home-0008",
+      "display_name": "Test Resident H",
+      "year_of_birth": 1942,
+      "medical_notes": "Synthetic note: uses reading glasses.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact H1",
+          "relationship": "niece",
+          "phone": "+65 0000 0008"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 80,
+        "spo2_pct": 96,
+        "skin_temp_c": 33.2
+      }
+    },
+    {
+      "resident_id": "res-0009",
+      "home_id": "home-0009",
+      "display_name": "Test Resident I",
+      "year_of_birth": 1943,
+      "medical_notes": "Synthetic note: needs help with stairs.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact I1",
+          "relationship": "nephew",
+          "phone": "+65 0000 0009"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 63,
+        "spo2_pct": 98,
+        "skin_temp_c": 33.5
+      }
+    },
+    {
+      "resident_id": "res-0010",
+      "home_id": "home-0010",
+      "display_name": "Test Resident J",
+      "year_of_birth": 1944,
+      "medical_notes": "Synthetic note: sleeps early.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact J1",
+          "relationship": "spouse",
+          "phone": "+65 0000 0010"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 78,
+        "spo2_pct": 97,
+        "skin_temp_c": 32.8
+      }
+    },
+    {
+      "resident_id": "res-0011",
+      "home_id": "home-0011",
+      "display_name": "Test Resident K",
+      "year_of_birth": 1945,
+      "medical_notes": "Synthetic note: low resting heart rate.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact K1",
+          "relationship": "daughter",
+          "phone": "+65 0000 0011"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 40,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 50,
+        "spo2_pct": 96,
+        "skin_temp_c": 33.3
+      }
+    },
+    {
+      "resident_id": "res-0012",
+      "home_id": "home-0012",
+      "display_name": "Test Resident L",
+      "year_of_birth": 1946,
+      "medical_notes": "Synthetic note: likes word puzzles.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact L1",
+          "relationship": "son",
+          "phone": "+65 0000 0012"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 71,
+        "spo2_pct": 95,
+        "skin_temp_c": 34.2
+      }
+    },
+    {
+      "resident_id": "res-0013",
+      "home_id": "home-0013",
+      "display_name": "Test Resident M",
+      "year_of_birth": 1947,
+      "medical_notes": "Synthetic note: uses a walking stick.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact M1",
+          "relationship": "niece",
+          "phone": "+65 0000 0013"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 67,
+        "spo2_pct": 98,
+        "skin_temp_c": 33.7
+      }
+    },
+    {
+      "resident_id": "res-0014",
+      "home_id": "home-0014",
+      "display_name": "Test Resident N",
+      "year_of_birth": 1948,
+      "medical_notes": "Synthetic note: drinks tea in the morning.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact N1",
+          "relationship": "nephew",
+          "phone": "+65 0000 0014"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 82,
+        "spo2_pct": 96,
+        "skin_temp_c": 33.0
+      }
+    },
+    {
+      "resident_id": "res-0015",
+      "home_id": "home-0015",
+      "display_name": "Test Resident O",
+      "year_of_birth": 1949,
+      "medical_notes": "Synthetic note: has a pet cat.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact O1",
+          "relationship": "spouse",
+          "phone": "+65 0000 0015"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 69,
+        "spo2_pct": 97,
+        "skin_temp_c": 34.1
+      }
+    },
+    {
+      "resident_id": "res-0016",
+      "home_id": "home-0016",
+      "display_name": "Test Resident P",
+      "year_of_birth": 1950,
+      "medical_notes": "Synthetic note: prefers the window seat.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact P1",
+          "relationship": "daughter",
+          "phone": "+65 0000 0016"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 75,
+        "spo2_pct": 95,
+        "skin_temp_c": 32.9
+      }
+    },
+    {
+      "resident_id": "res-0017",
+      "home_id": "home-0017",
+      "display_name": "Test Resident Q",
+      "year_of_birth": 1951,
+      "medical_notes": "Synthetic note: listens to the radio.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact Q1",
+          "relationship": "son",
+          "phone": "+65 0000 0017"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 62,
+        "spo2_pct": 96,
+        "skin_temp_c": 33.9
+      }
+    },
+    {
+      "resident_id": "res-0018",
+      "home_id": "home-0018",
+      "display_name": "Test Resident R",
+      "year_of_birth": 1952,
+      "medical_notes": "Synthetic note: does light stretching.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact R1",
+          "relationship": "niece",
+          "phone": "+65 0000 0018"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 79,
+        "spo2_pct": 98,
+        "skin_temp_c": 33.4
+      }
+    },
+    {
+      "resident_id": "res-0019",
+      "home_id": "home-0019",
+      "display_name": "Test Resident S",
+      "year_of_birth": 1953,
+      "medical_notes": "Synthetic note: takes a daily walk.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact S1",
+          "relationship": "nephew",
+          "phone": "+65 0000 0019"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 73,
+        "spo2_pct": 97,
+        "skin_temp_c": 33.6
+      }
+    },
+    {
+      "resident_id": "res-0020",
+      "home_id": "home-0020",
+      "display_name": "Test Resident T",
+      "year_of_birth": 1954,
+      "medical_notes": "Synthetic note: enjoys gardening.",
+      "emergency_contacts": [
+        {
+          "name": "Test Contact T1",
+          "relationship": "spouse",
+          "phone": "+65 0000 0020"
+        }
+      ],
+      "thresholds": {
+        "hr_bpm": {
+          "min": 45,
+          "max": 130
+        },
+        "spo2_pct": {
+          "min": 88
+        },
+        "skin_temp_c": {
+          "min": 30.0,
+          "max": 38.0
+        }
+      },
+      "baseline": {
+        "hr_bpm": 66,
+        "spo2_pct": 95,
+        "skin_temp_c": 34.0
+      }
+    }
+  ],
+  "devices": [
+    {
+      "device_id": "wearable-0001",
+      "device_type": "wearable",
+      "resident_id": "res-0001"
+    },
+    {
+      "device_id": "wearable-0002",
+      "device_type": "wearable",
+      "resident_id": "res-0002"
+    },
+    {
+      "device_id": "wearable-0003",
+      "device_type": "wearable",
+      "resident_id": "res-0003"
+    },
+    {
+      "device_id": "wearable-0004",
+      "device_type": "wearable",
+      "resident_id": "res-0004"
+    },
+    {
+      "device_id": "wearable-0005",
+      "device_type": "wearable",
+      "resident_id": "res-0005"
+    },
+    {
+      "device_id": "wearable-0006",
+      "device_type": "wearable",
+      "resident_id": "res-0006"
+    },
+    {
+      "device_id": "wearable-0007",
+      "device_type": "wearable",
+      "resident_id": "res-0007"
+    },
+    {
+      "device_id": "wearable-0008",
+      "device_type": "wearable",
+      "resident_id": "res-0008"
+    },
+    {
+      "device_id": "wearable-0009",
+      "device_type": "wearable",
+      "resident_id": "res-0009"
+    },
+    {
+      "device_id": "wearable-0010",
+      "device_type": "wearable",
+      "resident_id": "res-0010"
+    },
+    {
+      "device_id": "wearable-0011",
+      "device_type": "wearable",
+      "resident_id": "res-0011"
+    },
+    {
+      "device_id": "wearable-0012",
+      "device_type": "wearable",
+      "resident_id": "res-0012"
+    },
+    {
+      "device_id": "wearable-0013",
+      "device_type": "wearable",
+      "resident_id": "res-0013"
+    },
+    {
+      "device_id": "wearable-0014",
+      "device_type": "wearable",
+      "resident_id": "res-0014"
+    },
+    {
+      "device_id": "wearable-0015",
+      "device_type": "wearable",
+      "resident_id": "res-0015"
+    },
+    {
+      "device_id": "wearable-0016",
+      "device_type": "wearable",
+      "resident_id": "res-0016"
+    },
+    {
+      "device_id": "wearable-0017",
+      "device_type": "wearable",
+      "resident_id": "res-0017"
+    },
+    {
+      "device_id": "wearable-0018",
+      "device_type": "wearable",
+      "resident_id": "res-0018"
+    },
+    {
+      "device_id": "wearable-0019",
+      "device_type": "wearable",
+      "resident_id": "res-0019"
+    },
+    {
+      "device_id": "wearable-0020",
+      "device_type": "wearable",
+      "resident_id": "res-0020"
+    },
+    {
+      "device_id": "bedroom-0001",
+      "device_type": "bedroom",
+      "resident_id": "res-0001"
+    },
+    {
+      "device_id": "bedroom-0002",
+      "device_type": "bedroom",
+      "resident_id": "res-0002"
+    },
+    {
+      "device_id": "bedroom-0003",
+      "device_type": "bedroom",
+      "resident_id": "res-0003"
+    },
+    {
+      "device_id": "bedroom-0004",
+      "device_type": "bedroom",
+      "resident_id": "res-0004"
+    },
+    {
+      "device_id": "bedroom-0005",
+      "device_type": "bedroom",
+      "resident_id": "res-0005"
+    },
+    {
+      "device_id": "bedroom-0006",
+      "device_type": "bedroom",
+      "resident_id": "res-0006"
+    },
+    {
+      "device_id": "bedroom-0007",
+      "device_type": "bedroom",
+      "resident_id": "res-0007"
+    },
+    {
+      "device_id": "bedroom-0008",
+      "device_type": "bedroom",
+      "resident_id": "res-0008"
+    },
+    {
+      "device_id": "bedroom-0009",
+      "device_type": "bedroom",
+      "resident_id": "res-0009"
+    },
+    {
+      "device_id": "bedroom-0010",
+      "device_type": "bedroom",
+      "resident_id": "res-0010"
+    },
+    {
+      "device_id": "bedroom-0011",
+      "device_type": "bedroom",
+      "resident_id": "res-0011"
+    },
+    {
+      "device_id": "bedroom-0012",
+      "device_type": "bedroom",
+      "resident_id": "res-0012"
+    },
+    {
+      "device_id": "bedroom-0013",
+      "device_type": "bedroom",
+      "resident_id": "res-0013"
+    },
+    {
+      "device_id": "bedroom-0014",
+      "device_type": "bedroom",
+      "resident_id": "res-0014"
+    },
+    {
+      "device_id": "bedroom-0015",
+      "device_type": "bedroom",
+      "resident_id": "res-0015"
+    },
+    {
+      "device_id": "bedroom-0016",
+      "device_type": "bedroom",
+      "resident_id": "res-0016"
+    },
+    {
+      "device_id": "bedroom-0017",
+      "device_type": "bedroom",
+      "resident_id": "res-0017"
+    },
+    {
+      "device_id": "bedroom-0018",
+      "device_type": "bedroom",
+      "resident_id": "res-0018"
+    },
+    {
+      "device_id": "bedroom-0019",
+      "device_type": "bedroom",
+      "resident_id": "res-0019"
+    },
+    {
+      "device_id": "bedroom-0020",
+      "device_type": "bedroom",
+      "resident_id": "res-0020"
+    }
+  ],
+  "users": [
+    {
+      "user_id": "test-doctor",
+      "email": "test-doctor@example.com",
+      "name": "Test Doctor",
+      "group": "doctor",
+      "local_sub": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "user_id": "test-nurse",
+      "email": "test-nurse@example.com",
+      "name": "Test Nurse",
+      "group": "nurse",
+      "local_sub": "00000000-0000-4000-8000-000000000002"
+    },
+    {
+      "user_id": "test-caregiver",
+      "email": "test-caregiver@example.com",
+      "name": "Test Caregiver",
+      "group": "caregiver",
+      "local_sub": "00000000-0000-4000-8000-000000000003"
+    }
+  ],
+  "links": [
+    {
+      "user_id": "test-caregiver",
+      "resident_id": "res-0001"
+    },
+    {
+      "user_id": "test-caregiver",
+      "resident_id": "res-0002"
+    },
+    {
+      "user_id": "test-caregiver",
+      "resident_id": "res-0003"
+    }
+  ]
+}

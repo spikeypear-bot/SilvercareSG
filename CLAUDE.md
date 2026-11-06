@@ -96,6 +96,9 @@ lambdas/<name>/
                      several functions that share code (e.g. lambdas/ingest/), each
                      with its own entry point in handler.py
   tests/             pytest tests for this function
+simulator/
+  src/main.py        plays the 40 devices over MQTT (docs/features/simulator-core.md)
+  tests/             pytest tests for the simulator
 frontend/            the React app
 docs/metrics.md      IoT metrics contract
 docs/data-model.md   DynamoDB tables, keys, access patterns
@@ -157,6 +160,8 @@ make shell                  # shell inside the container
 make build                  # rebuild after changing docker/ or requirements-dev.txt
 make device-keys            # create missing device keys + CSRs (I run it, never Claude)
 make smoke-test DEVICE=<id> ENDPOINT=<host>   # test one device against AWS IoT (me only)
+make simulate ENDPOINT=<host>                 # run the 40 simulated devices live (me only)
+make simulate-dry-run       # print simulated messages, no keys or network
 ```
 
 Python dev dependencies live in `requirements-dev.txt` (pinned); tool versions are
@@ -194,7 +199,8 @@ under Singapore's PDPA. Treat it accordingly:
   - reviewers (read-only): `iac-reviewer`, `privacy-reviewer`
 - `.claude/hooks/guard.sh` blocks, the `aws` CLI, Terraform commands
   that change infrastructure or state, anything touching `~/.aws`, and anything touching
-  device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test`).
+  device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test|simulate`,
+  and the simulator without `--dry-run`).
   `.claude/hooks/format.sh` formats edited files.
 - `.claude/settings.json` hides AWS credentials from Claude (`AWS_SHARED_CREDENTIALS_FILE`
   and `AWS_CONFIG_FILE` are `/dev/null`), so Claude and its agents can't reach the real

@@ -347,6 +347,32 @@ numbers stay in Cognito, not here. Staff can see every resident and have no link
 
 How links are created is Open decision #3 (user onboarding).
 
+### Seed data
+
+`scripts/seed.py` (docs/features/seed-data.md) fills the registry with synthetic test
+data from `scripts/seed-data.json`: 20 resident profiles and thresholds, the 40 device
+assignments, and links for the test caregiver user.
+
+- Seeded thresholds have `updated_by = "seed"` and seeded links have
+  `linked_by = "seed"` (instead of a staff `sub`). `--delete` uses this marker to find
+  the seed's links, and every seed run uses it to remove its own links that are no
+  longer in the seed file (each delete conditional on the marker), so links with any
+  other `linked_by` are never touched.
+- Reserved IDs, for synthetic seed data only, never given to real residents, homes, or
+  users: `res-0001` to `res-0020`, `home-0001` to `home-0020`, and the local test subs
+  `00000000-0000-4000-8000-000000000001` to `...0004` (used with `--local`; `...0004`
+  was the retired family user's: still reserved, but the seed now refuses it).
+- The seed validates these reserved IDs and the synthetic markers (`Test Resident <letter>`,
+  `Test Contact <letter><digit>`, `+65 0000 NNNN`, `Test <Role>`) and refuses anything
+  else.
+- Device IDs are real hardware, so the seed never moves or deletes an assignment it
+  doesn't own: if a device assignment points at a resident outside the seed, the seed
+  stops before writing anything, and `--delete` keeps that item. Unassigned devices (no
+  `resident_id`, e.g. the spares `scripts/seed-registry.py` writes) hold no resident's
+  data, so the seed may assign them.
+- Before real resident data arrives, delete the seed (`python scripts/seed.py --delete`):
+  the test users' passwords are shared among the team.
+
 ### Possible-fall test mode
 
 docs/features/possible-fall.md, criterion 3a. For live checks only: written and

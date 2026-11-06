@@ -112,8 +112,9 @@ describe('review only: no alert actions, static tiles', () => {
     expect(screen.queryAllByRole('button', { pressed: true }).filter((b) => statsSection().contains(b))).toEqual([])
 
     expect(tileValue('Residents monitored')).toBe('20')
-    expect(tileValue('Open alerts')).toBe('12')
-    expect(within(statsSection()).getByText('3 critical')).toBeInTheDocument()
+    expect(tileValue('Open alerts')).toBe('13')
+    // C and Q falls, G's acknowledged hr_high, and the possible falls of L and B.
+    expect(within(statsSection()).getByText('5 critical')).toBeInTheDocument()
     // 6 offline devices (L and O wearables; F, I, O, Q bedroom sensors).
     expect(tileValue('Devices offline')).toBe('6')
     // Wearables only (F 15%, M 12%).
@@ -131,9 +132,9 @@ describe('review only: no alert actions, static tiles', () => {
 describe('open alerts summary', () => {
   it('shows the count, critical and acknowledged numbers, and who responds', async () => {
     await renderLoaded()
-    expect(screen.getByRole('heading', { level: 2, name: 'Open alerts (12)' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Open alerts (13)' })).toBeInTheDocument()
     expect(summary()).toHaveTextContent(
-      '3 critical · 3 acknowledged. Nurses respond to alerts; the 3 most urgent are shown here.',
+      '5 critical · 3 acknowledged. Nurses respond to alerts; the 3 most urgent are shown here.',
     )
   })
 
@@ -150,8 +151,11 @@ describe('open alerts summary', () => {
     expect(rows[1]).toHaveTextContent('Acknowledged by the care centre nurse')
     expect(within(rows[1]).getByText('Message from the care centre:')).toBeInTheDocument()
     expect(within(rows[1]).getByText('Synthetic note: ambulance on the way, 8 minutes.')).toBeInTheDocument()
-    expect(rows[2]).toHaveTextContent('Fall detected')
-    expect(rows[2]).toHaveTextContent('Test Resident Q')
+    // Possible falls are critical, so L's (15 min) comes before Q's older fall (22 min).
+    expect(rows[2]).toHaveTextContent('Possible fall')
+    expect(rows[2]).toHaveTextContent('Test Resident L')
+    expect(rows[2]).toHaveTextContent('res-0012')
+    rows.forEach((row) => expect(row).not.toHaveTextContent('Test Resident Q'))
     // The open critical alerts were sent to the nurse at once.
     expect(rows[0]).toHaveTextContent('Sent to the care centre nurse at once')
     expect(rows[2]).toHaveTextContent('Sent to the care centre nurse at once')
@@ -185,9 +189,9 @@ describe('open alerts summary', () => {
   it('a critical alert older than the warnings is still pinned first', async () => {
     const data = demoDataFor('staff')
     const alerts = [
-      alertFor(1, { alert_type: 'not_worn', severity: 'warning' }),
+      alertFor(1, { alert_type: 'inactivity', severity: 'warning' }),
       alertFor(2, { alert_type: 'battery_low', severity: 'warning' }),
-      alertFor(3, { alert_type: 'possible_fall', severity: 'warning' }),
+      alertFor(3, { alert_type: 'spo2_low', severity: 'warning' }),
       alertFor(19, { alert_type: 'fall', severity: 'critical' }),
     ]
     await renderLoaded({ ...data, alerts })
@@ -269,7 +273,7 @@ describe('open alerts summary', () => {
     const data = demoDataFor('staff')
     const alerts = [
       alertFor(8, {
-        alert_type: 'possible_fall',
+        alert_type: 'spo2_low',
         severity: 'warning',
         escalates_at: new Date(Date.now() + 275_000).toISOString(),
       }),
@@ -291,7 +295,7 @@ describe('open alerts summary', () => {
 
 describe('escalation announcements (fake clock)', () => {
   const NOW = new Date('2026-10-18T02:30:00Z')
-  const H = 'Possible fall, Test Resident H'
+  const H = 'Low blood oxygen, Test Resident H'
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -319,7 +323,7 @@ describe('escalation announcements (fake clock)', () => {
 
   it('announces an escalation of an alert outside the top 3 shown', async () => {
     await renderAtNow()
-    // The 3 criticals fill the summary; Test Resident H's possible fall is not shown.
+    // Critical alerts fill the summary; Test Resident H's low blood oxygen warning is not shown.
     expect(summaryRows()).toHaveLength(3)
     summaryRows().forEach((row) => expect(row).not.toHaveTextContent('Test Resident H'))
     expect(screen.getByRole('status')).toBeEmptyDOMElement()
@@ -329,6 +333,12 @@ describe('escalation announcements (fake clock)', () => {
     tick(1000)
     expect(screen.getByRole('status')).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
 
+    // B's inactivity warning (the caregiver view's demo countdown) escalates 30 s later.
+    tick(29_000)
+    expect(screen.getByRole('status')).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
+    tick(1000)
+    expect(screen.getByRole('status')).toHaveTextContent('Escalated to the care centre nurse: Inactivity, Test Resident B.')
+
     const announced = screen.getByRole('status').textContent
     tick(5 * 60_000)
     expect(screen.getByRole('status').textContent).toBe(announced)
@@ -336,8 +346,8 @@ describe('escalation announcements (fake clock)', () => {
 
   it('does not announce alerts that had already escalated when the page opened', async () => {
     const data = demoDataFor('staff', NOW)
-    // Drop the mid-countdown alert; every other alert has already escalated.
-    dashboardLoader.mockResolvedValue({ ...data, alerts: data.alerts.filter((a) => a.resident_id !== 'res-0008') })
+    // Drop the two mid-countdown alerts; every other alert has already escalated.
+    dashboardLoader.mockResolvedValue({ ...data, alerts: data.alerts.filter((a) => !a.escalates_at) })
     renderWithAuth(<DoctorDashboard />, { user: TEST_USERS.doctor })
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)

@@ -85,8 +85,8 @@ function BackLink({ ref }: { ref: Ref<HTMLAnchorElement> }) {
 interface DetailContentProps {
   detail: ResidentDetail
   role: 'nurse' | 'doctor'
-  onAcknowledge: (alertId: string) => void
-  onResolve: (alertId: string) => void
+  onAcknowledge: (alertId: string, ackNote?: string) => void
+  onResolve: (alertId: string, by: string) => void
   onSaveThresholds: (values: VitalsThresholds, by: string) => void
 }
 
@@ -120,7 +120,7 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
           role === 'nurse'
             ? {
                 onAcknowledge,
-                onResolve,
+                onResolve: (id) => onResolve(id, staffName),
               }
             : undefined
         }

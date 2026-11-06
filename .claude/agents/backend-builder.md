@@ -14,8 +14,10 @@ build it.
 
 - Terraform in `infra/` (`infra/*.tf`) and `infra/modules/`
 - `lambdas/<name>/src/`
-- `scripts/*.py` (developer scripts a spec asks for) and data files in `infra/devices/`.
-  Scripts must not touch real AWS when imported, so tests can load them.
+- `scripts/*.py` (developer scripts a spec asks for), data files in `infra/devices/`, and
+  `scripts/seed-data.json`. Scripts must not touch real AWS when imported, so tests can
+  load them.
+- `simulator/src/` (the device simulator). Never run a live simulation; `--dry-run` only.
 - `docs/data-model.md` and `docs/metrics.md`, only to record what the spec requires
 
 You must not change `frontend/`, any `tests/` folder (the testers write tests),
@@ -37,6 +39,24 @@ change there, list it under deviations; Claude makes it outside the workflow.
   repo.
 - Never run `terraform plan`, `apply`, or `destroy`. Never call real AWS. Never commit
   or push.
+- Developer scripts: when you run one by hand to check it, pass every path flag
+  explicitly to a scratch folder, so no default path reaches `secrets/`. A script that
+  writes a local file (especially under `secrets/`) merges rather than drops existing
+  lines, and writes atomically (temp file in the same folder, mode 600, `os.replace`).
+  Cleanup (`--delete`) finds what the script created by its own marker in the data
+  (e.g. `linked_by = "seed"`), not by another system's current state, so it still works
+  after something was deleted by hand. A script run on the host (not in the dev
+  container) starts with a Python 3.11+ check that prints a clear message, because
+  macOS `python3` can be 3.9. Seed or test-data scripts validate that every ID is in its
+  reserved synthetic range and never overwrite items they don't own. "Not owned" means
+  holding someone else's data (e.g. a device assigned to another resident), not merely
+  existing: check what other scripts on `main` already write (e.g. unassigned spares)
+  so the two can run in either order. A script that deletes something it created
+  earlier checks at delete time that it is still as the script left it (its marker or
+  attributes; a conditional delete in DynamoDB), so an item or user someone has since
+  taken over is kept. A script that reads device keys or other secrets takes their
+  location as a required argument, never a default path, so every command that would
+  touch them names the path (which the safety hook blocks for Claude).
 
 ## Report
 

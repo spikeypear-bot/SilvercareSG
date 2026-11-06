@@ -5,6 +5,7 @@ import { RelativeTime } from '../../components/RelativeTime'
 import { Skeleton } from '../../components/Skeleton'
 import { useNow } from '../../lib/useNow'
 import type { DashboardData, Resident, ResidentAlert } from '../../types/dashboard'
+import { useAuth } from '../auth/useAuth'
 import { AlertAnnouncer } from './AlertAnnouncer'
 import { AlertRow } from './AlertRow'
 import { BatteryLevel, WearableStatusText } from './DeviceStatus'
@@ -47,12 +48,13 @@ export function NurseDashboard() {
 
 interface NurseContentProps {
   data: DashboardData
-  onAcknowledge: (alertId: string) => void
-  /** No actor: the API takes it from the token (docs/data-model.md, Track B route: resolve). */
-  onResolve: (alertId: string) => void
+  onAcknowledge: (alertId: string, ackNote?: string) => void
+  onResolve: (alertId: string, by: string) => void
 }
 
 function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
+  const { user } = useAuth()
+  const staffName = user?.name || 'Staff member'
   const [panel, setPanel] = useState<StatId>('alerts')
   const residentsById = useMemo(
     () => new Map(data.residents.map((r) => [r.resident_id, r])),
@@ -73,7 +75,7 @@ function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
           residentsById={residentsById}
           announce={announce}
           onAcknowledge={onAcknowledge}
-          onResolve={onResolve}
+          onResolve={(id) => onResolve(id, staffName)}
         />
       )}
       {panel === 'offline' && <OfflineDevicesPanel residents={data.residents} />}
@@ -89,7 +91,7 @@ interface AlertInboxProps {
   alerts: ResidentAlert[]
   residentsById: Map<string, Resident>
   announce: (message: string) => void
-  onAcknowledge: (alertId: string) => void
+  onAcknowledge: (alertId: string, ackNote?: string) => void
   onResolve: (alertId: string) => void
 }
 
@@ -124,11 +126,12 @@ function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve 
                 alert={alert}
                 resident={residentsById.get(alert.resident_id)}
                 now={now}
-                // The nurse is the recipient: the Critical badge already says it went to them.
-                showSentAtOnce={false}
+                // The nurse is the recipient: no routing lines or countdown, only "Not yet escalated".
+                readerIsRecipient
                 actions={{
-                  onAcknowledge: () => {
-                    onAcknowledge(alert.alert_id)
+                  onAcknowledge: (ackNote) => {
+                    onAcknowledge(alert.alert_id, ackNote)
+                    // Never the note: it isn't read out.
                     announce(`Acknowledged: ${described}.`)
                   },
                   onResolve: () => {

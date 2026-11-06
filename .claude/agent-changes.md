@@ -5,6 +5,17 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-06
 
+- **Problem:** the demo bed data treated a possible fall as open with
+  `status !== 'resolved'`, so a cancelled one still showed the resident out of bed
+  (found by frontend-tester, no test covered it). **Changed:**
+  `.claude/skills/frontend/SKILL.md` (Rules): decide "still open" with `isOnOpenList`,
+  never by excluding `resolved`.
+
+- **Problem:** integration tests couldn't start DynamoDB Local because host port 8000
+  was taken by another project's container, and the first workaround failed (a
+  `docker compose run` container has no `dynamodb-local` alias). **Changed:**
+  `.claude/skills/local-dev/SKILL.md` (Windows paragraph): run an unpublished DynamoDB
+  Local by name and point `DYNAMODB_ENDPOINT` at it.
 - **Problem:** the clean job's SQL passed on local Trino but rejected every valid line on
   real Athena, with `try()` hiding the error. **Changed:**
   `.claude/skills/lambda-test/SKILL.md` (Rules): local Trino isn't proof, so the owner runs
@@ -37,6 +48,23 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-04
 
+- **Problem:** the `simulator-alert-scenarios` spec (written by Claude) left two timing
+  edges open: a flag at the previous scenario's end was skipped as `busy` (flags ran
+  before the same-time end; lambda-tester found it), and messages still scheduled at
+  `--duration` were silently lost, so an "I'm OK" could print `started` and never send
+  (privacy-reviewer, low). It also promised one email per 30 min, ignoring escalation
+  and never-suppressed falls (privacy-reviewer, medium). **Changed:**
+  `.claude/skills/feature-spec/SKILL.md`: a checklist item for same-moment ordering
+  and work pending at stop, and live tools count emails from all the alert specs.
+  (Fix: ends sort first, `cut off: run ended` lines, README and spec warning.)
+
+- **Problem:** the `simulator-core` spec (written by Claude) said normal data raises no
+  alert, but only if `seed.py` thresholds are in the live registry; with only
+  `seed-registry.py` data, two devices fall outside the cloud's defaults and nurses get
+  emails (privacy-reviewer, medium). **Changed:** `.claude/skills/feature-spec/SKILL.md`:
+  anything sending data to the live system names the registry data it relies on.
+  (Fix: precondition in the spec and README.)
+
 - **Problem:** the lambda-tester temporarily edited ingest's source to prove a test, then
   restored it. **Changed:** `.claude/agents/lambda-tester.md`: no source edits even
   temporarily; use `monkeypatch` or a copy under `tmp_path`.
@@ -46,6 +74,23 @@ a wasted step. Newest first. Review these in the diff before committing.
   had an erasure plan that didn't fit batched raw files; only the design check caught
   them. **Changed:** `.claude/skills/feature-spec/SKILL.md` (readiness checklist): verify
   claims in running code and AWS docs, match pointers, and check erasure against storage.
+
+- **Problem:** twice, Claude's inline Python heredoc that edited TypeScript tests failed
+  with "unexpected EOF" because the script contained backticks (template literals), and
+  had to be redone. **Changed:** `.claude/skills/local-dev/SKILL.md` (`make lint` row):
+  write such scripts to the scratchpad and run them as a file.
+
+- **Problem:** the `alert-actions-ui` note check (spec and code by Claude) followed the
+  data-model summary "Unicode category C, e.g. ... U+2028/U+2029", but those two are
+  categories Zl/Zp, so the form let them through while `alert-processor` refuses them;
+  Claude's own new tests caught it. **Changed:** `.claude/skills/frontend/SKILL.md`:
+  a field the backend also validates copies the backend's code and its test cases.
+- **Problem:** removing the family test user from `seed-data`, the first version deleted
+  the retired `test-family` account by username alone, and pruned old seed links with an
+  unconditional batch delete after reading them, so an account or link a teammate had
+  since taken over could be deleted (privacy-reviewer, low ×2). **Changed:**
+  `.claude/agents/backend-builder.md`: scripts check at delete time that what they
+  delete is still as they left it. (Fix: name and group check, conditional deletes.)
 
 - **Problem:** renaming `FamilyView` to `CaregiverView`, Claude ran a Python edit script
   and an `rm` of the originals on separate lines of one shell call; the script failed,
@@ -113,6 +158,21 @@ a wasted step. Newest first. Review these in the diff before committing.
   refer to unmerged patterns by name in code, and on a clash keep main's number.
 
 ## 2026-11-03
+
+- **Problem:** in `simulator-core`, the simulator defaulted `--keys-dir` to the device
+  keys folder, so a live run never named the path, and the new guard rule (block
+  `simulator/src/main.py` without `--dry-run`) could be bypassed with `cd`, `-m main`, or
+  a stray `--dry-run` (privacy-reviewer, high). **Changed:**
+  `.claude/agents/backend-builder.md`: scripts take secret locations as a required
+  argument, never a default. `.claude/hooks/guard.sh` (setup change the user approved for
+  this feature): block `--endpoint` next to any way of starting the simulator, and
+  `gmake`; tested against 22 cases.
+
+- **Problem:** the live `seed-data` run stopped on 34 devices: it treated unassigned
+  spares (written by Track A's `scripts/seed-registry.py`) as "not owned", the same as
+  devices assigned to another resident. **Changed:** `.claude/agents/backend-builder.md`:
+  "not owned" means holding someone else's data; check what other scripts on `main`
+  already write.
 
 - **Problem:** the live `--alerts` check (spec by Claude) sent heart rates 125/128 at
   once: a teammate's personal limit of 130 made them normal, and the two readings ran
@@ -247,6 +307,25 @@ a wasted step. Newest first. Review these in the diff before committing.
   `.claude/skills/api-route/SKILL.md` (handler takes `*_by` actors from the `sub` claim,
   ignores the body) and `.claude/skills/frontend/SKILL.md` (never send who did an
   action; a name shown early is display only).
+
+- **Problem:** the rebuilt `seed-data` script crashed with `ImportError` on the user's
+  macOS `python3` (3.9) instead of explaining the version; the README said `python3`.
+  The privacy-reviewer found reserved IDs written down but not enforced, and device
+  assignments overwritten with no ownership check (medium). **Changed:**
+  `.claude/agents/backend-builder.md`: host-run scripts check Python 3.11+ first; seed
+  scripts enforce reserved ID ranges and don't overwrite items they don't own. README
+  host-script setup now states the Python version.
+
+## 2026-10-30
+
+- **Problem:** in `seed-data`, `--delete` found the seed's link items through the test
+  users' current Cognito subs, so links of a user already deleted from Cognito were left
+  behind (lambda-tester failure, privacy-reviewer low). The passwords file was rewritten,
+  then truncated in place (privacy-reviewer low). The builder's scratch check ran
+  `--delete` without `--passwords-file`, so cleanup code ran against the real default
+  path in `secrets/` (no file existed). **Changed:** `.claude/agents/backend-builder.md`:
+  scratch runs pass explicit scratch paths; script output files merge and write
+  atomically; cleanup finds its items by its own data marker.
 
 ## 2026-10-25
 
