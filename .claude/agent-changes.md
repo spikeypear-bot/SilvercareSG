@@ -5,6 +5,14 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-06
 
+- **Problem:** the clean job's SQL passed on local Trino but rejected every valid line on
+  real Athena, with `try()` hiding the error. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md` (Rules): local Trino isn't proof, so the owner runs
+  new functions on real Athena before merging.
+- **Problem:** a `data` lookup of an IAM group that `CLAUDE.md` said existed failed the PR
+  plan, because the group had never been made. **Changed:**
+  `.claude/skills/tf-change/SKILL.md` (Rules): the owner confirms such names in AWS before
+  the first push, since docs aren't proof.
 - **Problem:** three clean-data gaps: a Lake Formation grant on a `default` database that
   didn't exist would have failed the apply, the deploy plan step left stderr unredacted in
   a public log, and the plan role could probably read Athena query text. **Changed:**

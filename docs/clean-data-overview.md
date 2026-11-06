@@ -3,8 +3,10 @@
 A plain-language summary of the clean-data pipeline. The full spec is
 [features/clean-data.md](features/clean-data.md).
 
-**Status (2026-11-06):** reviewed, with confirmed findings fixed and local checks passing,
-but not committed or deployed. None of the SQL has run on real Athena, only on local Trino.
+**Status (2026-11-06):** deployed, but the first self-check failed on real Athena, so don't
+trust the clean tables yet. `received_at` came out NULL there, which sent every valid line
+to `rejected`, though local Trino 484 accepted the same SQL. Dates that ran before the fix
+must be re-run.
 
 ## What gets created
 

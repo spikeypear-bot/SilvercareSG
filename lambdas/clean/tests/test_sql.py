@@ -308,3 +308,12 @@ def test_self_check_query_fits_athenas_query_size_limit(table):
 @pytest.mark.parametrize("table", sql.OUTPUT_TABLES)
 def test_dated_query_fits_athenas_query_size_limit(table):
     assert len(sql.unload(table, DATE, BUCKET).encode()) < ATHENA_MAX_QUERY_BYTES
+
+
+def test_received_at_is_not_added_to_the_epoch_in_one_step():
+    # Real Athena returned NULL for this form while local Trino accepted it, which sent
+    # every valid line to rejected.
+    query = sql.output_query("vitals", "SELECT 1")
+    single_step = re.compile(r"date_add\('millisecond', try_cast\([^%]*? AS bigint\),")
+    assert not single_step.search(query)
+    assert "date_add('day', try_cast(element_at(tokens, 'received_at')" in query
