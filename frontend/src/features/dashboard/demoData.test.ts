@@ -4,6 +4,8 @@ import {
   FAMILY_LINKED_RESIDENT_IDS,
   STATUS_TEXT,
   createDemoData,
+  createResidentDetail,
+  residentId,
 } from './demoData'
 
 const NOW = new Date('2026-10-18T02:30:00Z')
@@ -113,8 +115,8 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     expect(new Set(data.alerts.map((a) => a.alert_id)).size).toBe(data.alerts.length)
   })
 
-  it('has 12 alerts: some open, some acknowledged, none resolved', () => {
-    expect(data.alerts).toHaveLength(12)
+  it('has 13 alerts: some open, some acknowledged, none resolved', () => {
+    expect(data.alerts).toHaveLength(13)
     const byStatus = (s: string) => data.alerts.filter((a) => a.status === s)
     expect(byStatus('open').length).toBeGreaterThan(0)
     expect(byStatus('acknowledged')).toHaveLength(3)
@@ -173,21 +175,27 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     expect(DEMO_ESCALATION_DELAY_MS).toBe(300_000)
   })
 
-  it('exactly one alert is mid-countdown: a warning 2.5 min old, 2.5 min before it escalates', () => {
+  it("exactly two alerts are mid-countdown: H's warning (2:30 left) and B's for the caregiver view (3:00 left)", () => {
     const future = data.alerts.filter((a) => a.escalates_at)
-    expect(future).toHaveLength(1)
-    const [pending] = future
-    expect(pending).toMatchObject({
-      resident_id: 'res-0008',
-      alert_type: 'possible_fall',
-      severity: 'warning',
-      status: 'open',
-    })
-    expect(pending.escalated_at).toBeUndefined()
-    expect(NOW.getTime() - Date.parse(pending.event_ts)).toBe(150_000)
-    expect(Date.parse(pending.escalates_at as string) - NOW.getTime()).toBe(150_000)
-    expect(Date.parse(pending.escalates_at as string) - Date.parse(pending.event_ts)).toBe(300_000)
-    expect(data.alerts[0]).toBe(pending) // newest
+    expect(future).toHaveLength(2)
+    const pending = (residentId: string) => future.find((a) => a.resident_id === residentId) as ResidentAlert
+    const h = pending('res-0008')
+    // A cloud vitals check warning: possible falls are critical and never count down.
+    expect(h).toMatchObject({ alert_type: 'spo2_low', severity: 'warning', status: 'open' })
+    expect(h.device_id).toBe(data.residents[7].wearable.device_id)
+    expect(NOW.getTime() - Date.parse(h.event_ts)).toBe(150_000)
+    expect(Date.parse(h.escalates_at as string) - NOW.getTime()).toBe(150_000)
+    // B (res-0002) is linked to every caregiver, so the caregiver view shows a countdown.
+    expect(FAMILY_LINKED_RESIDENT_IDS).toContain('res-0002')
+    const b = pending('res-0002')
+    expect(b).toMatchObject({ alert_type: 'inactivity', severity: 'warning', status: 'open' })
+    expect(NOW.getTime() - Date.parse(b.event_ts)).toBe(120_000)
+    expect(Date.parse(b.escalates_at as string) - NOW.getTime()).toBe(180_000)
+    for (const a of future) {
+      expect(a.escalated_at).toBeUndefined()
+      expect(Date.parse(a.escalates_at as string) - Date.parse(a.event_ts)).toBe(300_000)
+    }
+    expect(data.alerts[0]).toBe(b) // newest
   })
 
   it('critical alerts never have escalates_at and are sent to the nurse 1 s after event_ts', () => {
@@ -217,7 +225,7 @@ describe('status and severity are provided by the data (criterion 19)', () => {
   })
 
   it('every other alert has escalated_at in the past: critical at once, warnings after 300 s', () => {
-    const others = data.alerts.filter((a) => !(a.resident_id === 'res-0008' && a.alert_type === 'possible_fall'))
+    const others = data.alerts.filter((a) => !a.escalates_at)
     expect(others).toHaveLength(11)
     others.forEach((a) => {
       expect(a.escalates_at).toBeUndefined()
@@ -263,12 +271,36 @@ describe('status and severity are provided by the data (criterion 19)', () => {
     expect(data.alerts.map((a) => a.alert_type)).not.toContain('vitals')
   })
 
-  it('res-0013 low_battery and res-0002 possible_fall (410 min old) are warnings', () => {
+  it('res-0013 low_battery is a warning; res-0002 possible_fall (410 min old) is critical, escalated at once', () => {
     const lowBattery = data.alerts.find((a) => a.resident_id === 'res-0013' && a.alert_type === 'low_battery')
     expect(lowBattery?.severity).toBe('warning')
     const oldFall = data.alerts.find((a) => a.resident_id === 'res-0002' && a.alert_type === 'possible_fall')
-    expect(oldFall?.severity).toBe('warning')
+    expect(oldFall?.severity).toBe('critical')
     expect(NOW.getTime() - Date.parse(oldFall?.event_ts as string)).toBe(410 * 60_000)
+    expect(oldFall?.escalates_at).toBeUndefined()
+    expect(Date.parse(oldFall?.escalated_at as string) - Date.parse(oldFall?.event_ts as string)).toBe(1_000)
+  })
+
+  it('every possible_fall (open list and resident history) is critical and never has escalates_at', () => {
+    // docs/features/possible-fall.md: always critical, caregivers and nurses at once.
+    for (const now of [NOW, new Date('2026-11-03T08:00:00Z')]) {
+      const fromHistory = Array.from({ length: 20 }, (_, i) => createResidentDetail(residentId(i + 1), now))
+        .flatMap((d) => d?.alerts ?? [])
+      const all = [...createDemoData(now).alerts, ...fromHistory].filter((a) => a.alert_type === 'possible_fall')
+      // Open for res-0002 and res-0012, each listed twice (dashboard data and its resident
+      // page), plus closed ones in the resident pages' history.
+      expect(all.filter((a) => a.status === 'open').map((a) => a.resident_id).sort()).toEqual([
+        'res-0002',
+        'res-0002',
+        'res-0012',
+        'res-0012',
+      ])
+      expect(all.some((a) => a.status === 'resolved' || a.status === 'cancelled')).toBe(true)
+      all.forEach((a) => {
+        expect(a.severity, a.alert_id).toBe('critical')
+        expect(a.escalates_at, a.alert_id).toBeUndefined()
+      })
+    }
   })
 
   it('alerts are newest first', () => {

@@ -137,8 +137,8 @@ unassigned devices go to the care centre nurse at once.
     the caregiver view shows the 2 demo residents linked to the signed-in demo account (the
     same 2 for every caregiver user).
 22. Statuses and alert severities are always shown with an icon **and** a text label,
-    never colour alone. In the caregiver view the alerts timeline is inside an
-    `aria-live="polite"` region. The staff dashboards instead have one screen-reader
+    never colour alone. Every view, the caregiver view included (changed by
+    `docs/features/alert-actions-ui.md`, criterion 16), has one screen-reader
     announcer per page, fed from the alert data (new alerts, escalations, nurse
     actions); their alert lists are not live regions, so countdowns aren't read out.
 23. `npm run lint`, `npm run test`, and `npm run build` pass in `frontend/`.
@@ -223,12 +223,18 @@ Both the nurse and doctor dashboards have:
   cancelled or resolved alert leaves the open list), resident name, resident ID and home ID, relative time ("12 min ago") with the
   exact time in a tooltip/`<time>`, "Acknowledged by the care centre nurse, <time>"
   once acknowledged, with the nurse's note under it if there is one ("Message from the
-  care centre:"), and, for an open alert: "Sent to the care centre nurse at once" for a
-  critical alert or one from an unassigned device (not in the nurse dashboard's inbox:
-  the nurse is the recipient, and the Critical badge already says it); for a warning, "Escalated to the
-  care centre nurse" once `escalated_at` is set, or before that a live countdown
-  "Escalates to the care centre nurse in m:ss" to the API's computed `escalates_at`
-  (the 300 s check in `docs/features/escalation.md`, alert-routing.md).
+  care centre:"), and, for an open alert, its routing to the care centre nurse:
+  - **Doctor dashboard** (and the resident page): "Sent to the care centre nurse at
+    once" for a critical alert or one from an unassigned device; for a warning,
+    "Escalated to the care centre nurse" once `escalated_at` is set, or before that a
+    live countdown "Escalates to the care centre nurse in m:ss" to the API's computed
+    `escalates_at` (the 300 s check in `docs/features/escalation.md`, alert-routing.md).
+  - **Nurse dashboard inbox:** none of these lines and no countdown, because the nurse
+    is the recipient (the Critical badge already says a critical alert went to her, and
+    the countdown is the caregiver's deadline, not hers). A warning still waiting to
+    escalate shows a quiet "Not yet escalated" (icon and text, no timer), which goes
+    away when `escalates_at` passes; the page announcer still says "Escalated to the
+    care centre nurse: <type>, <resident>." at that moment.
 - Residents panel: search by name or resident ID, filter chips by status
   (All / Urgent / Attention / OK, with counts), and a responsive grid of resident cards:
   initials avatar, name, resident ID, status badge, latest heart rate, SpO2, skin
@@ -244,9 +250,11 @@ Both the nurse and doctor dashboards have:
 - The stat tiles are toggle buttons that choose the panel below: Open alerts (the
   default), Devices offline, Wearables low on battery, or Residents.
 - Open alerts inbox: open and acknowledged alerts, critical pinned to the top, then
-  newest first. Each row has "Acknowledge" (open alerts) and "Resolve" buttons, which
-  record the nurse's display name and the time in local state. Resolved alerts move to
-  a collapsed "Resolved since this page opened" list.
+  newest first. Each row has "Acknowledge" (open alerts; opens the optional note form
+  of `docs/features/alert-actions-ui.md`) and "Resolve" buttons, which change local
+  state; resolve shows the nurse's display name. Rows show no routing lines and no
+  countdown, only "Not yet escalated" on a warning still waiting (see the shared parts
+  above). Resolved alerts move to a collapsed "Resolved since this page opened" list.
 - Devices offline panel (empty: "All devices are online.") and low-battery panel,
   lowest first (empty: "No wearables are below 20%.").
 
@@ -270,12 +278,18 @@ Both the nurse and doctor dashboards have:
   (matching DynamoDB's latest-5) and the time of the latest reading, device status
   (wearable battery, worn/charging, bedroom sensor online/offline), and a "Recent
   alerts" timeline for that resident (up to 5). Each alert shows its severity, type,
-  and time; "Sent to the care centre nurse at once" while a critical alert (or one from
-  an unassigned device) is open, explaining who else was alerted; and, once
+  and time; while it is open, its routing to the care centre nurse, worded for the
+  caregiver, who isn't the recipient: "Sent to the care centre nurse at once" for a
+  critical alert (or one from an unassigned device); for a warning, before its 5-minute
+  check, a live countdown "The care centre nurse will be alerted in m:ss unless you
+  cancel this alert" (in a `role="timer"`, not a live region; the page announcer says
+  "Escalated to the care centre nurse: <type>, <resident>." when it reaches zero), then
+  "Escalated to the care centre nurse"; and, once
   acknowledged, "Acknowledged by the care centre nurse, <time>" with the nurse's note
-  if there is one (main's rule: everyone who can see the alert sees the note). Display
-  only: no acknowledge, resolve, or cancel buttons (the caregiver Cancel button is
-  Track B's).
+  if there is one (main's rule: everyone who can see the alert sees the note). Each
+  alert also shows its lifecycle label and its cancel or resolve line, and an open or
+  acknowledged alert has a "Cancel alert" button with a confirmation step (local state
+  only; `docs/features/alert-actions-ui.md`). No acknowledge or resolve buttons.
 - Loading: skeleton cards with "Loading your residents' information". Empty: `EmptyState` "No residents are linked to your account
   yet. Your care provider can link you." Error: as the staff dashboards.
 

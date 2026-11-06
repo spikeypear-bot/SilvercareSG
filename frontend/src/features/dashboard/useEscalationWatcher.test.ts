@@ -9,8 +9,8 @@ function alert(id: string, overrides: Partial<ResidentAlert> = {}): ResidentAler
   return {
     alert_id: id,
     resident_id: 'res-0008',
-    device_id: 'bedroom-test-008',
-    alert_type: 'possible_fall',
+    device_id: 'wearable-test-008',
+    alert_type: 'spo2_low',
     severity: 'warning',
     status: 'open',
     event_ts: NOW.toISOString(),

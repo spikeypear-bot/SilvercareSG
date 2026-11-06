@@ -5,6 +5,17 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-06
 
+- **Problem:** the demo bed data treated a possible fall as open with
+  `status !== 'resolved'`, so a cancelled one still showed the resident out of bed
+  (found by frontend-tester, no test covered it). **Changed:**
+  `.claude/skills/frontend/SKILL.md` (Rules): decide "still open" with `isOnOpenList`,
+  never by excluding `resolved`.
+
+- **Problem:** integration tests couldn't start DynamoDB Local because host port 8000
+  was taken by another project's container, and the first workaround failed (a
+  `docker compose run` container has no `dynamodb-local` alias). **Changed:**
+  `.claude/skills/local-dev/SKILL.md` (Windows paragraph): run an unpublished DynamoDB
+  Local by name and point `DYNAMODB_ENDPOINT` at it.
 - **Problem:** the clean job's SQL passed on local Trino but rejected every valid line on
   real Athena, with `try()` hiding the error. **Changed:**
   `.claude/skills/lambda-test/SKILL.md` (Rules): local Trino isn't proof, so the owner runs
@@ -38,6 +49,16 @@ a wasted step. Newest first. Review these in the diff before committing.
   them. **Changed:** `.claude/skills/feature-spec/SKILL.md` (readiness checklist): verify
   claims in running code and AWS docs, match pointers, and check erasure against storage.
 
+- **Problem:** twice, Claude's inline Python heredoc that edited TypeScript tests failed
+  with "unexpected EOF" because the script contained backticks (template literals), and
+  had to be redone. **Changed:** `.claude/skills/local-dev/SKILL.md` (`make lint` row):
+  write such scripts to the scratchpad and run them as a file.
+
+- **Problem:** the `alert-actions-ui` note check (spec and code by Claude) followed the
+  data-model summary "Unicode category C, e.g. ... U+2028/U+2029", but those two are
+  categories Zl/Zp, so the form let them through while `alert-processor` refuses them;
+  Claude's own new tests caught it. **Changed:** `.claude/skills/frontend/SKILL.md`:
+  a field the backend also validates copies the backend's code and its test cases.
 - **Problem:** removing the family test user from `seed-data`, the first version deleted
   the retired `test-family` account by username alone, and pruned old seed links with an
   unconditional batch delete after reading them, so an account or link a teammate had

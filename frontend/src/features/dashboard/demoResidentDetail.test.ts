@@ -352,11 +352,55 @@ describe('createResidentDetail', () => {
     detailOf('res-0002').bedroom!.latest.status.forEach((s) => expect(s.battery_pct).not.toBeNull())
   })
 
-  it("the newest bed entry for res-0008 is out of bed at its possible_fall alert's event_ts", () => {
-    const d = detailOf('res-0008')
+  it("the newest bed entry for res-0012 is out of bed at its open possible_fall alert's event_ts", () => {
+    const d = detailOf('res-0012')
     const possibleFall = d.alerts.find((a) => a.alert_type === 'possible_fall' && a.status !== 'resolved')
-    expect(possibleFall).toBeDefined()
+    expect(possibleFall).toMatchObject({ status: 'open', severity: 'critical' })
     expect(d.bedroom!.latest.bed[0]).toMatchObject({ ts: possibleFall!.event_ts, occupied: false })
+  })
+
+  it('a cancelled or resolved possible_fall never makes the newest bed entry "out of bed" at its event_ts', () => {
+    // The test's own open-list rule: open or acknowledged (not the app's helper).
+    const onOpenList = (a: ResidentAlert) => a.status === 'open' || a.status === 'acknowledged'
+    const checked: string[] = []
+    const mismatches: string[] = []
+    details.forEach((d) => {
+      const id = d.resident.resident_id
+      const falls = d.alerts.filter((a) => a.alert_type === 'possible_fall')
+      const open = falls.find(onOpenList)
+      const newest = d.bedroom!.latest.bed[0]
+      if (open) {
+        // An open or acknowledged one is the newest bed event: the bed was vacated then.
+        expect(newest, id).toMatchObject({ ts: open.event_ts, occupied: false })
+        return
+      }
+      const closed = falls.filter((a) => a.status === 'cancelled' || a.status === 'resolved')
+      if (closed.length === 0) return
+      checked.push(id)
+      closed.forEach((a) => {
+        if (newest.ts === a.event_ts && newest.occupied === false) {
+          mismatches.push(`${id}: newest bed entry out of bed at ${a.status} possible_fall ${a.alert_id}`)
+        }
+      })
+    })
+    expect(mismatches).toEqual([])
+    // Not vacuous: some residents have only closed possible falls, including res-0009.
+    expect(checked).toContain('res-0009')
+  })
+
+  it("res-0009's cancelled possible_fall is history only: the newest bed entry is not out of bed at its event_ts", () => {
+    const d = detailOf('res-0009')
+    const falls = d.alerts.filter((a) => a.alert_type === 'possible_fall')
+    expect(falls.length).toBeGreaterThan(0)
+    expect(falls.some((a) => a.status === 'open' || a.status === 'acknowledged')).toBe(false)
+    const cancelled = falls.find((a) => a.status === 'cancelled')
+    expect(cancelled).toMatchObject({ status: 'cancelled', severity: 'critical' })
+    const newest = d.bedroom!.latest.bed[0]
+    expect(newest).toBeDefined()
+    expect(newest.ts === cancelled!.event_ts && newest.occupied === false).toBe(false)
+    expect(newest.ts).not.toBe(cancelled!.event_ts)
+    // The bed history doesn't end at that old event: the newest entry is more recent.
+    expect(Date.parse(newest.ts)).toBeGreaterThan(Date.parse(cancelled!.event_ts))
   })
 
   it("the defaults are main's decided values (2026-11-02)", () => {

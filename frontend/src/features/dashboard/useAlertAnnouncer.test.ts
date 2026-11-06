@@ -147,8 +147,8 @@ describe('useAlertAnnouncer', () => {
 
   it('announce() sets the message directly', () => {
     const { result } = setup(data.alerts)
-    act(() => result.current.announce('Escalated to the care centre nurse: Possible fall, Test Resident H.'))
-    expect(msg(result)).toBe('Escalated to the care centre nurse: Possible fall, Test Resident H.')
+    act(() => result.current.announce('Escalated to the care centre nurse: Low blood oxygen, Test Resident H.'))
+    expect(msg(result)).toBe('Escalated to the care centre nurse: Low blood oxygen, Test Resident H.')
   })
 
   it('announcing the same text twice still changes the message, so it is read again', () => {

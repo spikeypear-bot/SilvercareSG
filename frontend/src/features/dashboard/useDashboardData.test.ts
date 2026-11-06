@@ -3,6 +3,7 @@ import { demoDataFor } from '../../test/dashboardMock'
 import { deferred } from '../../test/fixtures'
 import type { DashboardData, ResidentAlert } from '../../types/dashboard'
 import { FAMILY_LINKED_RESIDENT_IDS } from './demoData'
+import { isOnOpenList } from './stats'
 import {
   DEMO_DELAY_MS,
   loadDashboardData,
@@ -37,7 +38,7 @@ describe('loadDashboardData (criterion 18)', () => {
     await vi.advanceTimersByTimeAsync(DEMO_DELAY_MS)
     const data = await promise
     expect(data.residents).toHaveLength(20)
-    expect(data.alerts).toHaveLength(12)
+    expect(data.alerts).toHaveLength(13)
     expect(data.alerts.some((a) => a.status === 'open')).toBe(true)
     expect(data.alerts.some((a) => a.status === 'acknowledged')).toBe(true)
     expect(data.alerts.some((a) => a.status === 'resolved')).toBe(false)
@@ -124,9 +125,92 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     expect(after).not.toHaveProperty('ack_note')
   })
 
-  it('acknowledgeAlert takes only the alert ID', async () => {
+  it('acknowledgeAlert takes the alert ID and an optional note, never an actor', async () => {
     const { result } = await loaded()
-    expect(result.current.acknowledgeAlert).toHaveLength(1)
+    expect(result.current.acknowledgeAlert).toHaveLength(2)
+  })
+
+  // docs/features/alert-actions-ui.md, criteria 7, 9, 13, 17.
+  it('acknowledge with a note stores it as ack_note', async () => {
+    const { result, data } = await loaded()
+    const target = firstWith(data, 'open')
+    act(() => result.current.acknowledgeAlert(target.alert_id, 'Synthetic note: on the way.\nAbout 8 minutes.'))
+    expect(find(result, target.alert_id)).toEqual({
+      ...target,
+      status: 'acknowledged',
+      acknowledged_at: ACTION_TIME.toISOString(),
+      ack_note: 'Synthetic note: on the way.\nAbout 8 minutes.',
+    })
+  })
+
+  it('acknowledge with an empty note stores no ack_note', async () => {
+    const { result, data } = await loaded()
+    const target = firstWith(data, 'open')
+    act(() => result.current.acknowledgeAlert(target.alert_id, ''))
+    expect(find(result, target.alert_id)).not.toHaveProperty('ack_note')
+  })
+
+  it('a second acknowledge keeps the first time and note', async () => {
+    const { result, data } = await loaded()
+    const target = firstWith(data, 'open')
+    act(() => result.current.acknowledgeAlert(target.alert_id, 'Synthetic first note'))
+    const first = find(result, target.alert_id)
+    vi.setSystemTime(new Date(ACTION_TIME.getTime() + 60_000))
+    act(() => result.current.acknowledgeAlert(target.alert_id, 'Synthetic second note'))
+    expect(find(result, target.alert_id)).toBe(first)
+  })
+
+  it('cancel: open -> cancelled by a caregiver, with time and display name', async () => {
+    const { result, data } = await loaded()
+    const target = firstWith(data, 'open')
+    act(() => result.current.cancelAlert(target.alert_id, 'Test Caregiver A'))
+    expect(find(result, target.alert_id)).toEqual({
+      ...target,
+      status: 'cancelled',
+      cancelled_at: ACTION_TIME.toISOString(),
+      cancelled_by_role: 'caregiver',
+      cancelled_by: 'Test Caregiver A',
+    })
+  })
+
+  it('cancel of an acknowledged alert keeps the acknowledge and its note', async () => {
+    const { result, data } = await loaded()
+    const target = firstWith(data, 'acknowledged')
+    expect(target.acknowledged_at).toBeDefined()
+    act(() => result.current.cancelAlert(target.alert_id, 'Test Caregiver A'))
+    const after = find(result, target.alert_id)
+    expect(after.status).toBe('cancelled')
+    expect(after.acknowledged_at).toBe(target.acknowledged_at)
+    expect(after.ack_note).toBe(target.ack_note)
+  })
+
+  it('cancel does nothing to a cancelled or resolved alert', async () => {
+    const { result, data } = await loaded()
+    const target = firstWith(data, 'open')
+    act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
+    const resolved = find(result, target.alert_id)
+    act(() => result.current.cancelAlert(target.alert_id, 'Test Caregiver A'))
+    expect(find(result, target.alert_id)).toBe(resolved)
+
+    const other = data.alerts.filter((a) => a.status === 'open')[1]
+    act(() => result.current.cancelAlert(other.alert_id, 'Test Caregiver A'))
+    const cancelled = find(result, other.alert_id)
+    act(() => result.current.cancelAlert(other.alert_id, 'Test Caregiver B'))
+    expect(find(result, other.alert_id)).toBe(cancelled)
+  })
+
+  it('cancel with an empty display name stores no cancelled_by', async () => {
+    const { result, data } = await loaded()
+    const target = firstWith(data, 'open')
+    act(() => result.current.cancelAlert(target.alert_id, ''))
+    expect(find(result, target.alert_id)).not.toHaveProperty('cancelled_by')
+  })
+
+  it('a cancelled alert leaves the open list', async () => {
+    const { result, data } = await loaded()
+    const target = firstWith(data, 'open')
+    act(() => result.current.cancelAlert(target.alert_id, 'Test Caregiver A'))
+    expect(isOnOpenList(find(result, target.alert_id))).toBe(false)
   })
 
   it('acknowledge leaves every other alert untouched (same objects)', async () => {

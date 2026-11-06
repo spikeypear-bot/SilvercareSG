@@ -2,8 +2,8 @@
  * Data loaders for the dashboards and the resident page. Today they read synthetic demo
  * data with a simulated delay so loading and error states are real. Later, replace the
  * bodies of `loadDashboardData` and `loadResidentDetail` with calls through
- * src/lib/api.ts, the alert actions with the acknowledge/resolve call
- * (docs/data-model.md pattern 16), and `updateThresholds` with the thresholds call
+ * src/lib/api.ts, the alert actions with the acknowledge / cancel / resolve calls
+ * (docs/data-model.md pattern 16; docs/features/alert-actions-ui.md, API contract), and `updateThresholds` with the thresholds call
  * (the proposed thresholds-edit pattern), and `loadDeviceFleet` with the devices call (patterns 4, 5, 8);
  * the hooks and the views stay the same.
  */
@@ -59,12 +59,25 @@ export type DeviceFleetLoader = () => Promise<FleetDevice[]>
 
 interface AlertActionsState {
   /**
-   * Marks an open alert acknowledged. Local state only for now. No name: an acknowledge is
-   * shown as "the care centre nurse" (docs/features/alert-routing.md). The API call sends
-   * just the alert ID and action (and later the optional note); the server takes the
-   * actor from the JWT `sub` and checks the caller is in the `nurse` group.
+   * Marks an open alert acknowledged, with the nurse's optional note (already normalised
+   * by `checkAckNote`; `undefined` for none). Local state only for now
+   * (docs/features/alert-actions-ui.md). No name: an acknowledge is shown as "the care
+   * centre nurse". Later this body becomes, through src/lib/api.ts:
+   * `POST /residents/{resident_id}/alerts/{alert_id}/acknowledge` with body
+   * `{"event_ts": <the alert's event_ts>, "note": ackNote ?? null}`, both IDs and
+   * `event_ts` taken from the alert this hook holds; the server takes the actor from the
+   * JWT `sub` and checks the `nurse` group.
    */
-  acknowledgeAlert: (alertId: string) => void
+  acknowledgeAlert: (alertId: string, ackNote?: string) => void
+  /**
+   * Marks an open or acknowledged alert cancelled by a caregiver. Local state only for
+   * now. `by` is the signed-in caregiver's display name, used only to show the change on
+   * screen and never sent. Later this body becomes
+   * `POST /residents/{resident_id}/alerts/{alert_id}/cancel` with body
+   * `{"event_ts": <the alert's event_ts>}`; the server takes the actor (`sub`, `name`)
+   * from the JWT, checks the `caregiver` group and the link to the resident.
+   */
+  cancelAlert: (alertId: string, by: string) => void
   /**
    * Marks an open or acknowledged alert resolved. `by` is the signed-in staff member's
    * display name, used only to show the change on screen: the API call sends just the
@@ -147,9 +160,27 @@ function useLoaded<K, T>(key: K, loader: (key: K) => Promise<T>) {
   return { data, setData, loading, error, retry }
 }
 
-function acknowledged(alert: ResidentAlert): ResidentAlert | null {
+function acknowledged(alert: ResidentAlert, ackNote: string | undefined): ResidentAlert | null {
   return alert.status === 'open'
-    ? { ...alert, status: 'acknowledged', acknowledged_at: new Date().toISOString() }
+    ? {
+        ...alert,
+        status: 'acknowledged',
+        acknowledged_at: new Date().toISOString(),
+        ...(ackNote && { ack_note: ackNote }),
+      }
+    : null
+}
+
+/** Main's cancel rule: from `open` or `acknowledged`; keeps the acknowledge and its note. */
+function cancelled(alert: ResidentAlert, by: string): ResidentAlert | null {
+  return alert.status === 'open' || alert.status === 'acknowledged'
+    ? {
+        ...alert,
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancelled_by_role: 'caregiver',
+        ...(by && { cancelled_by: by }),
+      }
     : null
 }
 
@@ -160,7 +191,7 @@ function resolved(alert: ResidentAlert, by: string): ResidentAlert | null {
     : { ...alert, status: 'resolved', resolved_by: by, resolved_at: new Date().toISOString() }
 }
 
-/** Acknowledge and resolve for any state that holds an `alerts` list. */
+/** Acknowledge, resolve, and cancel for any state that holds an `alerts` list. */
 function useAlertActions<T extends { alerts: ResidentAlert[] }>(
   setData: Dispatch<SetStateAction<T | null>>,
 ): AlertActionsState {
@@ -178,7 +209,11 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
   )
 
   const acknowledgeAlert = useCallback(
-    (alertId: string) => updateAlert(alertId, acknowledged),
+    (alertId: string, ackNote?: string) => updateAlert(alertId, (a) => acknowledged(a, ackNote)),
+    [updateAlert],
+  )
+  const cancelAlert = useCallback(
+    (alertId: string, by: string) => updateAlert(alertId, (a) => cancelled(a, by)),
     [updateAlert],
   )
   const resolveAlert = useCallback(
@@ -186,7 +221,7 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
     [updateAlert],
   )
 
-  return { acknowledgeAlert, resolveAlert }
+  return { acknowledgeAlert, resolveAlert, cancelAlert }
 }
 
 export function useDashboardData(

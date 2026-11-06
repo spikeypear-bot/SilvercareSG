@@ -48,7 +48,7 @@ export function NurseDashboard() {
 
 interface NurseContentProps {
   data: DashboardData
-  onAcknowledge: (alertId: string) => void
+  onAcknowledge: (alertId: string, ackNote?: string) => void
   onResolve: (alertId: string, by: string) => void
 }
 
@@ -91,7 +91,7 @@ interface AlertInboxProps {
   alerts: ResidentAlert[]
   residentsById: Map<string, Resident>
   announce: (message: string) => void
-  onAcknowledge: (alertId: string) => void
+  onAcknowledge: (alertId: string, ackNote?: string) => void
   onResolve: (alertId: string) => void
 }
 
@@ -126,11 +126,12 @@ function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve 
                 alert={alert}
                 resident={residentsById.get(alert.resident_id)}
                 now={now}
-                // The nurse is the recipient: the Critical badge already says it went to them.
-                showSentAtOnce={false}
+                // The nurse is the recipient: no routing lines or countdown, only "Not yet escalated".
+                readerIsRecipient
                 actions={{
-                  onAcknowledge: () => {
-                    onAcknowledge(alert.alert_id)
+                  onAcknowledge: (ackNote) => {
+                    onAcknowledge(alert.alert_id, ackNote)
+                    // Never the note: it isn't read out.
                     announce(`Acknowledged: ${described}.`)
                   },
                   onResolve: () => {

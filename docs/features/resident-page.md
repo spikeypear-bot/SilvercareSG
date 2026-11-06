@@ -91,7 +91,8 @@ from synthetic demo data, and actions change local state only.
    Empty: "No alerts for this resident in the last 30 days."
 9. Nurses get Acknowledge (open alerts) and Resolve (open and acknowledged alerts)
    buttons in the alert history; cancelled and resolved alerts have none. Acknowledge
-   records the time (shown as the care centre nurse); resolve records the signed-in
+   opens the optional note form (`docs/features/alert-actions-ui.md`) and records the
+   time and note (shown as the care centre nurse); resolve records the signed-in
    user's display name and the time; resolving
    moves focus to the section heading. Doctors see no alert buttons.
 10. **Vitals thresholds** (pattern 18): heart rate min/max, SpO2 min, skin temperature
