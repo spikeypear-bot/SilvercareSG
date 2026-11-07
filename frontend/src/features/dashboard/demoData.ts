@@ -16,10 +16,13 @@
 import type {
   AlertSeverity,
   AlertType,
+  BedroomSensorState,
   DashboardData,
   Resident,
   ResidentAlert,
   ResidentStatus,
+  VitalsReading,
+  WearableState,
 } from '../../types/dashboard'
 import type {
   BedroomDevice,
@@ -248,9 +251,34 @@ function acknowledgement(
   return { acknowledged_at: acknowledgedAt, ...(note && { ack_note: note }) }
 }
 
+/**
+ * The demo always gives every resident both devices, each with a status and full vitals:
+ * stricter than `GET /dashboard`'s shape (where devices and readings can be null), and
+ * still assignable to it.
+ */
+export interface DemoWearableState extends WearableState {
+  ts: string
+  battery_pct: number
+  worn: boolean
+}
+export interface DemoBedroomState extends BedroomSensorState {
+  ts: string
+}
+export interface DemoVitalsReading extends VitalsReading {
+  activity_pct: number
+}
+export interface DemoResident extends Resident {
+  wearable: DemoWearableState
+  bedroom: DemoBedroomState
+  vitals: DemoVitalsReading[]
+}
+export interface DemoDashboardData extends DashboardData {
+  residents: DemoResident[]
+}
+
 /** Builds the full demo data set with timestamps relative to `now`. */
-export function createDemoData(now: Date = new Date()): DashboardData {
-  const residents: Resident[] = SEEDS.map((seed, i) => {
+export function createDemoData(now: Date = new Date()): DemoDashboardData {
+  const residents: DemoResident[] = SEEDS.map((seed, i) => {
     const vitals = HR_WOBBLE.map((_, r) => ({
       ts: minutesBefore(now, seed.vitalsAgeMin + r),
       hr_bpm: seed.hr + HR_WOBBLE[r],
@@ -412,7 +440,7 @@ const demoUuid = (group: string, n: number) =>
  * since been deleted, so the API shows "Former staff member" / "Former caregiver" (Actor
  * names).
  */
-function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[] {
+function historyAlerts(resident: DemoResident, i: number, now: Date): ResidentAlert[] {
   if (i + 1 === NO_HISTORY_RESIDENT) return []
   const count = 1 + (i % 4)
   return Array.from({ length: count }, (_, k): ResidentAlert => {
@@ -471,7 +499,7 @@ function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[
   })
 }
 
-function wearableDevice(resident: Resident, alerts: ResidentAlert[], i: number): WearableDevice {
+function wearableDevice(resident: DemoResident, alerts: ResidentAlert[], i: number): WearableDevice {
   const { wearable } = resident
   const statusTs = Date.parse(wearable.ts)
   return {
@@ -516,7 +544,7 @@ function bedroomBattery(i: number): number | null {
 
 const DEMO_FW_VERSION = '1.0.0'
 
-function bedroomDevice(resident: Resident, alerts: ResidentAlert[], i: number): BedroomDevice {
+function bedroomDevice(resident: DemoResident, alerts: ResidentAlert[], i: number): BedroomDevice {
   const { bedroom } = resident
   const base = Date.parse(bedroom.ts)
   const at = (minutes: number) => new Date(base - minutes * 60_000).toISOString()

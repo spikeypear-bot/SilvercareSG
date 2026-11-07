@@ -36,6 +36,11 @@ function from the same zip, each with its own role, log group, and failure handl
   calls. That way the logic can be tested without mocks.
 - **Validate input at the boundary.** IoT payloads are checked against `docs/metrics.md`,
   API bodies against the route's expected shape. Reject unknown fields and versions.
+  DynamoDB items are input too: check a raw value's type (`isinstance(v, str)`) before
+  `v in <set>`, because a list or map value is unhashable and raises, turning one bad
+  item into a 500 for the whole request. Compare numbers as `Decimal`: a `float` compares
+  exactly with a `Decimal`, so `float(Decimal("36.6")) > Decimal("36.6")` is True. Convert
+  to `float` only when building the JSON response.
 - **Logging:** Powertools `Logger(service="<name>")`. Log IDs, event types, counts, and
   outcomes. Never log payload bodies, names, contact details, or health values. An ID
   that comes from the payload (e.g. `message_id`) is logged only if it matches its

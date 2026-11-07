@@ -25,8 +25,9 @@ const VITALS: ReadonlyArray<{ key: VitalKey; label: string; format: (v: number |
 
 export function ResidentCard({ resident, now, showTrends = false }: ResidentCardProps) {
   const latest = resident.vitals[0]
+  // The newest of the latest vitals and the wearable's latest status; null if neither.
   const lastUpdated =
-    latest && latest.ts > resident.wearable.ts ? latest.ts : resident.wearable.ts
+    [latest?.ts, resident.wearable?.ts].filter((ts): ts is string => !!ts).sort().at(-1) ?? null
   // vitals are newest first; sparklines read oldest to newest.
   const oldestFirst = [...resident.vitals].reverse()
 
@@ -63,7 +64,7 @@ export function ResidentCard({ resident, now, showTrends = false }: ResidentCard
       <div className="mt-auto flex flex-col gap-1 border-t border-slate-100 pt-3 text-sm text-slate-700">
         <WearableStatusText wearable={resident.wearable} />
         <p className="text-slate-600">
-          Last updated <RelativeTime iso={lastUpdated} now={now} />
+          {lastUpdated === null ? 'No readings yet' : <>Last updated <RelativeTime iso={lastUpdated} now={now} /></>}
         </p>
       </div>
     </article>
@@ -90,11 +91,15 @@ function VitalTrend({
   format: (v: number | null) => string
 }) {
   const values = readings.map((r) => r[vital])
+  // GET /dashboard sends at most one reading, so there may be nothing to draw.
+  if (values.length === 0) return null
   return (
     <>
       <Sparkline values={values} width={96} height={28} />
       <span className="sr-only">
-        Last {values.length} readings, oldest first: {values.map(format).join(', ')}.
+        {values.length === 1
+          ? `Latest reading: ${format(values[0])}.`
+          : `Last ${values.length} readings, oldest first: ${values.map(format).join(', ')}.`}
       </span>
     </>
   )

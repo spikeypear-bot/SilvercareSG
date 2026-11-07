@@ -1,53 +1,235 @@
 /**
  * Data loaders for the dashboards, the resident page, and the devices view.
- * `loadDeviceFleet` calls the API (`GET /devices` through src/lib/api.ts). The others
- * still read synthetic demo data with a simulated delay so loading and error states are
- * real. Later, replace the
- * bodies of `loadDashboardData` and `loadResidentDetail` with calls through
- * src/lib/api.ts, the alert actions with the acknowledge / cancel / resolve calls
- * (docs/data-model.md pattern 16; docs/features/alert-actions-ui.md, API contract; nurses
- * acknowledge and resolve health alerts, caregivers acknowledge device problems), and `updateThresholds` with the thresholds call
- * (the proposed thresholds-edit pattern); the hooks and the views stay the same.
+ * `loadDeviceFleet` (`GET /devices`) and the staff view of `loadDashboardData`
+ * (`GET /dashboard`) call the API through src/lib/api.ts. The caregiver view and
+ * `loadResidentDetail` (`GET /residents/{id}` and `GET .../thresholds/history`) call the
+ * API too, and `updateThresholds` sends `PUT .../thresholds` (pattern 26). Resolve is
+ * still local only (docs/data-model.md pattern 16).
  */
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import type { DashboardData, ResidentAlert } from '../../types/dashboard'
-import { getDevices } from '../../lib/api'
-import type { ApiDevice, FleetDevice } from '../../types/devices'
-import type { ResidentDetail, VitalsThresholds } from '../../types/resident'
+import type {
+  ApiDashboardAlert,
+  ApiDashboardResident,
+  DashboardData,
+  Resident,
+  ResidentAlert,
+} from '../../types/dashboard'
 import {
-  FAMILY_LINKED_RESIDENT_IDS,
-  createDemoData,
-  createResidentDetail,
-} from './demoData'
+  ApiError,
+  acknowledgeAlertApi,
+  cancelAlertApi,
+  getDashboard,
+  getDevices,
+  getMyResidents,
+  getResident,
+  getThresholdHistory,
+  putThresholds,
+} from '../../lib/api'
+import type { ApiDevice, FleetDevice } from '../../types/devices'
+import type {
+  ApiLinkedResident,
+  ApiResidentAlert,
+  ApiResidentDetail,
+  ApiThresholdChange,
+  ResidentDetail,
+  ResidentThresholds,
+  ThresholdChangeEntry,
+  VitalsThresholds,
+} from '../../types/resident'
 import { isDeviceProblem } from './stats'
 
 export type DashboardView = 'staff' | 'family'
 
+/** The demo modules' simulated delay (demoData.ts; the loaders now call the API). */
 export const DEMO_DELAY_MS = 400
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 /**
- * Staff: every demo resident and all open demo alerts.
- * Family: only the demo residents linked to the account (the same 2 for every user).
+ * One `GET /dashboard` resident as the dashboards show it. Copies each field by name, so
+ * a field the API adds later isn't passed through. `display_name` becomes `name`; a
+ * missing `home_id` becomes ''.
  */
-export async function loadDashboardData(view: DashboardView): Promise<DashboardData> {
-  await delay(DEMO_DELAY_MS)
-  const data = createDemoData(new Date())
-  if (view === 'staff') return data
-  const linked = new Set(FAMILY_LINKED_RESIDENT_IDS)
+export function toResident(r: ApiDashboardResident): Resident {
+  const w = r.wearable
+  const b = r.bedroom
   return {
-    residents: data.residents.filter((r) => linked.has(r.resident_id)),
-    alerts: data.alerts.filter((a) => linked.has(a.resident_id)),
+    resident_id: r.resident_id,
+    name: r.display_name,
+    home_id: r.home_id ?? '',
+    status: r.status,
+    status_text: r.status_text,
+    wearable: w && {
+      device_id: w.device_id,
+      ts: w.ts,
+      battery_pct: w.battery_pct,
+      worn: w.worn,
+      charging: w.charging,
+      online: w.online,
+    },
+    bedroom: b && { device_id: b.device_id, ts: b.ts, online: b.online },
+    vitals: r.vitals.map((v) => ({
+      ts: v.ts,
+      hr_bpm: v.hr_bpm,
+      spo2_pct: v.spo2_pct,
+      skin_temp_c: v.skin_temp_c,
+      // Not sent by GET /dashboard (data minimisation).
+      activity_pct: null,
+    })),
   }
 }
 
-/** One resident's page (patterns 10, 11, 12, 18). `null` if there is no such resident. */
+/**
+ * One `GET /dashboard` alert as the dashboards show it. The API sends null for an absent
+ * value; the views expect the optional field to be missing, so nulls are dropped.
+ */
+export function toResidentAlert(a: ApiDashboardAlert | ApiResidentAlert): ResidentAlert {
+  return {
+    alert_id: a.alert_id,
+    resident_id: a.resident_id,
+    device_id: a.device_id,
+    alert_type: a.alert_type,
+    severity: a.severity,
+    status: a.status,
+    event_ts: a.event_ts,
+    ...(a.acknowledged_at !== null && { acknowledged_at: a.acknowledged_at }),
+    ...(a.acknowledged_by_role !== null && { acknowledged_by_role: a.acknowledged_by_role }),
+    ...(a.acknowledged_by !== null && { acknowledged_by: a.acknowledged_by }),
+    ...(a.ack_note !== null && { ack_note: a.ack_note }),
+    ...(a.escalated_at !== null && { escalated_at: a.escalated_at }),
+    ...(a.escalates_at !== null && { escalates_at: a.escalates_at }),
+  }
+}
+
+/** A `GET /me/residents` or resident-page resident: as `toResident`, keeping `activity_pct`. */
+export function toLinkedResident(r: ApiLinkedResident): Resident {
+  return {
+    ...toResident(r),
+    vitals: r.vitals.map((v) => ({
+      ts: v.ts,
+      hr_bpm: v.hr_bpm,
+      spo2_pct: v.spo2_pct,
+      skin_temp_c: v.skin_temp_c,
+      activity_pct: v.activity_pct,
+    })),
+  }
+}
+
+/** A stored alert in any status (pattern 12): `toResidentAlert` plus the resolve and cancel fields. */
+export function toHistoryAlert(a: ApiResidentAlert): ResidentAlert {
+  return {
+    ...toResidentAlert(a),
+    ...(a.resolved_at !== null && { resolved_at: a.resolved_at }),
+    ...(a.resolved_by !== null && { resolved_by: a.resolved_by }),
+    ...(a.cancelled_at !== null && { cancelled_at: a.cancelled_at }),
+    ...(a.cancelled_by_role !== null && { cancelled_by_role: a.cancelled_by_role }),
+    ...(a.cancelled_by !== null && { cancelled_by: a.cancelled_by }),
+  }
+}
+
+/** `GET /residents/{id}` as the resident page shows it, copied field by field. */
+export function toResidentDetail(d: ApiResidentDetail): ResidentDetail {
+  const w = d.wearable
+  const b = d.bedroom
+  const t = d.thresholds
+  return {
+    resident: toLinkedResident(d.resident),
+    wearable: w && {
+      device_id: w.device_id,
+      device_type: 'wearable',
+      online: w.online,
+      latest: {
+        vitals: w.latest.vitals.map((e) => ({
+          message_id: e.message_id,
+          ts: e.ts,
+          hr_bpm: e.hr_bpm,
+          spo2_pct: e.spo2_pct,
+          skin_temp_c: e.skin_temp_c,
+          activity_pct: e.activity_pct,
+        })),
+        fall: w.latest.fall.map((e) => ({
+          message_id: e.message_id,
+          ts: e.ts,
+          confidence: e.confidence,
+          peak_g: e.peak_g,
+          still_s: e.still_s,
+        })),
+        status: w.latest.status.map((e) => ({
+          message_id: e.message_id,
+          ts: e.ts,
+          battery_pct: e.battery_pct,
+          worn: e.worn,
+          charging: e.charging,
+          fw_version: e.fw_version,
+        })),
+      },
+    },
+    bedroom: b && {
+      device_id: b.device_id,
+      device_type: 'bedroom',
+      online: b.online,
+      latest: {
+        motion: b.latest.motion.map((e) => ({ message_id: e.message_id, ts: e.ts, motion: e.motion })),
+        bed: b.latest.bed.map((e) => ({ message_id: e.message_id, ts: e.ts, occupied: e.occupied })),
+        status: b.latest.status.map((e) => ({
+          message_id: e.message_id,
+          ts: e.ts,
+          battery_pct: e.battery_pct,
+          fw_version: e.fw_version,
+        })),
+      },
+    },
+    alerts: d.alerts.map(toHistoryAlert),
+    thresholds: toThresholds(t),
+    // From GET .../thresholds/history (loadResidentDetail), not this response.
+    threshold_history: [],
+  }
+}
+
+/** API thresholds (resident page or save response), copied field by field. */
+export function toThresholds(t: ApiResidentDetail['thresholds']): ResidentThresholds {
+  return {
+    hr_bpm: { min: t.hr_bpm.min, max: t.hr_bpm.max },
+    spo2_pct: { min: t.spo2_pct.min },
+    skin_temp_c: { min: t.skin_temp_c.min, max: t.skin_temp_c.max },
+    ...(t.updated_at !== null && { updated_at: t.updated_at }),
+    ...(t.updated_by !== null && { updated_by: t.updated_by }),
+  }
+}
+
+/** One change-history entry: the API's `changed_by_name` is shown as `changed_by`. */
+export function toThresholdChange(c: ApiThresholdChange): ThresholdChangeEntry {
+  return {
+    change_id: c.change_id,
+    changed_at: c.changed_at,
+    changed_by: c.changed_by_name,
+    changes: c.changes.map((x) => ({ field: x.field, old_value: x.old_value, new_value: x.new_value })),
+  }
+}
+
+/**
+ * Staff: every resident and the open list from `GET /dashboard`.
+ * Family (caregiver): the linked residents and all their alerts from `GET /me/residents`.
+ */
+export async function loadDashboardData(view: DashboardView): Promise<DashboardData> {
+  if (view === 'staff') {
+    const body = await getDashboard()
+    return { residents: body.residents.map(toResident), alerts: body.alerts.map(toResidentAlert) }
+  }
+  const body = await getMyResidents()
+  return { residents: body.residents.map(toLinkedResident), alerts: body.alerts.map(toHistoryAlert) }
+}
+
+/**
+ * One resident's page (patterns 10, 11, 12, 18) and its threshold change history
+ * (pattern 27). `null` if there is no such resident (404).
+ */
 export async function loadResidentDetail(residentId: string): Promise<ResidentDetail | null> {
-  await delay(DEMO_DELAY_MS)
-  return createResidentDetail(residentId, new Date())
+  try {
+    const [detail, history] = await Promise.all([getResident(residentId), getThresholdHistory(residentId)])
+    return { ...toResidentDetail(detail), threshold_history: history.map(toThresholdChange) }
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
 }
 
 /**
@@ -79,28 +261,35 @@ export type DashboardLoader = (view: DashboardView) => Promise<DashboardData>
 export type ResidentDetailLoader = (residentId: string) => Promise<ResidentDetail | null>
 export type DeviceFleetLoader = () => Promise<FleetDevice[]>
 
+/**
+ * Acknowledge, cancel, and the caregiver's device-problem acknowledge resolve to `true`
+ * once the change is shown: with API data, after the API accepted it (202); with demo
+ * data, at once. `false` if nothing changed (not allowed, already pending, or the API
+ * refused it: then `actionError` says why). Announce only on `true`.
+ */
 interface AlertActionsState {
   /**
-   * Marks an open **health** alert acknowledged (a device problem is left unchanged:
-   * nurses don't acknowledge those, user's decisions 2026-11-05), with the nurse's optional note (already normalised
-   * by `checkAckNote`; `undefined` for none). Local state only for now
-   * (docs/features/alert-actions-ui.md). No name: an acknowledge is shown as "the care
-   * centre nurse". Later this body becomes, through src/lib/api.ts:
-   * `POST /residents/{resident_id}/alerts/{alert_id}/acknowledge` with body
-   * `{"event_ts": <the alert's event_ts>, "note": ackNote ?? null}`, both IDs and
-   * `event_ts` taken from the alert this hook holds; the server takes the actor from the
-   * JWT `sub` and checks the `nurse` group.
+   * Acknowledges an open **health** alert (a device problem is left unchanged: nurses
+   * don't acknowledge those, user's decisions 2026-11-05), with the nurse's optional note
+   * (already normalised by `checkAckNote`; `undefined` for none). No name: an
+   * acknowledge is shown as "the care centre nurse".
+   *
+   * With API data (the staff view): `POST /residents/{resident_id}/alerts/{alert_id}/acknowledge`
+   * with `{"event_ts", "note"}` taken from the alert this hook holds; the server takes the
+   * actor from the token. The alert shows as acknowledged once the API accepts it (202);
+   * on an error it stays as it was and `actionError` is set. With demo data: local only.
    */
-  acknowledgeAlert: (alertId: string, ackNote?: string) => void
+  acknowledgeAlert: (alertId: string, ackNote?: string) => Promise<boolean>
   /**
-   * Marks an open or acknowledged alert cancelled by a caregiver. Local state only for
-   * now. `by` is the signed-in caregiver's display name, used only to show the change on
-   * screen and never sent. Later this body becomes
-   * `POST /residents/{resident_id}/alerts/{alert_id}/cancel` with body
-   * `{"event_ts": <the alert's event_ts>}`; the server takes the actor (`sub`, `name`)
-   * from the JWT, checks the `caregiver` group and the link to the resident.
+   * Cancels an open or acknowledged health alert as a caregiver. `by` is the caregiver's
+   * display name, used only to show the change on screen and never sent.
+   *
+   * With API data: `POST /residents/{resident_id}/alerts/{alert_id}/cancel` with
+   * `{"event_ts"}`; the server takes the actor (`sub`, `name`) from the token and checks
+   * the `caregiver` group and the link. Shown once accepted, as for acknowledge. With
+   * demo data (the caregiver view and resident page today): local only.
    */
-  cancelAlert: (alertId: string, by: string) => void
+  cancelAlert: (alertId: string, by: string) => Promise<boolean>
   /**
    * A caregiver's acknowledge of an open **device problem** (a health alert is left
    * unchanged). Local state only for now. `by` is the caregiver's display name, used only
@@ -108,7 +297,7 @@ interface AlertActionsState {
    * the server takes the actor (`sub`, and `name` for the email) from the ID token and
    * checks the `caregiver` group and the link to the resident.
    */
-  acknowledgeDeviceProblem: (alertId: string, by: string) => void
+  acknowledgeDeviceProblem: (alertId: string, by: string) => Promise<boolean>
   /**
    * Marks an open or acknowledged **health** alert resolved (a device problem is left
    * unchanged: only the watchdog resolves those, user's decisions 2026-11-05). `by` is the
@@ -123,6 +312,9 @@ interface AlertActionsState {
 
 export interface DashboardDataState extends AlertActionsState {
   data: DashboardData | null
+  /** A sentence about the last acknowledge or cancel the API refused; null if none. */
+  actionError: string | null
+  dismissActionError: () => void
   loading: boolean
   error: boolean
   /** Loads again after an error. */
@@ -131,19 +323,29 @@ export interface DashboardDataState extends AlertActionsState {
 
 export interface ResidentDetailState extends AlertActionsState {
   data: ResidentDetail | null
+  /** A sentence about the last acknowledge the API refused; null if none. */
+  actionError: string | null
+  dismissActionError: () => void
   loading: boolean
   error: boolean
   /** Loaded, but there is no resident with that ID. */
   notFound: boolean
   retry: () => void
   /**
-   * Replaces the resident's thresholds. Local state only for now. `by` is for display
-   * only: the API call sends just the values, and the server checks the caller is in the
-   * `doctor` group, validates the values with the same rules as the form, and records
-   * the `sub` from the JWT as `updated_by`. It doesn't add to `threshold_history`: the
-   * server writes that entry in the same transaction (the proposed threshold change history).
+   * Replaces the resident's thresholds. Resolves to null once saved, or to a sentence
+   * saying why not (nothing changed on screen then).
+   *
+   * With API data: `PUT /residents/{resident_id}/thresholds` with just the values; the
+   * server checks the `doctor` group, validates them with the same rules as the form,
+   * records the token's `sub` and Cognito name, and writes the change-history entry in
+   * the same transaction. The thresholds shown are the ones the server returns, and the
+   * history is fetched again so the new entry appears (if that refetch fails, the save
+   * still counts and `actionError` says to reload). `by` is not sent.
+   *
+   * With demo data (a test's own loader): local only, shown as changed by `by`; the
+   * history is left as it is.
    */
-  updateThresholds: (values: VitalsThresholds, by: string) => void
+  updateThresholds: (values: VitalsThresholds, by: string) => Promise<string | null>
 }
 
 /** Loads `key` with `loader`, and again when `key` changes or after `retry`. */
@@ -241,10 +443,52 @@ function resolved(alert: ResidentAlert, by: string): ResidentAlert | null {
     : { ...alert, status: 'resolved', resolved_by: by, resolved_at: new Date().toISOString() }
 }
 
-/** Acknowledge, resolve, and cancel for any state that holds an `alerts` list. */
+/** What to tell the doctor when the API refuses a thresholds save. */
+export function thresholdsErrorText(err: unknown): string {
+  const status = err instanceof ApiError ? err.status : 0
+  if (status === 409) {
+    return 'Someone else changed these thresholds just now. Reload the page to see their values, then try again.'
+  }
+  if (status === 404) return 'This resident has no thresholds to change.'
+  if (status === 403) return 'Only doctors can change thresholds.'
+  if (status === 401) return 'Your session has ended. Sign in again.'
+  if (status === 400) return 'The thresholds were not accepted. Check the values and try again.'
+  return 'Could not save the thresholds. Check your connection and try again.'
+}
+
+/** What to tell the user when the API refuses an acknowledge or cancel. */
+export function alertActionErrorText(err: unknown, action: 'acknowledge' | 'cancel'): string {
+  const status = err instanceof ApiError ? err.status : 0
+  if (status === 409) return 'This alert has already been dealt with. Reload the page to see its current state.'
+  if (status === 404) return 'This alert could not be found. Reload the page to see the current alerts.'
+  if (status === 403) return `You can't ${action} this alert.`
+  if (status === 401) return 'Your session has ended. Sign in again.'
+  return `Could not ${action} the alert. Check your connection and try again.`
+}
+
+/**
+ * Acknowledge, resolve, and cancel for any state that holds an `alerts` list. With
+ * `live`, acknowledge and cancel go through the API first (resolve and the caregiver's
+ * device-problem acknowledge are still local only).
+ */
 function useAlertActions<T extends { alerts: ResidentAlert[] }>(
+  data: T | null,
   setData: Dispatch<SetStateAction<T | null>>,
-): AlertActionsState {
+  live = false,
+): AlertActionsState & {
+  actionError: string | null
+  dismissActionError: () => void
+  setActionError: Dispatch<SetStateAction<string | null>>
+} {
+  const dataRef = useRef(data)
+  useEffect(() => {
+    dataRef.current = data
+  }, [data])
+  // Alerts with a request in flight: a second click doesn't send a second request.
+  const pending = useRef(new Set<string>())
+  const [actionError, setActionError] = useState<string | null>(null)
+  const dismissActionError = useCallback(() => setActionError(null), [])
+
   const updateAlert = useCallback(
     (alertId: string, change: (alert: ResidentAlert) => ResidentAlert | null) => {
       setData(
@@ -258,24 +502,71 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
     [setData],
   )
 
+  /**
+   * Applies `change` to the alert: at once without `live`; with `live`, only after
+   * `request` succeeds. Resolves to whether it was applied.
+   */
+  const apply = useCallback(
+    (
+      alertId: string,
+      action: 'acknowledge' | 'cancel',
+      change: (alert: ResidentAlert) => ResidentAlert | null,
+      request: (alert: ResidentAlert) => Promise<unknown>,
+    ): Promise<boolean> => {
+      const alert = dataRef.current?.alerts.find((a) => a.alert_id === alertId)
+      if (!alert || change(alert) === null) return Promise.resolve(false)
+      if (!live) {
+        updateAlert(alertId, change)
+        return Promise.resolve(true)
+      }
+      if (pending.current.has(alertId)) return Promise.resolve(false)
+      pending.current.add(alertId)
+      setActionError(null)
+      return request(alert)
+        .then(
+          () => {
+            updateAlert(alertId, change)
+            return true
+          },
+          (err: unknown) => {
+            setActionError(alertActionErrorText(err, action))
+            return false
+          },
+        )
+        .finally(() => pending.current.delete(alertId))
+    },
+    [live, updateAlert],
+  )
+
   const acknowledgeAlert = useCallback(
-    (alertId: string, ackNote?: string) => updateAlert(alertId, (a) => acknowledged(a, ackNote)),
-    [updateAlert],
+    (alertId: string, ackNote?: string) =>
+      apply(alertId, 'acknowledge', (a) => acknowledged(a, ackNote), (a) => acknowledgeAlertApi(a, ackNote ?? null)),
+    [apply],
   )
   const cancelAlert = useCallback(
-    (alertId: string, by: string) => updateAlert(alertId, (a) => cancelled(a, by)),
-    [updateAlert],
+    (alertId: string, by: string) => apply(alertId, 'cancel', (a) => cancelled(a, by), (a) => cancelAlertApi(a)),
+    [apply],
   )
+  // `by` is display only: the API takes the caregiver's name from the token.
   const acknowledgeDeviceProblem = useCallback(
-    (alertId: string, by: string) => updateAlert(alertId, (a) => acknowledgedByCaregiver(a, by)),
-    [updateAlert],
+    (alertId: string, by: string) =>
+      apply(alertId, 'acknowledge', (a) => acknowledgedByCaregiver(a, by), (a) => acknowledgeAlertApi(a, null)),
+    [apply],
   )
   const resolveAlert = useCallback(
     (alertId: string, by: string) => updateAlert(alertId, (a) => resolved(a, by)),
     [updateAlert],
   )
 
-  return { acknowledgeAlert, resolveAlert, cancelAlert, acknowledgeDeviceProblem }
+  return {
+    acknowledgeAlert,
+    resolveAlert,
+    cancelAlert,
+    acknowledgeDeviceProblem,
+    actionError,
+    dismissActionError,
+    setActionError,
+  }
 }
 
 export function useDashboardData(
@@ -283,7 +574,11 @@ export function useDashboardData(
   loader: DashboardLoader = loadDashboardData,
 ): DashboardDataState {
   const { data, setData, loading, error, retry } = useLoaded(view, loader)
-  const actions = useAlertActions(setData)
+  // Actions go to the API only when the alerts came from it (the default loader); a
+  // test's own loader serves demo alerts whose IDs the API would refuse.
+  const live = loader === loadDashboardData
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- not part of this state
+  const { setActionError, ...actions } = useAlertActions(data, setData, live)
   return { data, loading, error, retry, ...actions }
 }
 
@@ -292,28 +587,51 @@ export function useResidentDetail(
   loader: ResidentDetailLoader = loadResidentDetail,
 ): ResidentDetailState {
   const { data, setData, loading, error, retry } = useLoaded(residentId, loader)
-  const actions = useAlertActions(setData)
+  // As useDashboardData: the API only for data from the API loader.
+  const live = loader === loadResidentDetail
+  const { setActionError, ...actions } = useAlertActions(data, setData, live)
+  const saving = useRef(false)
 
   const updateThresholds = useCallback(
-    (values: VitalsThresholds, by: string) => {
+    async (values: VitalsThresholds, by: string): Promise<string | null> => {
       // Copy only the limits: a caller passing a full ResidentThresholds can't carry its
-      // own updated_by / updated_at through. The API call will send exactly these too.
+      // own updated_by / updated_at through. putThresholds sends exactly these too.
       const { hr_bpm, spo2_pct, skin_temp_c } = values
-      setData(
-        (current) =>
-          current && {
-            ...current,
-            thresholds: {
-              hr_bpm: { min: hr_bpm.min, max: hr_bpm.max },
-              spo2_pct: { min: spo2_pct.min },
-              skin_temp_c: { min: skin_temp_c.min, max: skin_temp_c.max },
-              updated_by: by,
-              updated_at: new Date().toISOString(),
+      if (!live) {
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              thresholds: {
+                hr_bpm: { min: hr_bpm.min, max: hr_bpm.max },
+                spo2_pct: { min: spo2_pct.min },
+                skin_temp_c: { min: skin_temp_c.min, max: skin_temp_c.max },
+                updated_by: by,
+                updated_at: new Date().toISOString(),
+              },
             },
-          },
-      )
+        )
+        return null
+      }
+      if (saving.current) return 'A save is already in progress.'
+      saving.current = true
+      try {
+        const saved = await putThresholds(residentId, values)
+        setData((current) => current && { ...current, thresholds: toThresholds(saved.thresholds) })
+        try {
+          const history = await getThresholdHistory(residentId)
+          setData((current) => current && { ...current, threshold_history: history.map(toThresholdChange) })
+        } catch {
+          setActionError('The thresholds were saved, but the change history could not be refreshed. Reload the page.')
+        }
+        return null
+      } catch (err) {
+        return thresholdsErrorText(err)
+      } finally {
+        saving.current = false
+      }
     },
-    [setData],
+    [live, residentId, setData, setActionError],
   )
 
   const notFound = !loading && !error && data === null

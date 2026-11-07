@@ -146,8 +146,8 @@ data "aws_iam_policy_document" "alerts_queue" {
   # sends with the operator's own credentials, and such a Deny would block it even for
   # admins and root. Sending is limited by IAM instead: the critical-alert and
   # telemetry role policies (ingest.tf) and the alert-processor role policy (below, for
-  # its delayed escalation checks) grant it, and the shared developer user has no SQS
-  # permissions.
+  # its delayed escalation checks), the watchdog's, and the alert-actions API's
+  # (api.tf) grant it, and the shared developer user has no SQS permissions.
 }
 
 resource "aws_sqs_queue_policy" "alerts" {

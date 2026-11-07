@@ -11,7 +11,7 @@ interface AlertHistoryProps {
   now: Date
   /** Nurse only: acknowledge and resolve. Left out for doctors, who review. */
   actions?: {
-    onAcknowledge: (alertId: string, ackNote?: string) => void
+    onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
     onResolve: (alertId: string) => void
   }
   announce: (message: string) => void
@@ -46,9 +46,10 @@ export function AlertHistory({ alerts, resident, now, actions, announce }: Alert
                   actions && isOnOpenList(alert)
                     ? {
                         onAcknowledge: (ackNote) => {
-                          actions.onAcknowledge(alert.alert_id, ackNote)
-                          // Never the note: it isn't read out.
-                          announce(`Acknowledged: ${described}.`)
+                          // Only once accepted (with API data, after the 202). Never the note.
+                          void actions.onAcknowledge(alert.alert_id, ackNote).then((ok) => {
+                            if (ok) announce(`Acknowledged: ${described}.`)
+                          })
                         },
                         onResolve: () => {
                           actions.onResolve(alert.alert_id)

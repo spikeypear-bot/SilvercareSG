@@ -2,12 +2,13 @@
  * Unit tests for the typed API client. `./auth` (getApiToken) is mocked and `fetch` is
  * stubbed, so nothing reaches Cognito or the real API.
  */
+import type { ApiDashboardResponse } from '../types/dashboard'
 import type { ApiDevice } from '../types/devices'
 
 const auth = vi.hoisted(() => ({ getApiToken: vi.fn<() => Promise<string | null>>() }))
 vi.mock('./auth', () => ({ getApiToken: auth.getApiToken }))
 
-import { ApiError, apiGet, getDevices } from './api'
+import { ApiError, apiGet, getDashboard, getDevices } from './api'
 
 const TEST_TOKEN = 'test-id-token-abc123'
 const BASE = 'https://api.example.test'
@@ -305,6 +306,122 @@ describe('getDevices', () => {
     auth.getApiToken.mockResolvedValue(null)
     const error = await apiErrorOf(getDevices())
     expect(error).toMatchObject({ status: 401, code: 'unauthenticated' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('getDashboard', () => {
+  const dashboard: ApiDashboardResponse = {
+    residents: [
+      {
+        resident_id: 'resident-test-001',
+        display_name: 'Test Resident A',
+        home_id: 'home-test-001',
+        status: 'attention',
+        status_text: 'Synthetic status text.',
+        wearable: {
+          device_id: 'wearable-test-001',
+          ts: '2026-11-07T02:00:00Z',
+          battery_pct: 64,
+          worn: true,
+          charging: false,
+          online: true,
+        },
+        bedroom: { device_id: 'bedroom-test-001', ts: '2026-11-07T02:00:00Z', online: true },
+        vitals: [
+          { ts: '2026-11-07T02:00:00Z', hr_bpm: 72, spo2_pct: 97, skin_temp_c: 33.1 },
+        ],
+      },
+      {
+        resident_id: 'resident-test-002',
+        display_name: 'Test Resident B',
+        home_id: null,
+        status: 'ok',
+        status_text: 'Synthetic status text.',
+        wearable: null,
+        bedroom: null,
+        vitals: [],
+      },
+    ],
+    alerts: [
+      {
+        alert_id: 'alert-test-001',
+        resident_id: 'resident-test-001',
+        device_id: 'wearable-test-001',
+        alert_type: 'spo2_low',
+        severity: 'warning',
+        status: 'open',
+        event_ts: '2026-11-07T02:00:00Z',
+        acknowledged_at: null,
+        acknowledged_by_role: null,
+        acknowledged_by: null,
+        ack_note: null,
+        escalated_at: null,
+        escalates_at: '2026-11-07T02:05:00Z',
+      },
+    ],
+  }
+
+  it('GETs /dashboard with the ID token and resolves to the body as sent', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(dashboard))
+    await expect(getDashboard()).resolves.toEqual(dashboard)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://api.example.test/dashboard')
+    expect(init).toMatchObject({
+      method: 'GET',
+      headers: { Authorization: `Bearer ${TEST_TOKEN}`, Accept: 'application/json' },
+    })
+    expect(String(url)).not.toContain(TEST_TOKEN)
+    expect(auth.getApiToken).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves to empty lists for no residents and no alerts', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ residents: [], alerts: [] }))
+    await expect(getDashboard()).resolves.toEqual({ residents: [], alerts: [] })
+  })
+
+  it.each([
+    ['no residents key', { alerts: [] }],
+    ['no alerts key', { residents: [] }],
+    ['residents not an array', { residents: 'resident-test-001', alerts: [] }],
+    ['alerts not an array', { residents: [], alerts: { 0: dashboard.alerts[0] } }],
+    ['residents null', { residents: null, alerts: [] }],
+    ['alerts null', { residents: [], alerts: null }],
+    ['an empty object', {}],
+    ['a top-level array', dashboard.residents],
+    ['a JSON null body', null],
+    ['a string body', 'dashboard'],
+  ])('throws ApiError(200, invalid_response) for a body with %s', async (_label, body) => {
+    fetchMock.mockResolvedValue(jsonResponse(body))
+    const error = await apiErrorOf(getDashboard())
+    expect(error).toMatchObject({ status: 200, code: 'invalid_response' })
+  })
+
+  it("passes through the API's error code (e.g. 403 forbidden for a caregiver)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: { code: 'forbidden', message: 'Staff only' } }, 403))
+    const error = await apiErrorOf(getDashboard())
+    expect(error).toMatchObject({ status: 403, code: 'forbidden' })
+  })
+
+  it('falls back to http_<status> for a non-JSON error page', async () => {
+    fetchMock.mockResolvedValue(textResponse('<html>Bad Gateway</html>', 502))
+    const error = await apiErrorOf(getDashboard())
+    expect(error).toMatchObject({ status: 502, code: 'http_502' })
+  })
+
+  it('passes through unauthenticated without calling fetch', async () => {
+    auth.getApiToken.mockResolvedValue(null)
+    const error = await apiErrorOf(getDashboard())
+    expect(error).toMatchObject({ status: 401, code: 'unauthenticated' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('passes through not_configured without asking for a token', async () => {
+    vi.stubEnv('VITE_API_URL', '')
+    const error = await apiErrorOf(getDashboard())
+    expect(error).toMatchObject({ status: 0, code: 'not_configured' })
+    expect(auth.getApiToken).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
