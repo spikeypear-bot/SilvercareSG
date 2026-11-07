@@ -4,7 +4,9 @@
 # reads the device -> resident mapping and thresholds from the registry, runs one Athena
 # query over the clean tables for the Singapore date clean just completed, and writes
 # one JSON summary per resident to summaries/ in the history bucket, catalogued as
-# silvercare_lake.daily_summaries. Lake Formation governs Athena access.
+# silvercare_lake.daily_summaries. Lake Formation governs Athena access. Each successful
+# asynchronous run then hands off to silvercare-results (on-success destination,
+# docs/features/nightly-results.md, criterion 3; results.tf).
 #
 # Data: per-resident daily health statistics (heart rate, SpO2, skin temperature,
 # activity, bed, motion, falls, alert episodes, readings outside thresholds, the
@@ -188,7 +190,9 @@ data "archive_file" "summaries" {
 # and writes (with tags) objects under summaries/ in the history bucket. No telemetry/,
 # alerts/, no other table, no other registry partition, nothing published. Clean data is
 # read through Lake Formation's credentials, so there is no S3 access to the clean bucket.
-# The module adds the log group permissions.
+# It invokes silvercare-results only, as its on-success destination (AWS requires the
+# source function's role to have lambda:InvokeFunction on it). The module adds the log
+# group permissions.
 data "aws_iam_policy_document" "summaries" {
   statement {
     sid    = "OwnAthenaWorkgroup"
@@ -390,6 +394,14 @@ data "aws_iam_policy_document" "summaries" {
       values   = ["SPECIFIC_ATTRIBUTES"]
     }
   }
+
+  # The on-success destination (nightly-results criterion 3). That function only.
+  statement {
+    sid       = "InvokeResults"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [module.results.function_arn]
+  }
 }
 
 module "summaries" {
@@ -422,10 +434,25 @@ module "summaries" {
 # 2 retries and an hour's event age, as clean (criterion 5). No invoke permission is
 # needed for the on-success destination: Lambda uses clean's execution role, which may
 # invoke this function (clean.tf).
+#
+# After a successful asynchronous run, Lambda invokes silvercare-results with the
+# invocation record, whose responsePayload is summaries' {"date": ..., "summaries": n}
+# (nightly-results criterion 3). Synchronous runs (a manual `aws lambda invoke`) don't:
+# run results for that date by hand too. A failed hand-off alarms as
+# silvercare-summaries-destination-failures (results.tf).
 resource "aws_lambda_function_event_invoke_config" "summaries" {
   function_name                = module.summaries.function_name
   maximum_retry_attempts       = 2
   maximum_event_age_in_seconds = 3600
+
+  destination_config {
+    on_success {
+      destination = module.results.function_arn
+    }
+  }
+
+  # AWS checks the role may invoke the destination when the config is saved.
+  depends_on = [module.summaries]
 }
 
 # ---------------------------------------------------------------------------------------

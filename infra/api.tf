@@ -17,6 +17,9 @@
 #   GET /residents/{resident_id}/thresholds/history (staff; pattern 27), one Lambda
 #   silvercare-api-thresholds (lambdas/api-thresholds/), so the read-only resident
 #   page role never gets write access.
+# - GET /residents/{resident_id}/nightly (doctor; pattern 31), Lambda
+#   silvercare-api-nightly (lambdas/api-nightly/): stored nights from silvercare-results
+#   (docs/features/nightly-results.md).
 #
 # The authorizer checks the token's signature, expiry, issuer, and audience; each
 # handler checks the caller's Cognito group (and, for resident routes, the caregiver
@@ -37,6 +40,7 @@ locals {
   api_alert_actions_function_name = "silvercare-api-alert-actions"
   api_residents_function_name     = "silvercare-api-residents"
   api_thresholds_function_name    = "silvercare-api-thresholds"
+  api_nightly_function_name       = "silvercare-api-nightly"
   thresholds_routes = {
     put = {
       route_key = "PUT /residents/{resident_id}/thresholds"
@@ -182,6 +186,15 @@ resource "aws_apigatewayv2_stage" "default" {
       throttling_rate_limit  = route_settings.value.rate
       throttling_burst_limit = route_settings.value.burst
     }
+  }
+
+  # Nightly summaries (user's decision 2026-11-07): one page view Queries up to about 30
+  # items (about 6 RCU) on the Results table's 1 RCU, so at the default 5/s a stuck
+  # client would drain its burst capacity and every doctor's section would fail.
+  route_settings {
+    route_key              = aws_apigatewayv2_route.get_nightly.route_key
+    throttling_rate_limit  = 0.1
+    throttling_burst_limit = 2
   }
 
   # Alert actions (acknowledge, cancel, resolve), per call: a strongly consistent alerts
@@ -1066,4 +1079,84 @@ resource "aws_lambda_permission" "api_thresholds" {
   function_name = module.api_thresholds.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/${each.value.arn_path}"
+}
+
+# ---------------------------------------------------------------------------------------
+# GET /residents/{resident_id}/nightly
+# ---------------------------------------------------------------------------------------
+
+data "archive_file" "api_nightly" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambdas/api-nightly/src"
+  output_path = "${path.module}/.terraform/build/api-nightly.zip"
+  excludes    = ["__pycache__", "**/__pycache__/**", "**/*.pyc"]
+}
+
+# What the function does with AWS (criterion 23): one eventually consistent, paginated
+# Query of RESIDENT#<id> on the Results table (pattern 31). No writes, no other table, no
+# registry read (no profile check, by the user's decision). RESIDENT# partitions only;
+# the table holds nothing else.
+data "aws_iam_policy_document" "api_nightly" {
+  statement {
+    sid       = "ResultsByResident"
+    effect    = "Allow"
+    actions   = ["dynamodb:Query"]
+    resources = [module.results_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["RESIDENT#*"]
+    }
+  }
+}
+
+module "api_nightly" {
+  source = "./modules/python-lambda"
+
+  function_name = local.api_nightly_function_name
+  description   = "GET /residents/{id}/nightly: a resident's stored nightly summaries, for doctors."
+  handler       = "handler.lambda_handler"
+  zip_path      = data.archive_file.api_nightly.output_path
+  zip_hash      = data.archive_file.api_nightly.output_base64sha256
+  layers        = [local.powertools_layer_arn]
+  memory_size   = 128
+  # One small paginated Query (about 30 items).
+  timeout = 10
+
+  environment = {
+    RESULTS_TABLE           = module.results_table.name
+    POWERTOOLS_SERVICE_NAME = local.api_nightly_function_name
+  }
+
+  policy_json        = data.aws_iam_policy_document.api_nightly.json
+  log_retention_days = 30
+
+  # Invoked synchronously by API Gateway: no async retries, so no on-failure destination.
+}
+
+resource "aws_apigatewayv2_integration" "api_nightly" {
+  api_id                 = aws_apigatewayv2_api.api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.api_nightly.function_arn
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 12000
+}
+
+resource "aws_apigatewayv2_route" "get_nightly" {
+  api_id             = aws_apigatewayv2_api.api.id
+  route_key          = "GET /residents/{resident_id}/nightly"
+  target             = "integrations/${aws_apigatewayv2_integration.api_nightly.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+# Only this API's GET /residents/{resident_id}/nightly route (any stage) may invoke the
+# function.
+resource "aws_lambda_permission" "api_nightly" {
+  statement_id  = "AllowApiGatewayGetNightly"
+  action        = "lambda:InvokeFunction"
+  function_name = module.api_nightly.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/GET/residents/*/nightly"
 }
