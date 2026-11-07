@@ -87,6 +87,11 @@ data "aws_iam_role" "cicd_plan" {
   name = "silvercare-cicd-plan"
 }
 
+# Hand-made admin IAM user (not in Terraform), made a Lake Formation admin by team decision.
+data "aws_iam_user" "kakis" {
+  user_name = "silvercare-kakis"
+}
+
 # AWS's list of Lake Formation principals has IAM users and roles but not IAM groups, so
 # each member of the group gets the grants (criterion 22a).
 data "aws_iam_group" "developers" {
@@ -230,13 +235,13 @@ resource "aws_s3_bucket_policy" "lake" {
 # Lake Formation settings and locations (criteria 18, 19)
 # ---------------------------------------------------------------------------------------
 
-# silvercare-cicd is the only admin, and silvercare-cicd-plan the only read-only admin (view
-# only, so PR plans can read these resources; criterion 18). The
+# silvercare-cicd and silvercare-kakis are the admins, and silvercare-cicd-plan the only
+# read-only admin (view only, so PR plans can read these resources; criterion 18). The
 # create_*_default_permissions blocks are left out on purpose: the provider documents that
 # this clears them, so new databases and tables get no IAMAllowedPrincipals permissions.
 # These settings are account-wide.
 resource "aws_lakeformation_data_lake_settings" "this" {
-  admins           = [data.aws_iam_role.cicd.arn]
+  admins           = [data.aws_iam_role.cicd.arn, data.aws_iam_user.kakis.arn]
   read_only_admins = [data.aws_iam_role.cicd_plan.arn]
 }
 
