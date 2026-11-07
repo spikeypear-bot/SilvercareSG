@@ -84,8 +84,8 @@ has nurses = none and ops = emailed or grouped.
 
 Which role may change which type is checked after reading the target (watchdog
 criterion 14a): device problems take only an ops or caregiver acknowledge and the
-system resolve; health alerts only a nurse acknowledge and a resident or caregiver
-cancel. Anything else changes nothing and emails nobody: outcome not_allowed. A device
+system resolve; health alerts only a nurse acknowledge, a resident or caregiver
+cancel, and a nurse or doctor resolve. Anything else changes nothing and emails nobody: outcome not_allowed. A device
 problem acknowledge also sets acknowledged_by_role, and its follow-up goes to the
 caregivers and the ops team. The system resolve (the watchdog, when the problem
 cleared) is conditional on open or acknowledged, sets resolved_at, resolved_by_role,
@@ -101,10 +101,26 @@ the caregivers and, if the item has escalated_at, the nurses, then SET
 status_notified_at once (retried like a cancel's). A wearable's "I'm OK" also cancels
 the resident's open or acknowledged possible falls, whatever device raised them.
 
+Staff resolve (docs/features/staff-resolve.md, criteria 3-8): a nurse or doctor
+resolve, with a required closing note, of a health alert or possible fall (a device
+problem: not_allowed). Conditional on open or acknowledged like the system resolve,
+it also sets resolved_by (the sub) and resolve_note, keeping the acknowledge's fields
+and ack_note. Its follow-up goes to the caregivers only (nobody for unassigned), then
+SET status_notified_at once; an item already resolved by the same sub and role
+without status_notified_at gets it on a retry.
+
+Final record (staff-resolve criterion 8): every resolve (staff, back in bed, device
+problem) writes the item as it now stands to
+alerts/date=<event_ts UTC date>/<alert_id>.final.json in the history bucket, after the
+UpdateItem (or on a retry) and before any email; a failed PutObject fails the record.
+A device-problem system resolve that finds the item already resolved by the system
+(a redelivery) writes it again and ends not_open.
+
 Any AWS error fails only that record. Logs hold one line per record with alert_id,
 alert_type, severity, device_id, resident_id, and the outcome (plus a reason or error
 code; new alerts add nurses; checks add kind and escalation_delay_ms; status updates log
-one line per alert with kind, new_status, by_role, and, for an acknowledge, has_note),
+one line per alert with kind, new_status, by_role, and, for an acknowledge or a staff
+resolve, has_note),
 never details, vitals, limits, email addresses, the email body, or a status update's
 by, by_name, or note.
 """
@@ -137,12 +153,14 @@ from message import (
     POSSIBLE_FALL,
     REASON_BACK_IN_BED,
     ROLE_CAREGIVER,
+    ROLE_DOCTOR,
     ROLE_NURSE,
     ROLE_OPS,
     ROLE_RESIDENT,
     ROLE_SYSTEM,
     SEVERITIES,
     SEVERITY_CRITICAL,
+    STAFF_ROLES,
     STATUS_ACKNOWLEDGED,
     STATUS_CANCELLED,
     STATUS_RESOLVED,
@@ -226,8 +244,14 @@ HEALTH_ALERT_CHANGES = frozenset(
         (ROLE_NURSE, STATUS_ACKNOWLEDGED),
         (ROLE_RESIDENT, STATUS_CANCELLED),
         (ROLE_CAREGIVER, STATUS_CANCELLED),
+        # Staff resolve with a closing note (staff-resolve criterion 3).
+        (ROLE_NURSE, STATUS_RESOLVED),
+        (ROLE_DOCTOR, STATUS_RESOLVED),
     }
 )
+# The final record of a resolved alert (staff-resolve criterion 8), next to the
+# original copy: alerts/date=<date>/<alert_id>.final.json.
+FINAL_RECORD_SUFFIX = ".final.json"
 # Resolved alerts expire like cancelled ones (watchdog criterion 11).
 RESOLVED_RETENTION = timedelta(days=30)
 
@@ -944,12 +968,30 @@ def is_back_in_bed(update: StatusUpdate) -> bool:
     )
 
 
+def is_staff_resolve(update: StatusUpdate) -> bool:
+    """Staff-resolve criterion 1: a nurse or doctor resolve, with a closing note."""
+    return update.by_role in STAFF_ROLES and update.new_status == STATUS_RESOLVED
+
+
+def final_record_key(update: StatusUpdate) -> str:
+    """Staff-resolve criterion 8: alerts/date=<UTC date of event_ts>/<alert_id>
+    .final.json, the same date folder as the original copy (archive_key). Built from
+    the validated target (the item's key), never from stored free text."""
+    event_dt = parse_ts(update.event_ts)
+    if event_dt is None or update.alert_id is None:
+        # A resolve always has a validated alert target (message.py).
+        raise ValueError("resolve without a valid alert target")
+    date = event_dt.strftime("%Y-%m-%d")
+    return f"{ARCHIVE_PREFIX}/date={date}/{update.alert_id}{FINAL_RECORD_SUFFIX}"
+
+
 def is_allowed(item: dict[str, Any], update: StatusUpdate) -> bool:
-    """Watchdog criterion 14a, possible-fall criterion 12: device problems take only
-    an ops or caregiver acknowledge and the system resolve without a reason; a
-    possible fall takes what health alerts take plus the system resolve with reason
-    back_in_bed; every other alert (health alerts, or an item without a known type)
-    only a nurse acknowledge and a resident or caregiver cancel."""
+    """Watchdog criterion 14a, possible-fall criterion 12, staff-resolve criterion 3:
+    device problems take only an ops or caregiver acknowledge and the system resolve
+    without a reason; a possible fall takes what health alerts take plus the system
+    resolve with reason back_in_bed; every other alert (health alerts, or an item
+    without a known type) only a nurse acknowledge, a resident or caregiver cancel,
+    and a nurse or doctor resolve."""
     change = (update.by_role, update.new_status)
     if is_device_problem(item):
         return change in DEVICE_PROBLEM_CHANGES and update.reason is None
@@ -964,12 +1006,21 @@ def is_follow_up_retry(item: dict[str, Any], update: StatusUpdate) -> bool:
     set by the same kind of update: an acknowledge by the same sub (and, for a device
     problem, the same role), a caregiver cancel by the same sub, a resident cancel by
     the resident. A device-problem system resolve sends no follow-up, so it never has
-    a retry; a back-in-bed resolve (possible-fall criterion 8) does, when the item
-    was resolved by the system."""
-    if update.new_status == STATUS_RESOLVED and not is_back_in_bed(update):
+    a retry here (see is_final_record_retry); a back-in-bed resolve (possible-fall
+    criterion 8) does, when the item was resolved by the system; a staff resolve
+    (staff-resolve criterion 5) does, when the item was resolved by the same sub and
+    role."""
+    if update.new_status == STATUS_RESOLVED and not (
+        is_back_in_bed(update) or is_staff_resolve(update)
+    ):
         return False
     if item.get("status") != update.new_status or "status_notified_at" in item:
         return False
+    if is_staff_resolve(update):
+        return (
+            item.get("resolved_by_role") == update.by_role
+            and item.get("resolved_by") == update.by
+        )
     if update.new_status == STATUS_RESOLVED:
         return item.get("resolved_by_role") == ROLE_SYSTEM and is_possible_fall(item)
     if update.new_status == STATUS_ACKNOWLEDGED:
@@ -980,6 +1031,21 @@ def is_follow_up_retry(item: dict[str, Any], update: StatusUpdate) -> bool:
     if item.get("cancelled_by_role") != update.by_role:
         return False
     return update.by_role == ROLE_RESIDENT or item.get("cancelled_by") == update.by
+
+
+def is_final_record_retry(item: dict[str, Any], update: StatusUpdate) -> bool:
+    """Staff-resolve criterion 8 for a device-problem system resolve, which has no
+    status_notified_at to mark it done: a redelivery that finds the item already
+    resolved by the system (e.g. after the final record's PutObject failed) writes
+    the final record again (an overwrite of the same key), and still ends not_open."""
+    return (
+        update.by_role == ROLE_SYSTEM
+        and update.new_status == STATUS_RESOLVED
+        and update.reason is None
+        and is_device_problem(item)
+        and item.get("status") == STATUS_RESOLVED
+        and item.get("resolved_by_role") == ROLE_SYSTEM
+    )
 
 
 def is_changeable(item: dict[str, Any], update: StatusUpdate) -> bool:
@@ -1108,7 +1174,9 @@ def apply_status(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any] |
         condition = "#status IN (:open, :acknowledged)"
         values[":acknowledged"] = {"S": STATUS_ACKNOWLEDGED}
     elif update.new_status == STATUS_RESOLVED:
-        # Watchdog criterion 11: keeps acknowledged_at / _by / _by_role if present.
+        # Watchdog criterion 11: keeps acknowledged_at / _by / _by_role and ack_note
+        # if present. A staff resolve (staff-resolve criterion 4) also sets
+        # resolved_by (the sub) and resolve_note; a system resolve has neither.
         sets = [
             "#status = :new",
             "resolved_at = :at",
@@ -1117,7 +1185,16 @@ def apply_status(update: StatusUpdate, item: dict[str, Any]) -> dict[str, Any] |
         ]
         values[":role"] = {"S": update.by_role}
         values[":expires"] = {"N": str(resolve_expires_at(update.changed_dt))}
-        expression = f"SET {', '.join(sets)} REMOVE open_pk"
+        if update.by is not None:
+            sets.append("resolved_by = :by")
+            values[":by"] = {"S": update.by}
+        if update.note is not None:
+            sets.append("resolve_note = :note")
+            values[":note"] = {"S": update.note}
+        # As for a cancel: an acknowledged alert's status_notified_at belongs to the
+        # acknowledge's follow-up and would make a failed resolve look already done on
+        # a retry (no email, no final record).
+        expression = f"SET {', '.join(sets)} REMOVE open_pk, status_notified_at"
         condition = "#status IN (:open, :acknowledged)"
         values[":acknowledged"] = {"S": STATUS_ACKNOWLEDGED}
     else:
@@ -1157,12 +1234,25 @@ def follow_up_to_nurses(update: StatusUpdate, item: dict[str, Any]) -> bool:
     """Alert-routing criterion 13: a cancel goes to the nurses if they were emailed
     about the alert (escalated_at) or had acknowledged it (acknowledged_at, which only
     an acknowledge sets and a cancel keeps); a back-in-bed resolve goes to them if they
-    were emailed (escalated_at, possible-fall criterion 8); an acknowledge never does."""
+    were emailed (escalated_at, possible-fall criterion 8); an acknowledge and a staff
+    resolve (staff-resolve criterion 6: the nurses did it) never do."""
     if update.new_status == STATUS_RESOLVED:
-        return "escalated_at" in item
+        return is_back_in_bed(update) and "escalated_at" in item
     if update.new_status != STATUS_CANCELLED:
         return False
     return "escalated_at" in item or "acknowledged_at" in item
+
+
+def _stored_note(update: StatusUpdate, item: dict[str, Any]) -> str | None:
+    """The note to email: the one stored on the item (resolve_note / ack_note), never
+    the update's own. A second resolve or acknowledge by the same sub (the shared nurse
+    account) counts as a retry, and must not email a note the record doesn't hold
+    (docs/features/staff-resolve.md, privacy). A cancel carries no note."""
+    if update.new_status == STATUS_RESOLVED:
+        return item.get("resolve_note")
+    if update.new_status == STATUS_ACKNOWLEDGED:
+        return item.get("ack_note")
+    return None
 
 
 def send_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
@@ -1181,7 +1271,7 @@ def send_follow_up(update: StatusUpdate, item: dict[str, Any]) -> None:
         changed_at=update.changed_dt,
         by_role=update.by_role,
         by_name=update.by_name,
-        note=update.note,
+        note=_stored_note(update, item),
         reason=update.reason,
     )
     if update.resident_id != UNASSIGNED:
@@ -1249,18 +1339,35 @@ def send_device_problem_follow_up(update: StatusUpdate, item: dict[str, Any]) ->
     _set_once(item, "status_notified_at", format_iso_ms(datetime.now(UTC)))
 
 
+def write_final_record(update: StatusUpdate, item: dict[str, Any]) -> None:
+    """Staff-resolve criterion 8: the resolved item as it now stands (ALL_NEW, or the
+    strongly consistent read on a retry) to the history bucket, in the same JSON
+    format and content type as the original copy, overwritten on a retry. A failure
+    raises and fails the record before any email."""
+    s3_client().put_object(
+        Bucket=os.environ["HISTORY_BUCKET"],
+        Key=final_record_key(update),
+        Body=archive_body(item),
+        ContentType=CONTENT_TYPE,
+    )
+
+
 def apply_to_target(update: StatusUpdate, item: dict[str, Any]) -> str:
     """One target: update it and send the follow-up (updated), skip it if it changed
-    meanwhile (skipped), or send the missing follow-up of a retry (updated). A
+    meanwhile (skipped), or send the missing follow-up of a retry (updated). Every
+    resolve writes the final record first (staff-resolve criterion 8). A
     device-problem system resolve sends no follow-up (watchdog criterion 11); a
-    back-in-bed resolve does (possible-fall criterion 8)."""
+    back-in-bed resolve (possible-fall criterion 8) and a staff resolve
+    (staff-resolve criterion 6) do."""
     if is_changeable(item, update):
         updated = apply_status(update, item)
         if updated is None:
             return SKIPPED
         item = updated
-    if update.new_status == STATUS_RESOLVED and not is_back_in_bed(update):
-        return UPDATED
+    if update.new_status == STATUS_RESOLVED:
+        write_final_record(update, item)
+        if not (is_back_in_bed(update) or is_staff_resolve(update)):
+            return UPDATED
     if is_device_problem(item):
         send_device_problem_follow_up(update, item)
     else:
@@ -1270,7 +1377,8 @@ def apply_to_target(update: StatusUpdate, item: dict[str, Any]) -> str:
 
 def _status_update_ids(update: StatusUpdate) -> dict[str, Any]:
     """IDs every status update log line has, plus has_note for an acknowledge
-    (alert-routing criterion 12). Never by, by_name, or note."""
+    (alert-routing criterion 12) and a staff resolve (staff-resolve criterion 7).
+    Never by, by_name, or note."""
     target = (
         {"device_id": update.device_id}
         if update.device_id is not None
@@ -1283,7 +1391,7 @@ def _status_update_ids(update: StatusUpdate) -> dict[str, Any]:
         "new_status": update.new_status,
         "by_role": update.by_role,
     }
-    if update.new_status == STATUS_ACKNOWLEDGED:
+    if update.new_status == STATUS_ACKNOWLEDGED or is_staff_resolve(update):
         ids["has_note"] = update.note is not None
     return ids
 
@@ -1328,6 +1436,8 @@ def handle_status_update(update: StatusUpdate) -> bool:
                 )
                 return True
             targets = [item] if item is not None and is_target(item, update) else []
+            if item is not None and not targets and is_final_record_retry(item, update):
+                write_final_record(update, item)
     except Exception as exc:  # noqa: BLE001 - any failure: retry only this record
         logger.error(
             LOG_MESSAGE, extra={**base, "outcome": ERROR, "error": _error_code(exc)}

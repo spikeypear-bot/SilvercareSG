@@ -81,6 +81,20 @@ a wasted step. Newest first. Review these in the diff before committing.
   rules): fixtures mirror each index's projection from `infra/dynamodb.tf` via
   `tf_projection()`, never `ALL`.
 
+## 2026-11-07
+
+- **Problem:** in `staff-resolve`, the follow-up email used the incoming message's note,
+  so a second resolve from the shared nurse account (treated as a retry) could email
+  caregivers a note the stored record doesn't hold (found by privacy-reviewer).
+  **Changed:** `.claude/skills/lambda-python/SKILL.md`: on a retry, side effects come
+  from the stored item. (Fix: `_stored_note` in alert-processor.)
+
+- **Problem:** resolving an acknowledged alert kept the acknowledge's
+  `status_notified_at`, so a retry after a failed email or S3 write saw it as done and
+  lost both (found by lambda-tester). **Changed:** `.claude/skills/lambda-python/SKILL.md`:
+  a "done" marker reused across steps is cleared when the next step starts. (Fix: the
+  resolve also REMOVEs `status_notified_at`, as the cancel did.)
+
 ## 2026-11-04
 
 - **Problem:** the `simulator-alert-scenarios` spec (written by Claude) left two timing

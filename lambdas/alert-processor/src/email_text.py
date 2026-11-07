@@ -111,6 +111,12 @@ details.test_mode is true. No readings. The back-in-bed follow-up has the subjec
 `SilverCare update: Possible fall - <resident_id> resolved` and the first line `The
 alert below was resolved at <time> SGT: the resident is back in bed.`, then the usual
 follow-up lines.
+
+Staff resolve (docs/features/staff-resolve.md, criterion 6), to the caregivers only:
+the subject `SilverCare update: <label> - <resident_id> resolved`, the first line `The
+alert below was resolved by the care centre nurse at <time> SGT.` (or `by a SilverCare
+doctor`, no names), the usual follow-up lines, then a blank line, `Closing note:`, and
+the note's lines, each quoted with `> `.
 """
 
 from __future__ import annotations
@@ -165,7 +171,10 @@ MASK_KEEP = 2
 MASK_CHAR = "*"
 UNKNOWN_SEVERITY_LABEL = "Unknown"
 CARE_CENTRE_NURSE = "the care centre nurse"
+SILVERCARE_DOCTOR = "a SilverCare doctor"
 NOTE_HEADING = "Message from the care centre:"
+# Staff resolve (docs/features/staff-resolve.md, criterion 6).
+CLOSING_NOTE_HEADING = "Closing note:"
 NOTE_QUOTE = "> "
 
 # Device problems (docs/features/watchdog.md, criteria 14 and 14a).
@@ -426,10 +435,12 @@ def follow_up_subject(alert_type: Any, resident_id: str, new_status: str) -> str
 
 
 def _changed_by(by_role: str, by_name: str | None) -> str:
-    """ "the resident", "the care centre nurse", or a caregiver's masked name plus
-    " (caregiver)"."""
+    """ "the resident", "the care centre nurse", "a SilverCare doctor", or a
+    caregiver's masked name plus " (caregiver)"."""
     if by_role == "nurse":
         return CARE_CENTRE_NURSE
+    if by_role == "doctor":
+        return SILVERCARE_DOCTOR
     if by_role == "caregiver" and by_name is not None:
         return f"{mask_name(by_name)} (caregiver)"
     return "the resident"
@@ -449,10 +460,11 @@ def follow_up_body(
 ) -> str:
     """The follow-up body (alert-routing criterion 15): who changed the alert and when
     (for a cancel of an acknowledged alert, also when the nurse acknowledged it), then
-    the alert's type, severity, resident, and time, then the nurse's note if there is
-    one (each line quoted with "> "). No reading or details; a Device line only for an
-    unassigned alert. A back-in-bed resolve (possible-fall criterion 8) says why
-    instead of who."""
+    the alert's type, severity, resident, and time, then the note if there is one
+    (each line quoted with "> "): an acknowledge's under "Message from the care
+    centre:", a staff resolve's under "Closing note:" (staff-resolve criterion 6). No
+    reading or details; a Device line only for an unassigned alert. A back-in-bed
+    resolve (possible-fall criterion 8) says why instead of who."""
     severity = item.get("severity") or DEFAULT_SEVERITY
     event_dt = _parse_ts(item.get("event_ts"))
     when = format_when(event_dt) if event_dt else "unknown time"
@@ -483,8 +495,9 @@ def follow_up_body(
     lines.append(f"When: {when}")
     if note is not None:
         # Quoted, so a note can't pass for SilverCare's own lines (e.g. a fake portal
-        # link): alert-routing criterion 15.
-        lines += ["", NOTE_HEADING, *(NOTE_QUOTE + line for line in note.split("\n"))]
+        # link): alert-routing criterion 15, staff-resolve criterion 6.
+        heading = CLOSING_NOTE_HEADING if new_status == "resolved" else NOTE_HEADING
+        lines += ["", heading, *(NOTE_QUOTE + line for line in note.split("\n"))]
     lines += [
         "",
         f"Open the SilverCare portal: {portal_url.rstrip('/')}/",

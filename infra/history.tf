@@ -191,7 +191,9 @@ data "aws_iam_policy_document" "history_bucket" {
   }
 
   # alerts/ is written by alert-processor only (docs/features/alerts-core.md, criterion
-  # 29), whatever another principal's IAM policy allows. Its own write access comes from
+  # 29), whatever another principal's IAM policy allows. It holds the alert copies and,
+  # since docs/features/staff-resolve.md, the final records with the free-text
+  # acknowledge and closing notes. Its own write access comes from
   # its IAM role (alerts.tf), not from this policy.
   statement {
     sid       = "DenyAlertWritesFromOthers"

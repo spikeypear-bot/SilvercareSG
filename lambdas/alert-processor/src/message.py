@@ -52,17 +52,21 @@ cancel, nurse acknowledge):
 
 `target` is {"device_id"} (every open or acknowledged alert from that device) or
 {"alert_id", "event_ts"} (one alert). The rules per `by_role` (docs/features/watchdog.md,
-criteria 10 and 14a, add the ops and caregiver acknowledge and the system resolve):
+criteria 10 and 14a, add the ops and caregiver acknowledge and the system resolve;
+docs/features/staff-resolve.md, criteria 1-2, the nurse and doctor resolve):
 
     resident   cancelled     device target  by null         by_name null   no note
     caregiver  cancelled     alert target   by Cognito sub  by_name 1-100  no note
     caregiver  acknowledged  alert target   by Cognito sub  by_name 1-100  no note
     nurse      acknowledged  alert target   by Cognito sub  by_name null   note optional
     ops        acknowledged  alert target   by Cognito sub  by_name null   no note
+    nurse      resolved      alert target   by Cognito sub  by_name null   note required
+    doctor     resolved      alert target   by Cognito sub  by_name null   note required
     system     resolved      alert target   by null         by_name null   no note,
                                                                            reason optional
 
-`resolved` comes only from `system` (the watchdog) and `system` only with `resolved`.
+`resolved` comes from `nurse` and `doctor` (a staff resolve, with a closing note) and
+from `system` (the watchdog); `system` and `doctor` only send `resolved`.
 A `system` update may have an optional `reason`, only "back_in_bed" (the possible-fall
 resolve, docs/features/possible-fall.md, criterion 7); a device-problem resolve has no
 `reason` key. Every other role's update must not have the key. Whether the reason fits
@@ -70,9 +74,11 @@ the alert's type is checked by alert-processor after reading the target.
 Which role may change which alert type (device problems or health alerts) depends on
 the stored alert, so alert-processor checks it after reading the target, not here.
 
-`note` (nurse acknowledge only) is absent, null, or 1-500 characters, not only
-whitespace, with no control or other non-printing characters except newline. Any other `by_role` (e.g.
-`staff`, `family`) or combination is rejected. `by_name` is a full name: it is used
+`note` on a nurse acknowledge is absent, null, or valid; on a nurse or doctor resolve
+it is required (absent or null is invalid). A valid note is 1-500 characters, not only
+whitespace, with no control or other non-printing characters except newline. Every
+other row must not have the key. Any other `by_role` (e.g. `staff`, `family`) or
+combination is rejected. `by_name` is a full name: it is used
 only to build the masked name in the follow-up email and never stored or logged; the
 note is stored on the alert and emailed to caregivers, never logged.
 
@@ -144,15 +150,21 @@ NEW_STATUSES = frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED, STATUS_RESOLVED
 ROLE_RESIDENT = "resident"
 ROLE_CAREGIVER = "caregiver"
 ROLE_NURSE = "nurse"
+ROLE_DOCTOR = "doctor"
 ROLE_OPS = "ops"
 ROLE_SYSTEM = "system"
-BY_ROLES = frozenset({ROLE_RESIDENT, ROLE_CAREGIVER, ROLE_NURSE, ROLE_OPS, ROLE_SYSTEM})
+BY_ROLES = frozenset(
+    {ROLE_RESIDENT, ROLE_CAREGIVER, ROLE_NURSE, ROLE_DOCTOR, ROLE_OPS, ROLE_SYSTEM}
+)
+# Staff who resolve health alerts with a closing note (staff-resolve criterion 1).
+STAFF_ROLES = frozenset({ROLE_NURSE, ROLE_DOCTOR})
 # The new_status values each by_role may send (alert-routing criterion 9; watchdog
-# criteria 10 and 14a).
+# criteria 10 and 14a; staff-resolve criteria 1-2).
 ROLE_STATUSES: dict[str, frozenset[str]] = {
     ROLE_RESIDENT: frozenset({STATUS_CANCELLED}),
     ROLE_CAREGIVER: frozenset({STATUS_CANCELLED, STATUS_ACKNOWLEDGED}),
-    ROLE_NURSE: frozenset({STATUS_ACKNOWLEDGED}),
+    ROLE_NURSE: frozenset({STATUS_ACKNOWLEDGED, STATUS_RESOLVED}),
+    ROLE_DOCTOR: frozenset({STATUS_RESOLVED}),
     ROLE_OPS: frozenset({STATUS_ACKNOWLEDGED}),
     ROLE_SYSTEM: frozenset({STATUS_RESOLVED}),
 }
@@ -274,8 +286,9 @@ class EscalationCheck:
 class StatusUpdate:
     """A validated status_update. Exactly one target: device_id (a resident cancel),
     or alert_id + event_ts (a caregiver cancel or acknowledge, a nurse or ops
-    acknowledge, a system resolve). by is None for the resident and the system,
-    by_name is set only for a caregiver, note only for a nurse."""
+    acknowledge, a nurse or doctor resolve, a system resolve). by is None for the
+    resident and the system, by_name is set only for a caregiver, note only for a
+    nurse acknowledge (optional) or a nurse or doctor resolve (always)."""
 
     resident_id: str
     new_status: str
@@ -605,10 +618,22 @@ def _valid_note(value: Any) -> bool:
     )
 
 
+def _check_note(body: dict) -> str | None:
+    """Alert-routing criterion 9, staff-resolve criteria 1-2: a nurse acknowledge's
+    note is optional (absent or null means no note); a nurse or doctor resolve's is
+    required; every other update must not have the key at all."""
+    by_role, new_status = body["by_role"], body["new_status"]
+    note = body.get("note")
+    if by_role in STAFF_ROLES and new_status == STATUS_RESOLVED:
+        return None if _valid_note(note) else "invalid:note"
+    if by_role == ROLE_NURSE:
+        return None if note is None or _valid_note(note) else "invalid:note"
+    return "invalid:note" if "note" in body else None
+
+
 def _check_role_rules(body: dict, target: dict[str, str]) -> str | None:
-    """Alert-routing criterion 9, watchdog criteria 10 and 14a: what each by_role may
-    send. Only a nurse's update may have a `note` key (absent or null means no note);
-    every other role's must not have the key at all."""
+    """Alert-routing criterion 9, watchdog criteria 10 and 14a, staff-resolve criteria
+    1-2: what each by_role may send."""
     by_role, new_status = body["by_role"], body["new_status"]
     by, by_name = body["by"], body["by_name"]
     if new_status not in ROLE_STATUSES[by_role]:
@@ -630,12 +655,9 @@ def _check_role_rules(body: dict, target: dict[str, str]) -> str | None:
             return "invalid:by_name"
     elif by_name is not None:
         return "invalid:by_name"
-    if by_role == ROLE_NURSE:
-        note = body.get("note")
-        if note is not None and not _valid_note(note):
-            return "invalid:note"
-    elif "note" in body:
-        return "invalid:note"
+    note_reason = _check_note(body)
+    if note_reason:
+        return note_reason
     if "reason" in body:
         # Possible-fall criterion 7: only on a system update, only back_in_bed.
         if by_role != ROLE_SYSTEM:
