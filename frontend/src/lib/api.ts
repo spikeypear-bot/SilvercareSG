@@ -17,6 +17,7 @@ import type {
   VitalsThresholds,
 } from '../types/resident'
 import type { ApiDevice, DevicesResponse } from '../types/devices'
+import type { DeviceProblem, DeviceProblemsResponse } from '../types/ops'
 import { getApiToken } from './auth'
 
 const ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,63}$/
@@ -127,6 +128,23 @@ export async function getDashboard(): Promise<ApiDashboardResponse> {
   const body = await apiGet('/dashboard')
   if (!isDashboardResponse(body)) throw new ApiError(200, 'invalid_response')
   return body
+}
+
+const DEVICE_PROBLEM_TYPES: ReadonlySet<string> = new Set(['device_offline', 'battery_low', 'not_worn'])
+
+/**
+ * `GET /ops/device-problems` (ops only): open and acknowledged device problems for every
+ * resident, newest first. The server filters out every health alert; anything that
+ * still isn't a device problem is dropped here too (display only, not access control).
+ */
+export async function getDeviceProblems(): Promise<DeviceProblem[]> {
+  const body = await apiGet('/ops/device-problems')
+  if (typeof body !== 'object' || body === null || !Array.isArray((body as { alerts?: unknown }).alerts)) {
+    throw new ApiError(200, 'invalid_response')
+  }
+  return (body as DeviceProblemsResponse).alerts.filter(
+    (a) => typeof a === 'object' && a !== null && DEVICE_PROBLEM_TYPES.has(a.alert_type),
+  )
 }
 
 /** `202` body of the alert actions: the request is queued, not yet applied. */

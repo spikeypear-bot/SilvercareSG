@@ -25,7 +25,6 @@ vi.mock('./useDashboardData', async (importOriginal) => {
   }
 })
 
-const BANNER = 'You are viewing synthetic demo data. No real resident information is shown.'
 
 beforeEach(() => {
   resetDashboardLoader()
@@ -145,12 +144,12 @@ function oneAlert(overrides: Partial<ResidentAlert> = {}): DemoDashboardData {
 // ---------------------------------------------------------------------------
 
 describe('loading, error, and layout', () => {
-  it('shows skeletons with a loading status, plus header, banner, and greeting', () => {
+  it('shows skeletons with a loading status, plus header and greeting, no demo banner', () => {
     dashboardLoader.mockReturnValue(deferred<DemoDashboardData>().promise)
     renderNurse()
     expect(screen.getByRole('status')).toHaveTextContent('Loading dashboard')
     expect(screen.getByRole('heading', { level: 1, name: 'Nurse dashboard' })).toBeInTheDocument()
-    expect(screen.getByRole('note', { name: 'Demo data' })).toHaveTextContent(BANNER)
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
     expect(screen.getByText(/^Good (morning|afternoon|evening), Test Nurse A$/)).toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Choose what the panel below shows' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
@@ -168,11 +167,11 @@ describe('loading, error, and layout', () => {
     expect(dashboardLoader).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps the demo banner visible in the error state', async () => {
+  it('shows no demo banner in the error state (it reads the API)', async () => {
     dashboardLoader.mockRejectedValue(new Error('boom'))
     renderNurse()
     await screen.findByRole('alert')
-    expect(screen.getByRole('note', { name: 'Demo data' })).toHaveTextContent(BANNER)
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
   })
 
   it('page title has no personal data', async () => {
@@ -1140,8 +1139,7 @@ describe('staff area nav', () => {
     expect(within(nav).getByRole('link', { name: 'Dashboard' })).toHaveAttribute('aria-current', 'page')
     expect(within(nav).getByRole('link', { name: 'Devices' })).toHaveAttribute('href', '/devices')
     expect(within(nav).getByRole('link', { name: 'Devices' })).not.toHaveAttribute('aria-current')
-    const banner = screen.getByRole('note', { name: 'Demo data' })
-    expect(nav.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
   })
 
   it('is shown in the loading and error states too', async () => {

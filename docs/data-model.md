@@ -106,6 +106,21 @@ resident profile, photo, and latest-readings patterns (8, 10, 11, 12 for health 
 18, 19) unless Track B later agrees otherwise. Nurses see device problems in the portal
 through pattern 9 (staff already read every alert); they get no device-problem email.
 
+**Ops view** (built 2026-11-08 as `GET /ops/device-problems`, `lambdas/api-ops/`, at the
+user's request; the `ops` group is in `infra/cognito.tf`). `ops` only (any other group
+`403`, also nurses and doctors, who use `GET /dashboard`). It returns exactly
+`{"alerts": [...]}` with the fields listed above, newest first. *(proposed, builder's
+choices, for the user to confirm)*: the route path; the base-table read for `details`
+is a BatchGetItem of only the device problems' keys (projecting `alert_type`,
+`details`, `resolved_at`, `resolved_by_role`), and an item is dropped if either the
+index or the base copy isn't a device problem, so the FilterExpression is not the only
+check; `details` keeps only each type's documented keys; a caregiver name that fails to
+load is `null`; throttled to one load per 20 s (burst 2), because 40 offline devices
+would read about 20 RCU of the alerts base table's 3. Not built: pattern 12 for one
+resident (the ops view doesn't need it) and a device fleet for ops (the devices view is
+staff only, and pattern 8's names are `403` for ops). The ops acknowledge was already
+built in `lambdas/api-alert-actions/`.
+
 | # | Who / what | Query | Table / index | Key condition | Frequency |
 |---|---|---|---|---|---|
 | 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container; `alert_cancel` always reads it uncached, docs/features/possible-fall.md). `device-health` reads no registry |
@@ -441,6 +456,10 @@ assignments, and links for the test caregiver user.
   stops before writing anything, and `--delete` keeps that item. Unassigned devices (no
   `resident_id`, e.g. the spares `scripts/seed-registry.py` writes) hold no resident's
   data, so the seed may assign them.
+- `scripts/seed-registry.py --link-caregiver <sub>` (added 2026-11-08) writes links of
+  this shape from that `sub` to `res-0001`-`res-0003`, with `linked_by = "seed"` and
+  only if absent. `seed.py` prunes them on its next run unless `<sub>` is its test
+  caregiver's (seed.py links that user to the same three residents itself).
 - Before real resident data arrives, delete the seed (`python scripts/seed.py --delete`):
   the test users' passwords are shared among the team.
 

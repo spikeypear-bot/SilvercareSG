@@ -7,6 +7,7 @@ Run on the host with your own AWS credentials (region ap-southeast-1):
     pip install -r scripts/requirements.txt
     python scripts/seed-registry.py --dry-run     # print what it would write
     python scripts/seed-registry.py               # write
+    python scripts/seed-registry.py --link-caregiver <cognito-sub>   # also link
 
 Creates:
 
@@ -19,6 +20,15 @@ Creates:
   entity_type DEVICE, device_type. wearable-000N and bedroom-000N (N = 1-3) are
   assigned to res-000N (resident_id, home_id, assigned_at, gsi1_pk, gsi1_sk); the
   rest are unassigned spares.
+- With --link-caregiver <sub> (a caregiver user's Cognito `sub`, lowercase UUID):
+  USER#<sub> / RESIDENT#res-000N for each of the three residents, exactly as
+  docs/data-model.md, "User <-> resident link": relationship "caregiver", linked_at,
+  linked_by "seed" (the seed marker, docs/data-model.md, Seed data), gsi1_pk
+  RESIDENT#res-000N, gsi1_sk USER#<sub>. The script can't check the user's Cognito
+  group: put the user in `caregiver` (the API checks the current group anyway).
+  Note: scripts/seed.py deletes, on every run, seed links to its residents that are
+  not in seed-data.json, so it removes these links unless <sub> is its test
+  caregiver's (which seed.py links to the same three residents itself).
 
 Every item is written with PutItem conditioned on attribute_not_exists(pk): an item
 that already exists is left as it is and reported as "exists". Running it twice
@@ -46,6 +56,12 @@ DEFAULT_DEVICES_FILE = (
 
 DEVICE_ID_RE = re.compile(r"^(wearable|bedroom)-[0-9]{4}\Z")
 TABLE_RE = re.compile(r"^[A-Za-z0-9_.-]{3,255}\Z")
+SUB_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+# The retired family test user's local sub: reserved, never linked (docs/data-model.md,
+# Seed data).
+RETIRED_SUB = "00000000-0000-4000-8000-000000000004"
+SEED_MARKER = "seed"
+LINK_RELATIONSHIP = "caregiver"
 
 # Obviously synthetic residents: (resident_id, display_name, home_id).
 RESIDENTS = (
@@ -159,10 +175,40 @@ def device_items(devices: list[dict[str, str]], now: datetime) -> list[dict[str,
     return items
 
 
-def build_items(devices: list[dict[str, str]], now: datetime) -> list[dict[str, Any]]:
+def valid_sub(value: str) -> bool:
+    """A Cognito `sub` (lowercase UUID), not the retired reserved one."""
+    return bool(SUB_RE.match(value)) and value != RETIRED_SUB
+
+
+def link_items(sub: str, now: datetime) -> list[dict[str, str]]:
+    """USER#<sub> / RESIDENT#<id> for each seeded resident (the link item's shape in
+    docs/data-model.md). Raises ValueError for an invalid sub."""
+    if not valid_sub(sub):
+        raise ValueError("--link-caregiver must be a Cognito sub (lowercase UUID)")
+    stamp = iso_now(now)
+    return [
+        {
+            "pk": f"USER#{sub}",
+            "sk": f"RESIDENT#{resident_id}",
+            "relationship": LINK_RELATIONSHIP,
+            "linked_at": stamp,
+            "linked_by": SEED_MARKER,
+            "gsi1_pk": f"RESIDENT#{resident_id}",
+            "gsi1_sk": f"USER#{sub}",
+        }
+        for resident_id, _, _ in RESIDENTS
+    ]
+
+
+def build_items(
+    devices: list[dict[str, str]], now: datetime, caregiver_sub: str | None = None
+) -> list[dict[str, Any]]:
     """Every item to write: residents, then thresholds, then devices in devices.json
-    order."""
-    return resident_items(now) + threshold_items(now) + device_items(devices, now)
+    order, then (with a caregiver sub) the links."""
+    items = resident_items(now) + threshold_items(now) + device_items(devices, now)
+    if caregiver_sub is not None:
+        items += link_items(caregiver_sub, now)
+    return items
 
 
 def _attribute(value: Any) -> dict[str, Any]:
@@ -249,10 +295,20 @@ def main(
         default=DEFAULT_DEVICES_FILE,
         help="device list (default: infra/devices/devices.json)",
     )
+    parser.add_argument(
+        "--link-caregiver",
+        metavar="SUB",
+        help="also link this caregiver's Cognito sub to res-0001, res-0002, res-0003",
+    )
     args = parser.parse_args(argv)
 
     if not TABLE_RE.match(args.table):
         print("error: invalid table name", file=out)
+        return 2
+    if args.link_caregiver is not None and not valid_sub(args.link_caregiver):
+        print(
+            "error: --link-caregiver must be a Cognito sub (lowercase UUID)", file=out
+        )
         return 2
     try:
         devices = load_devices(args.devices_file)
@@ -260,7 +316,7 @@ def main(
         print(f"error: {exc}", file=out)
         return 2
 
-    items = build_items(devices, now or datetime.now(UTC))
+    items = build_items(devices, now or datetime.now(UTC), args.link_caregiver)
 
     if not args.dry_run and client is None:
         import boto3  # only when run for real, never at import

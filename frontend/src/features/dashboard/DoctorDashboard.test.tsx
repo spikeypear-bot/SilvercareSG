@@ -17,7 +17,6 @@ vi.mock('./useDashboardData', async (importOriginal) => {
   }
 })
 
-const BANNER = 'You are viewing synthetic demo data. No real resident information is shown.'
 
 beforeEach(() => {
   resetDashboardLoader()
@@ -64,12 +63,12 @@ function alertFor(
 }
 
 describe('loading, error, and layout', () => {
-  it('shows skeletons with a loading status, plus header, banner, and greeting', () => {
+  it('shows skeletons with a loading status, plus header and greeting, no demo banner', () => {
     dashboardLoader.mockReturnValue(deferred<DashboardData>().promise)
     renderDoctor()
     expect(screen.getByRole('status')).toHaveTextContent('Loading dashboard')
     expect(screen.getByRole('heading', { level: 1, name: 'Doctor dashboard' })).toBeInTheDocument()
-    expect(screen.getByRole('note', { name: 'Demo data' })).toHaveTextContent(BANNER)
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
     expect(screen.getByText(/^Good (morning|afternoon|evening), Test Doctor A$/)).toBeInTheDocument()
     expect(residentCards()).toHaveLength(0)
     expect(dashboardLoader).toHaveBeenCalledWith('staff')
@@ -86,11 +85,11 @@ describe('loading, error, and layout', () => {
     expect(dashboardLoader).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps the demo banner visible in the error state', async () => {
+  it('shows no demo banner in the error state (it reads the API)', async () => {
     dashboardLoader.mockRejectedValue(new Error('boom'))
     renderDoctor()
     await screen.findByRole('alert')
-    expect(screen.getByRole('note', { name: 'Demo data' })).toHaveTextContent(BANNER)
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
   })
 
   it('page title has no personal data', async () => {

@@ -18,7 +18,6 @@ vi.mock('./useDashboardData', async (importOriginal) => {
   }
 })
 
-const BANNER = 'You are viewing synthetic demo data. No real resident information is shown.'
 
 beforeEach(() => {
   resetDashboardLoader()
@@ -86,14 +85,11 @@ describe('view by group (Users and access, criterion 10)', () => {
     ['caregiver', 'My residents'],
     ['doctor', 'Doctor dashboard'],
     ['nurse', 'Nurse dashboard'],
-  ] as const)('the demo banner is shown for a %s user in "%s" (criterion 20)', async (key, heading) => {
+  ] as const)('no demo banner for a %s user in "%s": every view reads the API', async (key, heading) => {
     renderWithAuth(<MainPage />, { user: TEST_USERS[key] })
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
-    const banner = screen.getByRole('note', { name: 'Demo data' })
-    expect(banner).toHaveTextContent('Demo data')
-    expect(banner).toHaveTextContent(BANNER)
-    expect(banner.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
     await screen.findAllByText(/Test Resident/)
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
   })
 })
 
