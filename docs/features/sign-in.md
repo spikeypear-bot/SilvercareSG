@@ -22,13 +22,38 @@ screen. Only nurses acknowledge, shown as "the care centre nurse" (a shared acco
 caregivers cancel. Warnings escalate after 5 minutes; critical alerts and alerts from
 unassigned devices go to the care centre nurse at once.
 
+**Changed 2026-11-05 (user's decisions):**
+
+- **Who acknowledges what:** nurses acknowledge **health alerts** only. **Device
+  problems** (`device_offline`, `battery_low`, `not_worn`) are acknowledged by tech
+  staff and by the resident's caregivers. Caregivers still cancel health alerts (main's
+  rule; the Cancel button is Track B's). Tech staff are the `ops` group in
+  `docs/data-model.md`. That group doesn't exist in Cognito yet (Track B creates it), so
+  the portal has no tech-staff view or button yet.
+- **Alert type names** match the backend: `battery_low` (was `low_battery`) and
+  `not_worn` (was `inactivity`, "Wearable not worn").
+- **Resident status** follows the rule in `docs/data-model.md` (Resident status):
+  `urgent` = an open or acknowledged critical alert, `attention` = an open or
+  acknowledged warning (including device problems) or a newest reading strictly
+  outside the resident's thresholds, `ok` = no issues (all decided). The backend
+  computes it; the UI only displays it.
+- **Staff resolve:** nurses and doctors resolve **health alerts only**, through a
+  `status_update` like acknowledge and cancel, with a **required note**; device problems
+  are resolved only by the watchdog. The portal's Resolve sends no name (the actor comes
+  from the token). Contract: `docs/data-model.md`, Track B route: resolve.
+- **Caregiver names:** a caregiver's acknowledge of a device problem shows their full
+  name ("Acknowledged by <name> (caregiver)") to everyone who can see the alert, as a
+  caregiver cancel does (decided).
+- **API token:** the portal will send the **ID token**, not the access token (see
+  API contract).
+
 ## Users and access
 
 | Group | View | Can see | Can do |
 |---|---|---|---|
-| nurse | nurse dashboard | every (demo) resident, all (demo) open and acknowledged alerts | sign in/out, set up or remove MFA, change password; acknowledge and resolve alerts (local state only until the API exists) |
+| nurse | nurse dashboard | every (demo) resident, all (demo) open and acknowledged alerts | sign in/out, set up or remove MFA, change password; acknowledge and resolve health alerts, not device problems (local state only until the API exists) |
 | doctor | doctor dashboard | every (demo) resident with vitals trends, a summary of the most urgent (demo) alerts | sign in/out, set up or remove MFA, change password; no acknowledge or resolve |
-| caregiver | caregiver view | only the (demo) residents linked to them | sign in/out, set up or remove MFA, change password |
+| caregiver | caregiver view | only the (demo) residents linked to them | sign in/out, set up or remove MFA, change password; acknowledge their residents' device problems (local state only until the API exists) |
 | family | no-access screen (group removed, see above) | nothing | sign out |
 
 - `doctor` and `nurse` together are what the rest of the docs call **staff**: both see
@@ -128,8 +153,11 @@ unassigned devices go to the care centre nurse at once.
 19. The UI never computes "normal/abnormal" from vitals. Each demo resident and alert
     carries its own `status` (`ok` | `attention` | `urgent`) and alert `severity`
     (`warning` | `critical`, as `docs/data-model.md` defines them since the alerting
-    features), as the API will later provide. Alert thresholds are not defined in this
-    feature.
+    features), as the API will later provide. The backend computes the resident status
+    with the rule in `docs/data-model.md` (Resident status, decided 2026-11-05):
+    `ok` = no issues; `attention` = a non-critical warning or an abnormal reading, not
+    life-threatening; `urgent` = critical, life-threatening. The demo data follows the
+    same rule, and a demo-data test checks every demo resident against it.
 20. A "Demo data" banner is visible on the main page in both views, with text (not
     only colour): "You are viewing synthetic demo data. No real resident information is
     shown."
@@ -154,7 +182,8 @@ Allowed runtime npm packages (already installed by the app scaffold): `react`,
 - Reads: none from AWS. Main page reads only `demoData.ts`. Auth reads the user's own
   Cognito attributes (`name`, `email`) and groups from the ID token.
 - Writes: Cognito only, the user's own password and MFA settings. The nurse dashboard's
-  acknowledge and resolve change only local state.
+  acknowledge and resolve, and the caregiver view's device-problem acknowledge, change
+  only local state.
 - New access patterns or tables: none. When the API exists, both staff dashboards map
   to patterns 5, 8, 9, the nurse dashboard's acknowledge and resolve to pattern 16, and
   the caregiver view to patterns 14, 10–12 in `docs/data-model.md`.
@@ -166,6 +195,20 @@ None directly. Demo data mirrors the `vitals` and `status` messages in `docs/met
 ## API contract
 
 None. This feature calls only Cognito (via Amplify). `src/lib/api.ts` is not created yet.
+
+**Which token the API gets (decided 2026-11-05):** the portal sends the Cognito **ID
+token** as `Authorization: Bearer <token>`, not the access token. `src/lib/auth.ts`
+provides it through `getApiToken()`, the only function that hands a token out (for
+that header only; never stored, logged, or put in a URL).
+
+Why: the API needs the caller's `name`, for `by_name` on a caregiver's cancel or
+device-problem acknowledge, and `updated_by_name` / `changed_by_name` on a threshold
+change (`docs/data-model.md`). Cognito puts `name` (and `email`) only in the ID token.
+The access token carries `sub` and `cognito:groups` but no profile attributes, and
+adding claims to it needs a pre-token-generation trigger on a paid Cognito tier (the
+pool is Lite). The ID token also carries `sub` and `cognito:groups`, and its `aud`
+is the app client ID, which the API Gateway JWT authorizer checks (`audience`). The
+portal already reads the groups from the ID token. Both tokens last 60 minutes.
 
 ## Screens
 
@@ -217,13 +260,16 @@ Both the nurse and doctor dashboards have:
 - Four stat tiles: Residents monitored, Open alerts (critical count shown too), Devices
   offline, Wearables low on battery (< 20 %, computed from demo `battery_pct`: this is a
   display filter, not an alert threshold).
-- Alert rows: severity badge, alert type (the backend's Fall detected, High / Low heart
-  rate, Low blood oxygen, High / Low skin temperature, plus the planned Possible fall,
-  Inactivity, Device offline, Low battery), "Open" or "Acknowledged" label (a
+- Alert rows: severity badge, alert type (the backend's names: Fall detected, High / Low
+  heart rate, Low blood oxygen, High / Low skin temperature, Possible fall, and the
+  device problems Device offline, Low battery, Wearable not worn), "Open" or "Acknowledged" label (a
   cancelled or resolved alert leaves the open list), resident name, resident ID and home ID, relative time ("12 min ago") with the
   exact time in a tooltip/`<time>`, "Acknowledged by the care centre nurse, <time>"
-  once acknowledged, with the nurse's note under it if there is one ("Message from the
-  care centre:"), and, for an open alert, its routing to the care centre nurse:
+  once a nurse acknowledged a health alert, with the nurse's note under it if there is
+  one ("Message from the care centre:"), or "Acknowledged by <name> (caregiver),
+  <time>" for a device problem a caregiver acknowledged (the name is looked up by the
+  API, like a caregiver cancel's), and, for an open alert, its routing to the care centre
+  nurse (device problems never go to the nurse, so they have none):
   - **Doctor dashboard** (and the resident page): "Sent to the care centre nurse at
     once" for a critical alert or one from an unassigned device; for a warning,
     "Escalated to the care centre nurse" once `escalated_at` is set, or before that a
@@ -250,11 +296,15 @@ Both the nurse and doctor dashboards have:
 - The stat tiles are toggle buttons that choose the panel below: Open alerts (the
   default), Devices offline, Wearables low on battery, or Residents.
 - Open alerts inbox: open and acknowledged alerts, critical pinned to the top, then
-  newest first. Each row has "Acknowledge" (open alerts; opens the optional note form
-  of `docs/features/alert-actions-ui.md`) and "Resolve" buttons, which change local
-  state; resolve shows the nurse's display name. Rows show no routing lines and no
-  countdown, only "Not yet escalated" on a warning still waiting (see the shared parts
-  above). Resolved alerts move to a collapsed "Resolved since this page opened" list.
+  newest first. Each row has "Acknowledge" (open **health** alerts; opens the optional
+  note form of `docs/features/alert-actions-ui.md`) and "Resolve" (open and acknowledged
+  **health** alerts) buttons, which change local state; resolve shows the nurse's display
+  name. Device problems have neither: tech staff or caregivers acknowledge them and the
+  watchdog resolves them (decided 2026-11-05, kept at the 2026-11-07 merge). Rows show no
+  routing lines and no countdown, only "Not yet escalated" on a warning still waiting
+  (see the shared parts above). Resolved alerts move to a collapsed "Resolved since this
+  page opened" list. With the API, a resolve needs a note (data-model.md, Track B route:
+  resolve); the portal has no resolve note box yet.
 - Devices offline panel (empty: "All devices are online.") and low-battery panel,
   lowest first (empty: "No wearables are below 20%.").
 
@@ -288,8 +338,13 @@ Both the nurse and doctor dashboards have:
   acknowledged, "Acknowledged by the care centre nurse, <time>" with the nurse's note
   if there is one (main's rule: everyone who can see the alert sees the note). Each
   alert also shows its lifecycle label and its cancel or resolve line, and an open or
-  acknowledged alert has a "Cancel alert" button with a confirmation step (local state
-  only; `docs/features/alert-actions-ui.md`). No acknowledge or resolve buttons.
+  acknowledged **health** alert has a "Cancel alert" button with a confirmation step
+  (local state only; `docs/features/alert-actions-ui.md`). Device problems have no
+  Cancel: an **open device problem** has an "Acknowledge" button instead (accessible name
+  "Acknowledge: <type>, <resident>"; decided 2026-11-05, kept at the 2026-11-07 merge).
+  It acknowledges at once in local state, shows "Acknowledged by <your name>
+  (caregiver), <time>" (the name is display only and never sent), and moves focus to
+  that resident's "Recent alerts" heading. No resolve buttons.
 - Loading: skeleton cards with "Loading your residents' information". Empty: `EmptyState` "No residents are linked to your account
   yet. Your care provider can link you." Error: as the staff dashboards.
 
@@ -333,11 +388,15 @@ demo `escalates_at` / `escalated_at`. Alert emails and escalation are backend fe
   90 days. Deleting an account doesn't break the threshold change history: it
   captures the staff member's name when it's written (`changed_by_name`,
   `updated_by_name`). Alerts store only the `sub` (docs/features/alert-cancel.md); an
-  acknowledge is always shown as "the care centre nurse", and once the account is
+  acknowledge of a health alert is always shown as "the care centre nurse" (a device
+  problem acknowledged by a caregiver shows that caregiver's name, looked up by the API
+  like a cancel's, "Former caregiver" once deleted), and once the account is
   deleted an old resolve or caregiver cancel shows "Former staff member" or "Former
   caregiver" (see Actor names in `docs/data-model.md`). Tokens: Amplify's default token storage
   (browser `localStorage`), ID/access tokens expire after 60 min, refresh after 7 days;
-  sign-out clears them and revokes the refresh token.
+  sign-out clears them and revokes the refresh token. The ID token sent to the API
+  carries the user's `name` and `email`; it goes only to the API, over HTTPS, in the
+  `Authorization` header, and the API never logs it (see API contract).
 - Must not be logged or shown: no `console.log` of tokens, emails, names, passwords,
   codes, TOTP secrets, or the nurse's note. No personal data in URLs, query strings, or page titles (page
   title is "SilverCare" plus the page name only). The TOTP secret is shown only on the

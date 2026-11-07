@@ -46,7 +46,8 @@ data "archive_file" "watchdog" {
 
 # What the function does with AWS (criterion 17): eventually consistent, paginated
 # Queries on the registry by-type index (pattern 4), the latest by-message index
-# (pattern 5), and the alerts open index (pattern 9); a BatchGetItem of wearables'
+# (pattern 5), and the alerts open index (pattern 9; only pk, sk, open_pk, alert_type,
+# device_id, never ack_note); a BatchGetItem of wearables'
 # MSG#status items in silvercare-latest (DEVICE# partitions only); SendMessage of alert
 # messages and resolves to silvercare-alerts; Publish of the mass-offline summary to
 # silvercare-ops-devices. No base-table Query, no writes to any table, no other topic.
@@ -68,11 +69,28 @@ data "aws_iam_policy_document" "watchdog" {
     resources = ["${module.latest_table.arn}/index/by-message"]
   }
 
+  # The open index also projects the dashboards' fields, including the nurse's ack_note
+  # (dynamodb.tf). The watchdog may read only what read_open_alerts asks for: it must
+  # send Select = SPECIFIC_ATTRIBUTES with a ProjectionExpression of these attributes
+  # (open_pk is the key condition). AWS's documented pattern for querying only some
+  # projected attributes of an index; a Query without a projection is denied.
   statement {
     sid       = "AlertsOpenIndex"
     effect    = "Allow"
     actions   = ["dynamodb:Query"]
     resources = ["${module.alerts_table.arn}/index/open"]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["pk", "sk", "open_pk", "alert_type", "device_id"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "dynamodb:Select"
+      values   = ["SPECIFIC_ATTRIBUTES"]
+    }
   }
 
   statement {

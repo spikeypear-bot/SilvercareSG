@@ -213,6 +213,42 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     expect(isOnOpenList(find(result, target.alert_id))).toBe(false)
   })
 
+  const openDeviceProblem = (data: DashboardData) =>
+    data.alerts.find((a) => a.status === 'open' && a.alert_type === 'battery_low') as ResidentAlert
+
+  it("the nurse's acknowledge leaves an open device problem unchanged (nurses acknowledge health alerts only)", async () => {
+    const { result, data } = await loaded()
+    const target = openDeviceProblem(data)
+    act(() => result.current.acknowledgeAlert(target.alert_id))
+    expect(find(result, target.alert_id)).toBe(target)
+  })
+
+  it('a caregiver acknowledge: open device problem -> acknowledged, with at, role, and the display name', async () => {
+    const { result, data } = await loaded()
+    const target = openDeviceProblem(data)
+    act(() => result.current.acknowledgeDeviceProblem(target.alert_id, 'Test Caregiver A'))
+    const after = find(result, target.alert_id)
+    expect(after).toEqual({
+      ...target,
+      status: 'acknowledged',
+      acknowledged_at: ACTION_TIME.toISOString(),
+      acknowledged_by_role: 'caregiver',
+      acknowledged_by: 'Test Caregiver A',
+    })
+    expect(after).not.toHaveProperty('ack_note')
+  })
+
+  it('a caregiver acknowledge leaves a health alert, or a device problem no longer open, unchanged', async () => {
+    const { result, data } = await loaded()
+    const health = firstWith(data, 'open')
+    const acked = data.alerts.find((a) => a.status === 'acknowledged' && a.alert_type === 'battery_low') as ResidentAlert
+    expect(['device_offline', 'battery_low', 'not_worn']).not.toContain(health.alert_type)
+    act(() => result.current.acknowledgeDeviceProblem(health.alert_id, 'Test Caregiver A'))
+    act(() => result.current.acknowledgeDeviceProblem(acked.alert_id, 'Test Caregiver B'))
+    expect(find(result, health.alert_id)).toBe(health)
+    expect(find(result, acked.alert_id)).toBe(acked)
+  })
+
   it('acknowledge leaves every other alert untouched (same objects)', async () => {
     const { result, data } = await loaded()
     const target = firstWith(data, 'open')
@@ -258,6 +294,19 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
     })
   })
 
+  it('resolveAlert takes the alert ID and the display name (display only, never sent)', async () => {
+    const { result } = await loaded()
+    expect(result.current.resolveAlert).toHaveLength(2)
+  })
+
+  it('resolve leaves a device problem unchanged (only the watchdog resolves those)', async () => {
+    const { result, data } = await loaded()
+    for (const target of data.alerts.filter((a) => ['device_offline', 'battery_low', 'not_worn'].includes(a.alert_type))) {
+      act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
+      expect(find(result, target.alert_id)).toBe(target)
+    }
+  })
+
   it('resolve: acknowledged -> resolved, keeping the acknowledgement and its note', async () => {
     const { result, data } = await loaded()
     const acked = firstWith(data, 'acknowledged')
@@ -267,20 +316,19 @@ describe('acknowledgeAlert and resolveAlert (local state only)', () => {
       status: 'resolved',
       ack_note: acked.ack_note,
       acknowledged_at: acked.acknowledged_at,
-      resolved_by: 'Test Nurse A',
       resolved_at: ACTION_TIME.toISOString(),
     })
   })
 
-  it('resolving twice keeps the first resolver', async () => {
+  it('resolving twice keeps the first resolve time', async () => {
     const { result, data } = await loaded()
     const target = data.alerts[0]
     act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
     const first = find(result, target.alert_id)
     vi.setSystemTime(new Date(ACTION_TIME.getTime() + 60_000))
-    act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse D'))
+    act(() => result.current.resolveAlert(target.alert_id, 'Test Nurse A'))
     expect(find(result, target.alert_id)).toBe(first)
-    expect(first.resolved_by).toBe('Test Nurse A')
+    expect(first.resolved_at).toBe(ACTION_TIME.toISOString())
   })
 
   describe('a cancelled alert ("I\'m OK")', () => {

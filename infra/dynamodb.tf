@@ -77,13 +77,31 @@ module "alerts_table" {
 
   global_secondary_indexes = [
     {
-      # Pattern 9 (all open alerts, newest first). Sparse: open_pk is removed on resolve.
-      name               = "open"
-      hash_key           = "open_pk"
-      range_key          = "sk"
-      non_key_attributes = ["alert_type", "device_id", "status", "event_ts"]
-      read_capacity      = 2
-      write_capacity     = 1
+      # Pattern 9 (all open alerts, newest first). Sparse: open_pk is removed on resolve
+      # or cancel. Projects every field of the dashboards' alert rows (docs/data-model.md,
+      # alerts Index), as an explicit list: never ALL, so details stay out of the index.
+      # The watchdog role may read only pk, sk, open_pk, alert_type, and device_id
+      # (watchdog.tf), so not ack_note or who acknowledged. Changing this list deletes
+      # and recreates the index during the apply: pattern 9 fails until it is active
+      # again, so merge such a change in Singapore daytime (docs/data-model.md).
+      name      = "open"
+      hash_key  = "open_pk"
+      range_key = "sk"
+      non_key_attributes = [
+        "alert_type",
+        "device_id",
+        "status",
+        "event_ts",
+        "severity",
+        "acknowledged_at",
+        "ack_note",
+        "acknowledged_by_role",
+        "acknowledged_by",
+        "escalated_at",
+        "notified_at",
+      ]
+      read_capacity  = 2
+      write_capacity = 1
     },
   ]
 }

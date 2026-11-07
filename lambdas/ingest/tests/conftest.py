@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -43,6 +44,29 @@ REGISTRY_TABLE = os.environ["REGISTRY_TABLE"]
 QUEUE_NAME = os.environ["ALERTS_QUEUE_NAME"]
 
 
+DYNAMODB_TF = Path(__file__).resolve().parents[3] / "infra" / "dynamodb.tf"
+
+
+def tf_projection(index_name: str) -> dict:
+    """The `Projection` of `index_name` exactly as infra/dynamodb.tf declares it (the
+    dynamodb-table module: INCLUDE with its non_key_attributes, else KEYS_ONLY), so the
+    fixture can't drift from what is deployed and reading an attribute the index
+    doesn't project fails here too."""
+    text = DYNAMODB_TF.read_text(encoding="utf-8")
+    block = re.search(
+        r'name\s*=\s*"' + re.escape(index_name) + r'"(.*?)read_capacity',
+        text,
+        re.DOTALL,
+    )
+    if block is None:
+        raise LookupError(f"index {index_name} not found in {DYNAMODB_TF}")
+    listed = re.search(r"non_key_attributes\s*=\s*\[(.*?)\]", block.group(1), re.DOTALL)
+    attributes = re.findall(r'"([^"]+)"', listed.group(1)) if listed else []
+    if not attributes:
+        return {"ProjectionType": "KEYS_ONLY"}
+    return {"ProjectionType": "INCLUDE", "NonKeyAttributes": attributes}
+
+
 def create_latest_table(client, table_name: str = TABLE_NAME) -> None:
     """silvercare-latest as in infra/dynamodb.tf (pk/sk, sparse by-message index)."""
     client.create_table(
@@ -64,10 +88,7 @@ def create_latest_table(client, table_name: str = TABLE_NAME) -> None:
                     {"AttributeName": "watch_type", "KeyType": "HASH"},
                     {"AttributeName": "pk", "KeyType": "RANGE"},
                 ],
-                "Projection": {
-                    "ProjectionType": "INCLUDE",
-                    "NonKeyAttributes": ["device_type", "latest", "latest_ts"],
-                },
+                "Projection": tf_projection("by-message"),
                 "ProvisionedThroughput": {
                     "ReadCapacityUnits": 3,
                     "WriteCapacityUnits": 4,
@@ -97,7 +118,7 @@ def create_registry_table(client, table_name: str = REGISTRY_TABLE) -> None:
                     {"AttributeName": "entity_type", "KeyType": "HASH"},
                     {"AttributeName": "pk", "KeyType": "RANGE"},
                 ],
-                "Projection": {"ProjectionType": "ALL"},
+                "Projection": tf_projection("by-type"),
                 "ProvisionedThroughput": {
                     "ReadCapacityUnits": 1,
                     "WriteCapacityUnits": 1,
@@ -109,7 +130,7 @@ def create_registry_table(client, table_name: str = REGISTRY_TABLE) -> None:
                     {"AttributeName": "gsi1_pk", "KeyType": "HASH"},
                     {"AttributeName": "gsi1_sk", "KeyType": "RANGE"},
                 ],
-                "Projection": {"ProjectionType": "ALL"},
+                "Projection": tf_projection("by-resident"),
                 "ProvisionedThroughput": {
                     "ReadCapacityUnits": 1,
                     "WriteCapacityUnits": 1,

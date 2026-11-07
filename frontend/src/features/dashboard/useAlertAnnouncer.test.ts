@@ -32,7 +32,7 @@ function setup(initial: ResidentAlert[]) {
 describe('describeAlert', () => {
   it('reads "<type label>, <resident name>"', () => {
     expect(describeAlert(alert('a1'), residentsById)).toBe('Fall detected, Test Resident C')
-    expect(describeAlert(alert('a2', { alert_type: 'low_battery', resident_id: 'res-0013' }), residentsById)).toBe(
+    expect(describeAlert(alert('a2', { alert_type: 'battery_low', resident_id: 'res-0013' }), residentsById)).toBe(
       'Low battery, Test Resident M',
     )
   })
@@ -58,9 +58,9 @@ describe('useAlertAnnouncer', () => {
 
   it('announces a single new non-critical alert', () => {
     const { result, rerender } = setup(data.alerts)
-    const fresh = alert('alert-test-new', { alert_type: 'inactivity', severity: 'warning', resident_id: 'res-0002' })
+    const fresh = alert('alert-test-new', { alert_type: 'not_worn', severity: 'warning', resident_id: 'res-0002' })
     rerender({ alerts: [fresh, ...data.alerts] })
-    expect(msg(result)).toBe('New alert: Inactivity, Test Resident B.')
+    expect(msg(result)).toBe('New alert: Wearable not worn, Test Resident B.')
   })
 
   it('summarises several new alerts with the critical count', () => {
@@ -68,8 +68,8 @@ describe('useAlertAnnouncer', () => {
     rerender({
       alerts: [
         alert('n1'),
-        alert('n2', { severity: 'warning', alert_type: 'inactivity' }),
-        alert('n3', { severity: 'warning', alert_type: 'low_battery' }),
+        alert('n2', { severity: 'warning', alert_type: 'not_worn' }),
+        alert('n3', { severity: 'warning', alert_type: 'battery_low' }),
       ],
     })
     expect(msg(result)).toBe('3 new alerts, 1 critical.')
@@ -107,12 +107,12 @@ describe('useAlertAnnouncer', () => {
     rerender({
       alerts: [
         alert('n1', { status: 'cancelled', cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' }),
-        alert('n2', { severity: 'warning', alert_type: 'inactivity', resident_id: 'res-0002' }),
+        alert('n2', { severity: 'warning', alert_type: 'not_worn', resident_id: 'res-0002' }),
         alert('n3', { status: 'resolved', resolved_by: 'Test Nurse A', resolved_at: NOW.toISOString() }),
       ],
     })
     // One open alert left: the single-alert message, not "3 new alerts".
-    expect(msg(result)).toBe('New alert: Inactivity, Test Resident B.')
+    expect(msg(result)).toBe('New alert: Wearable not worn, Test Resident B.')
   })
 
   it('does not announce a seen alert that is later cancelled', () => {

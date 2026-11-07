@@ -25,7 +25,10 @@ lambdas/<name>/tests/
   `AWS_DEFAULT_REGION=ap-southeast-1`, and the env vars the handler reads
   (table names etc.)
 - provide fixtures that start moto (`from moto import mock_aws`) and create the tables
-  and buckets the handler needs, matching the key schema in Terraform
+  and buckets the handler needs, matching the key schema in Terraform **and each
+  index's projection**: read it from `infra/dynamodb.tf` with the `tf_projection()`
+  helper the existing conftests have, never `ProjectionType: ALL`, so a handler that
+  reads an attribute the index doesn't project fails in tests too
 
 Run tests in the dev container: `make test FN=<name>` (unit) and
 `make test-integration FN=<name>` (against DynamoDB Local; see `local-dev`). `make test`

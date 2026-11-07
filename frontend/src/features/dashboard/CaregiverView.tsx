@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Activity, CircleX, Droplet, HeartPulse, Thermometer } from 'lucide-react'
+import { Activity, CircleX, Droplet, HeartPulse, Thermometer, UserCheck } from 'lucide-react'
 import { Button } from '../../components/Button'
 import { Avatar } from '../../components/Avatar'
 import { Card } from '../../components/Card'
@@ -30,7 +30,7 @@ import {
 } from './labels'
 import { MainLayout } from './MainLayout'
 import { Sparkline } from './Sparkline'
-import { isOnOpenList } from './stats'
+import { isDeviceProblem, isOnOpenList } from './stats'
 import { describeAlert, useAlertAnnouncer } from './useAlertAnnouncer'
 import { useDashboardData } from './useDashboardData'
 import { useEscalationWatcher } from './useEscalationWatcher'
@@ -40,10 +40,12 @@ const MAX_RECENT_ALERTS = 5
 /**
  * The caregiver view (`/` for the `caregiver` group): the residents linked to the account.
  * A caregiver can cancel an open or acknowledged alert, after confirming
- * (docs/features/alert-actions-ui.md); local state only until the API exists.
+ * (docs/features/alert-actions-ui.md); local state only until the API exists. Device
+ * problems have no cancel: the caregiver acknowledges an open one instead (user's
+ * decisions 2026-11-05, docs/data-model.md pattern 16).
  */
 export function CaregiverView() {
-  const { data, loading, error, retry, cancelAlert } = useDashboardData('family')
+  const { data, loading, error, retry, cancelAlert, acknowledgeDeviceProblem } = useDashboardData('family')
 
   let content: ReactNode
   if (error) {
@@ -55,7 +57,9 @@ export function CaregiverView() {
       <EmptyState title="No residents are linked to your account yet. Your care provider can link you." />
     )
   } else {
-    content = <CaregiverContent data={data} onCancel={cancelAlert} />
+    content = (
+      <CaregiverContent data={data} onCancel={cancelAlert} onAcknowledge={acknowledgeDeviceProblem} />
+    )
   }
 
   return <MainLayout title="My residents">{content}</MainLayout>
@@ -64,9 +68,12 @@ export function CaregiverView() {
 function CaregiverContent({
   data,
   onCancel,
+  onAcknowledge,
 }: {
   data: DashboardData
   onCancel: (alertId: string, by: string) => void
+  /** Acknowledges an open device problem; `by` is display only, never sent. */
+  onAcknowledge: (alertId: string, by: string) => void
 }) {
   const { user } = useAuth()
   // Display only, never sent: the API takes who cancelled from the token.
@@ -93,6 +100,10 @@ function CaregiverContent({
               onCancel={(alert) => {
                 onCancel(alert.alert_id, caregiverName)
                 announce(`Alert cancelled: ${describeAlert(alert, residentsById)}.`)
+              }}
+              onAcknowledge={(alert) => {
+                onAcknowledge(alert.alert_id, caregiverName)
+                announce(`Acknowledged: ${describeAlert(alert, residentsById)}.`)
               }}
             />
           </li>
@@ -142,10 +153,13 @@ function ResidentOverview({
   resident,
   alerts,
   onCancel,
+  onAcknowledge,
 }: {
   resident: Resident
   alerts: ResidentAlert[]
   onCancel: (alert: ResidentAlert) => void
+  /** Acknowledges one of this resident's open device problems. */
+  onAcknowledge: (alert: ResidentAlert) => void
 }) {
   const headingId = useId()
   const recentHeadingRef = useRef<HTMLHeadingElement>(null)
@@ -228,6 +242,11 @@ function ResidentOverview({
                       // The item's buttons go away; move focus somewhere stable.
                       recentHeadingRef.current?.focus()
                     }}
+                    onAcknowledge={() => {
+                      onAcknowledge(alert)
+                      // The Acknowledge button goes away, as after a cancel.
+                      recentHeadingRef.current?.focus()
+                    }}
                   />
                 ))}
               </ol>
@@ -242,18 +261,21 @@ function ResidentOverview({
 /**
  * One alert in a resident's "Recent alerts": severity, type, lifecycle, time, the lines
  * for its state, and, while it is open or acknowledged, "Cancel alert" with a
- * confirmation step (docs/features/alert-actions-ui.md, criteria 10-14).
+ * confirmation step (docs/features/alert-actions-ui.md, criteria 10-14). A device problem
+ * has no cancel; while it is open it has "Acknowledge" instead (user's decisions 2026-11-05).
  */
 function RecentAlertItem({
   alert,
   resident,
   now,
   onCancel,
+  onAcknowledge,
 }: {
   alert: ResidentAlert
   resident: Resident
   now: Date
   onCancel: () => void
+  onAcknowledge: () => void
 }) {
   const promptId = useId()
   const cancelRef = useRef<HTMLButtonElement>(null)
@@ -262,8 +284,10 @@ function RecentAlertItem({
   const returnFocusToCancel = useRef(false)
   const typeLabel = ALERT_TYPE_LABELS[alert.alert_type]
   const context = `${typeLabel}, ${resident.name}`
-  // Main's cancel rule: open or acknowledged (docs/data-model.md, Status updates).
-  const canCancel = isOnOpenList(alert)
+  // Main's cancel rule: open or acknowledged (docs/data-model.md, Status updates), health
+  // alerts only (pattern 16).
+  const canCancel = isOnOpenList(alert) && !isDeviceProblem(alert)
+  const canAcknowledge = alert.status === 'open' && isDeviceProblem(alert)
 
   useEffect(() => {
     if (confirming) {
@@ -295,6 +319,14 @@ function RecentAlertItem({
       <AcknowledgedLines alert={alert} now={now} />
       <CancelledLine alert={alert} now={now} />
       <ResolvedLine alert={alert} now={now} />
+      {canAcknowledge && (
+        <div className="pt-1">
+          <Button variant="secondary" onClick={onAcknowledge}>
+            <UserCheck className="size-5" aria-hidden="true" />
+            Acknowledge<span className="sr-only">: {context}</span>
+          </Button>
+        </div>
+      )}
       {canCancel && !confirming && (
         <div className="pt-1">
           <Button ref={cancelRef} variant="secondary" onClick={() => setConfirming(true)}>

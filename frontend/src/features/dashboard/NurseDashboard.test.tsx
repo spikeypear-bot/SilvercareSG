@@ -65,7 +65,18 @@ function acknowledgeNow(context: string) {
   fireEvent.click(ackButton(context))
 }
 const resolveButton = (context: string) => screen.getByRole('button', { name: `Resolve: ${context}` })
-const rowFor = (context: string) => resolveButton(context).closest('li') as HTMLElement
+/**
+ * The one alert row (open list or resolved list) for "<type>, <resident>", found by its
+ * type line and resident name, not by a button: device-problem rows have no buttons.
+ */
+const rowFor = (context: string) => {
+  const [type, resident] = context.split(', ')
+  const rows = within(inbox())
+    .getAllByRole('listitem')
+    .filter((li) => within(li).queryByText(type, { selector: 'p' }) !== null && (li.textContent ?? '').includes(resident))
+  if (rows.length !== 1) throw new Error(`Expected one row for "${context}", found ${rows.length}`)
+  return rows[0]
+}
 const residentCards = () => screen.queryAllByRole('article')
 
 /** Demo inbox order: critical first (newest first), then the rest newest first. */
@@ -80,7 +91,7 @@ const DEMO_INBOX_ORDER: ReadonlyArray<[string, string]> = [
   ['Inactivity', 'Test Resident B'],
   ['Low blood oxygen', 'Test Resident H'],
   ['Low blood oxygen', 'Test Resident S'],
-  ['Inactivity', 'Test Resident B'],
+  ['Wearable not worn', 'Test Resident B'],
   ['Device offline', 'Test Resident O'],
   ['Low battery', 'Test Resident F'],
   ['Device offline', 'Test Resident I'],
@@ -256,9 +267,33 @@ describe('open alerts inbox', () => {
     expect(rowFor(acked)).toHaveTextContent(/Acknowledged by the care centre nurse, 6 min ago/)
     expect(rowFor(acked)).not.toHaveTextContent(/Test Nurse/)
 
-    // 10 open + 3 acknowledged in the demo data.
-    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(10)
-    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(13)
+    // 10 open + 3 acknowledged in the demo data. Acknowledge only on the 7 open health
+    // alerts: the 3 open device problems are acknowledged by tech staff or caregivers.
+    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(7)
+    // Resolve on the 8 health alerts: device problems are resolved only by the watchdog.
+    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(8)
+  })
+
+  it('device problems have no Acknowledge and no Resolve (user decisions 2026-11-05)', async () => {
+    await renderLoaded()
+    for (const ctx of [
+      'Wearable not worn, Test Resident B',
+      'Low battery, Test Resident F',
+      'Device offline, Test Resident I',
+      'Device offline, Test Resident O',
+      'Low battery, Test Resident M',
+    ]) {
+      expect(within(rowFor(ctx)).getByText(/^(Open|Acknowledged)$/)).toBeInTheDocument()
+      expect(within(rowFor(ctx)).queryAllByRole('button')).toEqual([])
+    }
+  })
+
+  it('a device problem a caregiver acknowledged reads "Acknowledged by <name> (caregiver)", with no note', async () => {
+    await renderLoaded()
+    const o = rowFor('Device offline, Test Resident O')
+    expect(o).toHaveTextContent(/Acknowledged by Test Caregiver B \(caregiver\), 40 min ago/)
+    expect(o).not.toHaveTextContent(/care centre nurse|Message from the care centre/)
+    expect(rowFor('Low battery, Test Resident M')).toHaveTextContent(/Acknowledged by Test Caregiver A \(caregiver\)/)
   })
 
   it('a cancelled alert is not in the inbox or the counts, and has no buttons', async () => {
@@ -308,9 +343,10 @@ describe('open alerts inbox', () => {
     // Still critical: G's acknowledged High heart rate and the possible falls of L and B.
     expect(within(tile('Open alerts')).getByText('3 critical')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /: Fall detected, Test Resident (C|Q)$/ })).not.toBeInTheDocument()
-    // 8 open + 3 acknowledged left.
-    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(8)
-    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(11)
+    // 8 open + 3 acknowledged left; Acknowledge on the 5 open health alerts among them.
+    expect(screen.getAllByRole('button', { name: /^Acknowledge: / })).toHaveLength(5)
+    // Resolve on the 6 health alerts left (not on the 5 device problems).
+    expect(screen.getAllByRole('button', { name: /^Resolve: / })).toHaveLength(6)
   })
 
   it('shows "No open alerts." when there are none, and the tile reads 0', async () => {
@@ -428,10 +464,8 @@ describe('acknowledge', () => {
     const g = rowFor('High heart rate, Test Resident G')
     expect(within(g).getByText('Message from the care centre:')).toBeInTheDocument()
     expect(within(g).getByText('Synthetic note: ambulance on the way, 8 minutes.')).toHaveClass('whitespace-pre-line')
-    const o = rowFor('Device offline, Test Resident O')
-    expect(within(o).getByText('Message from the care centre:')).toBeInTheDocument()
-    expect(o).toHaveTextContent(/Synthetic note: called the caregiver\.\s+Wearable to be checked at 3 pm\./)
-    // res-0013 was acknowledged without a note.
+    // Device problems are acknowledged by a caregiver, never with a nurse's note.
+    expect(rowFor('Device offline, Test Resident O')).not.toHaveTextContent('Message from the care centre')
     expect(rowFor('Low battery, Test Resident M')).not.toHaveTextContent('Message from the care centre')
   })
 })
@@ -550,6 +584,8 @@ describe('escalation status (real clock)', () => {
     }
     expect(within(rowFor('Fall detected, Test Resident C')).getByText('Critical')).toBeInTheDocument()
     expect(inbox()).not.toHaveTextContent(/Escalated to the care centre nurse|at once/)
+    // Device problems never go to the nurse (docs/features/watchdog.md): no routing line.
+    expect(rowFor('Wearable not worn, Test Resident B')).not.toHaveTextContent(/Escalat|at once|Not yet escalated/)
     expect(announcer()).toBeEmptyDOMElement()
   })
 

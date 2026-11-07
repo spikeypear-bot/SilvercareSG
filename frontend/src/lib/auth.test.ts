@@ -223,6 +223,32 @@ describe('session', () => {
   })
 })
 
+describe('getApiToken (sign-in.md, API contract: the ID token, not the access token)', () => {
+  const token = (value: string) => ({ toString: () => value, payload: {} })
+
+  it('returns the ID token, never the access token', async () => {
+    amplify.fetchAuthSession.mockResolvedValue({
+      tokens: { idToken: token('test-id-token'), accessToken: token('test-access-token') },
+    })
+    await expect(auth.getApiToken()).resolves.toBe('test-id-token')
+  })
+
+  it('returns null without an ID token, even when an access token exists', async () => {
+    amplify.fetchAuthSession.mockResolvedValue({ tokens: { accessToken: token('test-access-token') } })
+    await expect(auth.getApiToken()).resolves.toBeNull()
+  })
+
+  it('returns null when signed out', async () => {
+    amplify.fetchAuthSession.mockResolvedValue({ tokens: undefined })
+    await expect(auth.getApiToken()).resolves.toBeNull()
+  })
+
+  it('returns null when the session cannot be read', async () => {
+    amplify.fetchAuthSession.mockRejectedValue(cognitoError('NetworkError'))
+    await expect(auth.getApiToken()).resolves.toBeNull()
+  })
+})
+
 describe('forgot password (criterion 14)', () => {
   it.each([
     'UserNotFoundException',

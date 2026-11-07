@@ -1,4 +1,5 @@
 import type {
+  AlertType,
   BedroomSensorState,
   DashboardData,
   Resident,
@@ -6,6 +7,17 @@ import type {
   WearableState,
 } from '../../types/dashboard'
 import { LOW_BATTERY_DISPLAY_PCT } from './labels'
+
+const DEVICE_PROBLEM_TYPES: ReadonlySet<AlertType> = new Set<AlertType>(['device_offline', 'battery_low', 'not_worn'])
+
+/**
+ * Device problems (docs/features/watchdog.md) are acknowledged by tech staff or the
+ * resident's caregivers, never by the nurse; health alerts (every other type) only by the
+ * nurse (user's decision 2026-11-05; docs/data-model.md, Status updates).
+ */
+export function isDeviceProblem(alert: Pick<ResidentAlert, 'alert_type'>): boolean {
+  return DEVICE_PROBLEM_TYPES.has(alert.alert_type)
+}
 
 /** Open or acknowledged: still on the open list (pattern 9). Cancel and resolve take it off. */
 export function isOnOpenList(alert: ResidentAlert): boolean {

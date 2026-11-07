@@ -18,8 +18,12 @@ import type { Resident, ResidentAlert } from '../../types/dashboard'
 import { AckNoteForm } from './AckNoteForm'
 import { ALERT_TYPE_LABELS } from './labels'
 import { ResidentLine } from './ResidentLine'
-import { isOnOpenList, sentToNurseAtOnce } from './stats'
+import { isDeviceProblem, isOnOpenList, sentToNurseAtOnce } from './stats'
 
+/**
+ * The nurse's actions, offered on health alerts only: device problems are acknowledged by
+ * tech staff or caregivers and resolved by the watchdog (user's decisions 2026-11-05).
+ */
 export interface AlertActions {
   /**
    * Acknowledges with the nurse's optional note (normalised, `undefined` for none). Called
@@ -113,7 +117,7 @@ export function AlertRow({
       {actions && isOnOpenList(alert) && canAcknowledge && noteOpen && (
         <AckNoteForm context={context} onSubmit={submitNote} onCancel={cancelNote} />
       )}
-      {actions && isOnOpenList(alert) && (
+      {actions && isOnOpenList(alert) && !isDeviceProblem(alert) && (
         <div className="flex flex-wrap gap-2 pt-1">
           {canAcknowledge && !noteOpen && (
             <Button ref={acknowledgeRef} variant="secondary" onClick={() => setNoteOpen(true)}>
@@ -165,12 +169,17 @@ export function CancelledLine({ alert, now }: { alert: ResidentAlert; now: Date 
   )
 }
 
-/** "Resolved by <name>, <time>" on a resolved alert; nothing otherwise. */
+/**
+ * "Resolved by <name>, <time>" on a resolved alert, or "Resolved, <time>" when it has no
+ * `resolved_by` (the watchdog resolved it: a device problem cleared, or a possible fall's
+ * resident is back in bed); nothing otherwise.
+ */
 export function ResolvedLine({ alert, now }: { alert: ResidentAlert; now: Date }) {
-  if (alert.status !== 'resolved' || !alert.resolved_by || !alert.resolved_at) return null
+  if (alert.status !== 'resolved' || !alert.resolved_at) return null
   return (
     <p className="text-base text-slate-700">
-      Resolved by {alert.resolved_by}, <RelativeTime iso={alert.resolved_at} now={now} />
+      {alert.resolved_by ? `Resolved by ${alert.resolved_by}, ` : 'Resolved, '}
+      <RelativeTime iso={alert.resolved_at} now={now} />
     </p>
   )
 }
@@ -186,12 +195,37 @@ export function EscalatedText({ atOnce }: { atOnce: boolean }) {
 }
 
 /**
- * "Acknowledged by the care centre nurse, <time>" and the nurse's note, if any. Display
- * only, for everyone who can see the alert: staff and the resident's caregivers
- * (docs/data-model.md, `ack_note`). Nothing when the alert was never acknowledged.
+ * Who acknowledged, by `acknowledged_by_role`: none (a nurse's acknowledge of a health
+ * alert) → "Acknowledged by the care centre nurse, <time>" and the nurse's note, if any;
+ * `caregiver` → "Acknowledged by <name> (caregiver), <time>"; `ops` → "Acknowledged by the
+ * ops team, <time>". Any other role reads "Acknowledged, <time>": never the nurse, so an
+ * acknowledge is never credited to the wrong person. Display only, for everyone who can
+ * see the alert (docs/data-model.md, Actor names and `ack_note`). Nothing when the alert
+ * was never acknowledged.
  */
 export function AcknowledgedLines({ alert, now }: { alert: ResidentAlert; now: Date }) {
   if (!alert.acknowledged_at) return null
+  const at = <RelativeTime iso={alert.acknowledged_at} now={now} />
+  const role = alert.acknowledged_by_role
+  switch (role) {
+    case undefined:
+      break
+    case 'caregiver':
+      return (
+        <p className="text-base text-slate-700">
+          Acknowledged by {alert.acknowledged_by ?? 'a caregiver'} (caregiver), {at}
+        </p>
+      )
+    case 'ops':
+      return <p className="text-base text-slate-700">Acknowledged by the ops team, {at}</p>
+    default: {
+      // A role this build doesn't know: the compiler flags a new union member here, and
+      // at run time an unexpected value from the API reads neutrally.
+      const exhaustive: never = role
+      void exhaustive
+      return <p className="text-base text-slate-700">Acknowledged, {at}</p>
+    }
+  }
   return (
     <>
       <p className="text-base text-slate-700">

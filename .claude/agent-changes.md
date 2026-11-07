@@ -3,6 +3,13 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-07
+
+- **Problem:** after merging main, the seed tests failed with `ModuleNotFoundError`
+  because main had changed `requirements-dev.txt` and the local dev image was older.
+  **Changed:** `.claude/skills/local-dev/SKILL.md` (Changing the toolbox): run
+  `make build` after a pull or merge that changes `requirements-dev.txt` or `docker/`.
+
 ## 2026-11-06
 
 - **Problem:** the demo bed data treated a possible fall as open with
@@ -29,6 +36,22 @@ a wasted step. Newest first. Review these in the diff before committing.
   a public log, and the plan role could probably read Athena query text. **Changed:**
   `.claude/skills/tf-change/SKILL.md` (Rules): confirm or create names Terraform doesn't
   create, redact stderr in workflow steps, extend `DenyDataReads` for new data services.
+
+- **Problem:** on a Windows host, `ruff` in the dev container failed with `Permission
+  denied` writing `.ruff_cache` on the mounted repo, so lint looked broken. **Changed:**
+  `.claude/skills/local-dev/SKILL.md` (Windows host): run ruff with `--no-cache`.
+
+## 2026-11-05
+
+- **Problem:** two skills told builders the frontend sends the Cognito access token to
+  the API, but the API needs the `name` claim, which only the ID token has (user's
+  correction). **Changed:** `.claude/skills/cognito-auth/SKILL.md` (API authorizer) and
+  `.claude/skills/frontend/SKILL.md` (API calls): send the ID token via `getApiToken()`.
+- **Problem:** Lambda test fixtures created every GSI with `ProjectionType: ALL`, so a
+  handler reading an attribute the real index doesn't project could never fail a test
+  (user's correction). **Changed:** `.claude/skills/lambda-test/SKILL.md` (conftest
+  rules): fixtures mirror each index's projection from `infra/dynamodb.tf` via
+  `tf_projection()`, never `ALL`.
 
 ## 2026-11-04
 

@@ -3,7 +3,15 @@
  *
  * Shapes and units follow docs/metrics.md (`vitals`, `status`) and the alerts table in
  * docs/data-model.md. `status`, `status_text`, and alert `severity` are provided here as
- * the API will later provide them; the UI never derives them from vitals.
+ * the API will later provide them; the UI never derives them from vitals. Each seed's
+ * `status` follows the backend's rule (docs/data-model.md, Resident status): `urgent`
+ * with an open or acknowledged critical alert; else `attention` with an open or
+ * acknowledged warning (device problems included) or a newest reading outside the
+ * resident's thresholds; else `ok`. demoData.test.ts checks every resident against it.
+ *
+ * Device problems (`device_offline`, `battery_low`, `not_worn`) are acknowledged by a
+ * caregiver, never by the nurse, so they carry no note; and they are never escalated to
+ * the nurse (docs/features/watchdog.md).
  */
 import type {
   AlertSeverity,
@@ -24,7 +32,7 @@ import type {
   WearableDevice,
 } from '../../types/resident'
 import type { FleetDevice } from '../../types/devices'
-import { isOnOpenList } from './stats'
+import { isDeviceProblem, isOnOpenList } from './stats'
 
 /** The demo residents linked to every caregiver account (the caregiver view). */
 export const FAMILY_LINKED_RESIDENT_IDS: readonly string[] = ['res-0002', 'res-0005']
@@ -78,20 +86,25 @@ const ok = (overrides: Partial<ResidentSeed> = {}): ResidentSeed => ({
 // One entry per resident, in resident-ID order (Test Resident A = res-0001, ...).
 const SEEDS: readonly ResidentSeed[] = [
   ok({ hr: 68, battery: 82, activity: 22 }), // A
-  ok({ status: 'attention', hr: 64, activity: 0, battery: 64, temp: 33.1 }), // B (family)
+  // B: wearable off the wrist (the not_worn alert below); urgent for its open critical
+  // possible fall.
+  ok({ status: 'urgent', hr: 64, activity: 0, battery: 64, temp: 33.1, worn: false }), // B (family)
   ok({ status: 'urgent', hr: 96, spo2: 95, activity: 3, battery: 71 }), // C
   ok({ hr: 75, spo2: 98, battery: 45, activity: 30, bedroomBattery: 9 }), // D: bedroom sensor low
   ok({ hr: 70, spo2: 97, temp: 34.0, battery: 91, activity: 26 }), // E (family)
   ok({ status: 'attention', hr: 78, battery: 15, activity: 12, bedroomLastSeenMin: 26 * 60 }), // F
   ok({ status: 'urgent', hr: 128, spo2: 94, temp: 34.6, battery: 77, activity: 5 }), // G
-  ok({ hr: 66, spo2: 91, battery: 77, activity: 9 }), // H: SpO2 just under the default 92
+  // H: an open spo2_low warning (below) and SpO2 just under the default 92, so attention.
+  ok({ status: 'attention', hr: 66, spo2: 91, battery: 77, activity: 9 }), // H: SpO2 just under the default 92
   // I: bedroom sensor offline, wearable fine.
   ok({ status: 'attention', hr: 74, battery: 69, bedroomLastSeenMin: 70 }), // I
   ok({ hr: 71, battery: 58, worn: false, charging: true, vitalsAgeMin: 35 }), // J
   ok({ hr: 80, spo2: 96, battery: 88, activity: 41 }), // K
-  // L: wearable offline just past the 15 min timeout.
-  ok({ status: 'attention', hr: 88, battery: 54, activity: 2, wearableLastSeenMin: 18, vitalsAgeMin: 18 }), // L
-  ok({ hr: 69, battery: 12, activity: 15 }), // M
+  // L: wearable offline just past the 15 min timeout; urgent for its open critical possible
+  // fall.
+  ok({ status: 'urgent', hr: 88, battery: 54, activity: 2, wearableLastSeenMin: 18, vitalsAgeMin: 18 }), // L
+  // M: an acknowledged low-battery warning (below) still counts, so attention.
+  ok({ status: 'attention', hr: 69, battery: 12, activity: 15 }), // M
   ok({ hr: 73, spo2: 99, battery: 69, activity: 20 }), // N
   // O: both devices offline.
   ok({
@@ -126,7 +139,10 @@ interface AlertSeed {
   severity: AlertSeverity
   device: 'wearable' | 'bedroom'
   minutesAgo: number
-  /** Acknowledged by the care centre nurse this many minutes ago, with an optional synthetic note. */
+  /**
+   * Acknowledged this many minutes ago: a health alert by the care centre nurse, with an
+   * optional synthetic note; a device problem by a caregiver (no note).
+   */
   acknowledged?: { minutesAgo: number; note?: string }
 }
 
@@ -147,20 +163,20 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
   { resident: 12, type: 'possible_fall', severity: 'critical', device: 'bedroom', minutesAgo: 15 },
   { resident: 17, type: 'fall', severity: 'critical', device: 'wearable', minutesAgo: 22 },
   { resident: 19, type: 'spo2_low', severity: 'warning', device: 'wearable', minutesAgo: 27 },
-  { resident: 2, type: 'inactivity', severity: 'warning', device: 'bedroom', minutesAgo: 38 },
+  { resident: 2, type: 'not_worn', severity: 'warning', device: 'wearable', minutesAgo: 38 },
   {
     resident: 15,
     type: 'device_offline',
     severity: 'warning',
     device: 'wearable',
     minutesAgo: 48,
-    acknowledged: { minutesAgo: 40, note: 'Synthetic note: called the caregiver.\nWearable to be checked at 3 pm.' },
+    acknowledged: { minutesAgo: 40 },
   },
-  { resident: 6, type: 'low_battery', severity: 'warning', device: 'wearable', minutesAgo: 55 },
+  { resident: 6, type: 'battery_low', severity: 'warning', device: 'wearable', minutesAgo: 55 },
   { resident: 9, type: 'device_offline', severity: 'warning', device: 'bedroom', minutesAgo: 70 },
   {
     resident: 13,
-    type: 'low_battery',
+    type: 'battery_low',
     severity: 'warning',
     device: 'wearable',
     minutesAgo: 125,
@@ -168,8 +184,8 @@ const ALERT_SEEDS: readonly AlertSeed[] = [
   },
   { resident: 2, type: 'possible_fall', severity: 'critical', device: 'bedroom', minutesAgo: 410 },
   // The caregiver view's demo countdown: B is linked to every caregiver, and this warning
-  // has 3:00 left on every page load. B's previous inactivity warning (38 min ago) is past
-  // the 30-minute repeat hold-back, so this is a new alert. Last, so the IDs above stay
+  // has 3:00 left on every page load. B has no earlier inactivity warning (the one 38 min
+  // ago is not_worn, another type), so this is a new alert. Last, so the IDs above stay
   // stable.
   { resident: 2, type: 'inactivity', severity: 'warning', device: 'bedroom', minutesAgo: 2 },
 ]
@@ -196,20 +212,40 @@ export const residentId = (n: number) => `res-${pad4(n)}`
  * Escalation fields as the API returns them (docs/features/alert-routing.md): a critical
  * alert has `escalated_at` at once. A warning has `escalated_at` once the 5-minute check
  * found it still open, or the computed `escalates_at` while the check is still to come,
- * and nothing if it was acknowledged within 5 minutes.
+ * and nothing if it was acknowledged within 5 minutes. Device problems never go to the
+ * nurse (docs/features/watchdog.md), so they have neither.
  */
 function escalation(
+  type: AlertType,
   eventTs: string,
   severity: AlertSeverity,
   acknowledgedAt: string | undefined,
   now: Date,
 ): Pick<ResidentAlert, 'escalates_at' | 'escalated_at'> {
+  if (isDeviceProblem({ alert_type: type })) return {}
   if (severity === 'critical') {
     return { escalated_at: new Date(Date.parse(eventTs) + DEMO_AT_ONCE_MS).toISOString() }
   }
   const at = new Date(Date.parse(eventTs) + DEMO_ESCALATION_DELAY_MS).toISOString()
   if (acknowledgedAt && acknowledgedAt <= at) return {}
   return Date.parse(at) <= now.getTime() ? { escalated_at: at } : { escalates_at: at }
+}
+
+/**
+ * The acknowledge fields as the API returns them: a health alert by the care centre nurse
+ * (no name, optional note); a device problem by a caregiver, with their name and no note
+ * (user's decision 2026-11-05: nurses don't acknowledge device problems).
+ */
+function acknowledgement(
+  type: AlertType,
+  acknowledgedAt: string,
+  note: string | undefined,
+  caregiver: string,
+): Pick<ResidentAlert, 'acknowledged_at' | 'ack_note' | 'acknowledged_by_role' | 'acknowledged_by'> {
+  if (isDeviceProblem({ alert_type: type })) {
+    return { acknowledged_at: acknowledgedAt, acknowledged_by_role: 'caregiver', acknowledged_by: caregiver }
+  }
+  return { acknowledged_at: acknowledgedAt, ...(note && { ack_note: note }) }
 }
 
 /** Builds the full demo data set with timestamps relative to `now`. */
@@ -250,6 +286,7 @@ export function createDemoData(now: Date = new Date()): DashboardData {
   const alerts: ResidentAlert[] = ALERT_SEEDS.map((seed, i): ResidentAlert => {
     const resident = residents[seed.resident - 1]
     const eventTs = minutesBefore(now, seed.minutesAgo)
+    const acknowledgedAt = seed.acknowledged && minutesBefore(now, seed.acknowledged.minutesAgo)
     return {
       alert_id: `6f1c2e0a-5b3d-5e8f-9a47-${String(i + 1).padStart(12, '0')}`,
       resident_id: resident.resident_id,
@@ -258,16 +295,9 @@ export function createDemoData(now: Date = new Date()): DashboardData {
       severity: seed.severity,
       status: seed.acknowledged ? 'acknowledged' : 'open',
       event_ts: eventTs,
-      ...(seed.acknowledged && {
-        acknowledged_at: minutesBefore(now, seed.acknowledged.minutesAgo),
-        ...(seed.acknowledged.note && { ack_note: seed.acknowledged.note }),
-      }),
-      ...escalation(
-        eventTs,
-        seed.severity,
-        seed.acknowledged && minutesBefore(now, seed.acknowledged.minutesAgo),
-        now,
-      ),
+      ...(acknowledgedAt &&
+        acknowledgement(seed.type, acknowledgedAt, seed.acknowledged?.note, DEMO_CAREGIVERS[i % DEMO_CAREGIVERS.length])),
+      ...escalation(seed.type, eventTs, seed.severity, acknowledgedAt, now),
     }
   }).sort((a, b) => b.event_ts.localeCompare(a.event_ts))
 
@@ -356,12 +386,12 @@ function withValue(t: VitalsThresholds, field: ThresholdKey, value: number): Vit
 }
 
 const HISTORY_TYPES: ReadonlyArray<{ type: AlertType; severity: AlertSeverity; device: 'wearable' | 'bedroom' }> = [
-  { type: 'low_battery', severity: 'warning', device: 'wearable' },
+  { type: 'battery_low', severity: 'warning', device: 'wearable' },
   { type: 'hr_high', severity: 'warning', device: 'wearable' },
   { type: 'possible_fall', severity: 'critical', device: 'bedroom' },
   { type: 'device_offline', severity: 'warning', device: 'bedroom' },
   { type: 'fall', severity: 'critical', device: 'wearable' },
-  { type: 'inactivity', severity: 'warning', device: 'bedroom' },
+  { type: 'not_worn', severity: 'warning', device: 'wearable' },
 ]
 
 /** Resident with no alerts at all, so the empty alert history shows (Test Resident N). */
@@ -373,12 +403,14 @@ const demoUuid = (group: string, n: number) =>
 
 /**
  * Closed alerts from the last 30 days: resolved or cancelled ones expire 30 days later
- * (docs/data-model.md Retention). Some were acknowledged first by the care centre nurse,
- * a few with a note. A few wearable alerts were cancelled by the resident's "I'm OK"
- * press (docs/features/alert-cancel.md), others by a caregiver in the portal, some after
- * the acknowledge (docs/features/alert-routing.md). A few were resolved or cancelled by
- * someone whose account has since been deleted, so the API shows "Former staff member" /
- * "Former caregiver" (Actor names).
+ * (docs/data-model.md Retention). Some were acknowledged first: health alerts by the care
+ * centre nurse, a few with a note; device problems by a caregiver, with no note. A few
+ * wearable health alerts were cancelled by the resident's "I'm OK" press
+ * (docs/features/alert-cancel.md), others by a caregiver in the portal, some after the
+ * acknowledge (docs/features/alert-routing.md). Device problems are never cancelled (no
+ * cancel exists for them). A few were resolved or cancelled by someone whose account has
+ * since been deleted, so the API shows "Former staff member" / "Former caregiver" (Actor
+ * names).
  */
 function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[] {
   if (i + 1 === NO_HISTORY_RESIDENT) return []
@@ -396,7 +428,8 @@ function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[
       severity: kind.severity,
       event_ts: minutesBefore(now, minutesAgo),
     }
-    if (kind.device === 'wearable' && (i + k) % 4 === 1) {
+    const deviceProblem = isDeviceProblem({ alert_type: kind.type })
+    if (!deviceProblem && kind.device === 'wearable' && (i + k) % 4 === 1) {
       // "I'm OK" pressed 30 s after the alert: cancelled before it escalated.
       return {
         ...base,
@@ -406,11 +439,16 @@ function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[
       }
     }
     const formerAccount = (i + k) % 7 === 5
-    const acknowledge = acknowledgedFirst && {
-      acknowledged_at: minutesBefore(now, minutesAgo - 3),
-      ...((i + k) % 2 === 0 && { ack_note: 'Synthetic note: the care centre is calling the resident.' }),
-    }
-    if ((i + k) % 5 === 3) {
+    const caregiver = formerAccount ? 'Former caregiver' : DEMO_CAREGIVERS[(i + k) % DEMO_CAREGIVERS.length]
+    const acknowledge =
+      acknowledgedFirst &&
+      acknowledgement(
+        kind.type,
+        minutesBefore(now, minutesAgo - 3),
+        (i + k) % 2 === 0 ? 'Synthetic note: the care centre is calling the resident.' : undefined,
+        caregiver,
+      )
+    if (!deviceProblem && (i + k) % 5 === 3) {
       // Cancelled by a caregiver in the portal (after the acknowledge, if there was one).
       return {
         ...base,
@@ -418,14 +456,16 @@ function historyAlerts(resident: Resident, i: number, now: Date): ResidentAlert[
         ...acknowledge,
         cancelled_at: minutesBefore(now, minutesAgo - 10),
         cancelled_by_role: 'caregiver',
-        cancelled_by: formerAccount ? 'Former caregiver' : DEMO_CAREGIVERS[(i + k) % DEMO_CAREGIVERS.length],
+        cancelled_by: caregiver,
       }
     }
     return {
       ...base,
       status: 'resolved',
       ...acknowledge,
-      resolved_by: formerAccount ? 'Former staff member' : staff,
+      // Device problems are resolved by the watchdog (`system`, no name); health alerts by
+      // staff, whose name the API looks up.
+      ...(!deviceProblem && { resolved_by: formerAccount ? 'Former staff member' : staff }),
       resolved_at: minutesBefore(now, minutesAgo - 25),
     }
   })

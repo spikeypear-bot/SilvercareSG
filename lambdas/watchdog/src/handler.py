@@ -220,11 +220,14 @@ def read_test_mode(now: datetime) -> frozenset[str]:
 
 def read_open_alerts() -> list[checks.OpenAlert]:
     """Pattern 9: every open or acknowledged device-problem and possible_fall alert
-    (other types are read but dropped)."""
+    (other types are read but dropped). The role may read only these attributes, with
+    Select = SPECIFIC_ATTRIBUTES (infra/watchdog.tf): the index also projects the
+    nurse's ack_note, which the watchdog must never read."""
     items = query_all(
         {
             "TableName": os.environ["ALERTS_TABLE"],
             "IndexName": ALERTS_INDEX,
+            "Select": "SPECIFIC_ATTRIBUTES",
             "KeyConditionExpression": "#open = :open",
             "ExpressionAttributeNames": {
                 "#open": "open_pk",

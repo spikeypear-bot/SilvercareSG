@@ -17,6 +17,7 @@ import type * as Auth from '../lib/auth'
 export const authMock = {
   configureAuth: vi.fn<typeof Auth.configureAuth>(),
   getCurrentUser: vi.fn<typeof Auth.getCurrentUser>(),
+  getApiToken: vi.fn<typeof Auth.getApiToken>(),
   signIn: vi.fn<typeof Auth.signIn>(),
   completeNewPassword: vi.fn<typeof Auth.completeNewPassword>(),
   confirmTotpCode: vi.fn<typeof Auth.confirmTotpCode>(),
@@ -34,6 +35,7 @@ export const authMock = {
 export function resetAuthMock(): void {
   Object.values(authMock).forEach((fn) => fn.mockReset())
   authMock.getCurrentUser.mockResolvedValue(null)
+  authMock.getApiToken.mockResolvedValue(null)
   authMock.signOut.mockResolvedValue(undefined)
   authMock.isTotpEnabled.mockResolvedValue(false)
 }

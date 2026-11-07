@@ -57,18 +57,26 @@ Cognito `sub`), never names or other personal data.
 
 *(proposed)* What each role sees: caregivers see the same things for the residents they
 are linked to, including raw vitals, alert `details`, the nurse's acknowledge note
-(`ack_note`), and who acknowledged, cancelled, or resolved an alert. An acknowledge is
-shown as "the care centre nurse" (a shared nurse account, so no name); the API turns
-`cancelled_by` (caregiver `sub`) / `resolved_by` (staff `sub`) into the user's name
+(`ack_note`), and who acknowledged, cancelled, or resolved an alert. A nurse's
+acknowledge of a health alert is shown as "the care centre nurse" (a shared nurse
+account, so no name); the API turns a caregiver's `acknowledged_by` on a device problem,
+`cancelled_by` (caregiver `sub`), and `resolved_by` (staff `sub`) into the user's name
 from Cognito; the `sub` itself is not returned.
 
 **Actor names:**
 
 - **Alerts** (docs/features/alert-cancel.md, alert-routing.md): `acknowledged_by` (the
-  shared nurse account's `sub`), `cancelled_by` (caregiver), and `resolved_by` (staff)
-  store only the `sub`; the user's name is never stored on the alert. The API returns
-  no acknowledger (the portal shows "the care centre nurse"), looks the canceller's and
-  resolver's names up in Cognito when it returns the alert, and never returns a `sub`.
+  shared nurse account's `sub` on a health alert; on a device problem the caregiver's
+  or ops user's `sub`, with `acknowledged_by_role`), `cancelled_by` (caregiver), and
+  `resolved_by` (staff) store only the `sub`; the user's name is never stored on the
+  alert. For a nurse's acknowledge the API returns no acknowledger (the portal shows
+  "the care centre nurse"); for a device problem it returns `acknowledged_by_role` and,
+  for a caregiver, the name (ops: "the ops team", no name; user's decisions 2026-11-05:
+  caregivers and tech staff acknowledge device problems, and the caregiver's full name
+  is shown on that acknowledge line to everyone who can see the alert, staff and the
+  resident's other caregivers, as for a caregiver cancel). It looks acknowledgers',
+  cancellers', and resolvers' names up in Cognito when it returns the alert, and never
+  returns a `sub`.
   Once that account is deleted (90 days after the user's offboarding), it returns
   "Former caregiver" or "Former staff member" instead (decided 2026-11-04). The shared
   nurse account's Cognito `name` is "Care centre nurse" (decided 2026-11-04), so a
@@ -108,14 +116,14 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
 | 8 | Staff only: nurse and doctor dashboards, *(proposed)* devices view (names for assigned devices) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
-| 9 | Staff only: nurse and doctor dashboards; backend: `watchdog` | All open alerts (and acknowledged ones, which keep `open_pk`), newest first | alerts `open` | Query `open_pk = OPEN`, descending (watchdog: eventually consistent, paginated; it uses only the three device-problem types and `possible_fall`, to keep one open alert per device and type and to find the ones to resolve) | every 30 s per open dashboard; every 5 min |
+| 9 | Staff only: nurse and doctor dashboards; backend: `watchdog` | All open alerts (and acknowledged ones, which keep `open_pk`), newest first | alerts `open` | Query `open_pk = OPEN`, descending. The index projects what the dashboards' alert rows need (`severity`, `acknowledged_at`, `ack_note`, `acknowledged_by_role` and `acknowledged_by` for who acknowledged a device problem, `escalated_at`, and `notified_at` for the computed `escalates_at`; see [Index](#index-1)), so the API needs no base-table read per alert. Watchdog: eventually consistent, paginated, and its role may read only `pk`, `sk`, `open_pk`, `alert_type`, and `device_id` through the index (IAM `dynamodb:Attributes`, so never `ack_note`); it uses only the three device-problem types and `possible_fall`, to keep one open alert per device and type and to find the ones to resolve | every 30 s per open dashboard; every 5 min |
 | 10 | Resident page: staff, or caregiver after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
 | 11 | Resident page: staff, or caregiver after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (per device: wearable `vitals`, `vitals_alert`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
 | 12 | Resident page: staff, or caregiver after 13 | This resident's alerts | alerts | Query `pk = RESIDENT#<resident_id>`, descending | per page view |
 | 13 | API, caregiver | Is this user linked to this resident? | registry | GetItem `pk = USER#<sub>`, `sk = RESIDENT#<resident_id>` | every caregiver request for a resident |
 | 14 | API, caregiver | Which residents can this user see? | registry | Query `pk = USER#<sub>`, `begins_with(sk, "RESIDENT#")` | caregiver home page |
 | 15 | *(not used yet)* backend: `alert-processor` | Who is linked to this resident (to notify) | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "USER#")` | per new alert. Not used by alerts-core: it notifies through SNS email subscriptions whose filter policy matches `resident_id`, set in Terraform variables (docs/features/alerts-core.md, criteria 21 and 24), because SNS can only email confirmed subscribers |
-| 16 | Health alerts: acknowledge `nurse` only, any resident; cancel caregiver after 13. Device problems (docs/features/watchdog.md): acknowledge `ops`, any resident, or caregiver after 13; no cancel. Resolve: staff only (docs/features/alert-routing.md; `doctor` neither acknowledges nor cancels); device problems are resolved by the `watchdog` | Acknowledge, cancel, or resolve an alert | alerts | Acknowledge and cancel: the API sends a `status_update` to the alerts queue and `alert-processor` applies it (pattern 25; see [Status updates](#status-updates)). Resolve: UpdateItem `pk`, `sk`, condition `attribute_exists(pk)`; the watchdog's resolve is a `status_update` too (`system` / `resolved`) | per action |
+| 16 | Health alerts: acknowledge `nurse` only, any resident; cancel caregiver after 13. Device problems (docs/features/watchdog.md): acknowledge `ops`, any resident, or caregiver after 13; no cancel. Resolve: `nurse` or `doctor`, any resident, **health alerts only**, with a required note (decided 2026-11-05; `doctor` neither acknowledges nor cancels); device problems are resolved only by the `watchdog` (`system`) | Acknowledge, cancel, or resolve an alert | alerts | Acknowledge, cancel, and resolve: the API sends a `status_update` to the alerts queue and `alert-processor` applies it (pattern 25; see [Status updates](#status-updates)); the API never writes the alert item. The watchdog's resolve is a `status_update` too (`system` / `resolved`) | per action |
 | 17 | Staff only, seed script | Add or edit a resident, assign a device, link a user | registry | PutItem / UpdateItem / DeleteItem | rare |
 | 18 | Resident page: staff, or caregiver after 13 | This resident's profile and thresholds | registry | BatchGetItem `RESIDENT#<resident_id>` / `PROFILE` and `THRESHOLDS#<resident_id>` / `THRESHOLDS` | per page view |
 | 19 | Resident page: staff, or caregiver after 13 | This resident's photo | S3 `silvercare-photos-<account_id>` | API returns a presigned GET URL for `photo_key`, valid 5 min | per page view |
@@ -134,12 +142,13 @@ No pattern uses `Scan`.
 
 Who may call pattern 16 is set by its row (docs/features/alert-routing.md, 2026-11-04):
 acknowledge is `nurse` only, cancel is a linked caregiver only, and resolve is open to
-doctors and nurses alike (decided 2026-11-01). That nurses resolve alerts is workflow,
-shown only in the UI (the doctor dashboard and the resident page show doctors no
-acknowledge or resolve buttons). `attribute_exists(pk)` stops a resolve for a mistyped
-or expired alert from creating an item; an acknowledge or cancel goes through
-`alert-processor`, which only updates an `open` (or, for a cancel, `acknowledged`)
-alert (pattern 25).
+doctors and nurses alike (decided 2026-11-01), for health alerts only (decided
+2026-11-05). That nurses resolve alerts is workflow, shown only in the UI (the doctor
+dashboard and the resident page show doctors no acknowledge or resolve buttons). All
+three go through `alert-processor` (decided 2026-11-05 with its owner: the resolve is no
+longer a direct UpdateItem), which only updates an `open` (or, for a cancel or resolve,
+`acknowledged`) alert (pattern 25), so a resolve for a mistyped or expired alert can't
+create an item.
 
 *(proposed)* **Devices view** (patterns 4, 5, and 8, staff only): the route returns
 exactly, per device, `device_id`, `device_type`, `online`, `last_seen` (the newest
@@ -153,6 +162,25 @@ the exact response keys. Pattern 4 doesn't project `assigned_at`, so the route c
 drop status entries older than the assignment: it relies on reassignment being one
 transaction (see [Device assignment](#device-assignment)). Adding `assigned_at` to the
 `by-type` projection would replace that index, so it's decided when the route is built.
+
+**Resident status** (decided 2026-11-05): every resident the API returns (dashboards,
+caregiver view, resident page) carries `status` and its sentence `status_text`. The
+**API computes them; the portal only displays them** and never derives them from
+readings.
+
+The rule and how the API applies it are both decided (user's decisions 2026-11-05),
+including the three details in the third column: acknowledged alerts count, device
+problems count as `attention`, and an abnormal reading is the newest `vitals` entry
+strictly outside the resident's thresholds.
+
+| `status` | Rule | How the API decides it | `status_text` |
+|---|---|---|---|
+| `urgent` | critical, life-threatening | the resident has an `open` or `acknowledged` alert with `severity = critical` (or no `severity`: falls stored before vitals alerts) | Urgent: check now |
+| `attention` | non-critical warning or abnormal reading, not life-threatening | otherwise, an `open` or `acknowledged` alert with `severity = warning` (vitals warnings **and** device problems, which are always warnings), or a newest `vitals` entry with a value strictly outside the resident's resolved thresholds ([Resident thresholds](#resident-thresholds); `null` is never abnormal) | Needs attention |
+| `ok` | no issues | neither of the above | All readings look normal |
+
+An acknowledged alert still counts: it stays on the open list until it is resolved or
+cancelled (see [Retention](#retention)). Cancelled and resolved alerts don't count.
 
 ## `silvercare-registry`
 
@@ -223,7 +251,7 @@ Every attribute and limit is optional (docs/features/vitals-alerts.md, criteria 
 only `min`, `skin_temp_c` `min` and `max`, so a reading below a `min` or above a `max`
 is outside the limits (strictly, as above). Only doctors change them (pattern 26). The API:
 
-- checks that the `cognito:groups` claim of the caller's access token includes
+- checks that the `cognito:groups` claim of the caller's ID token includes
   `doctor`, so a doctor removed from the group can still change thresholds until the
   token expires (up to 60 minutes). This is a deliberate trade-off (decided
   2026-11-01): faster revocation would need token revocation (signing the user out
@@ -506,12 +534,12 @@ gets enough write capacity for every vitals write.
 | `sk` | `ALERT#2026-10-18T03:14:07.360Z#6f1c2e0a-5b3d-5e8f-9a47-000000000001` | `ALERT#<event_ts>#<alert_id>` |
 | `alert_id` | `6f1c2e0a-5b3d-5e8f-9a47-000000000001` | UUID v5 of `"<event_ts>\|<alert_type>\|<severity>\|<device_id>"` (docs/features/vitals-alerts.md, criterion 2; items stored before vitals alerts have the older ID without `severity`): deterministic, so retries can't duplicate, and opaque, so the key doesn't reveal the type of health event |
 | `alert_type` | `fall` | health alerts: `fall`, `hr_high`, `hr_low`, `spo2_low`, `skin_temp_high`, `skin_temp_low` (docs/features/vitals-alerts.md), `possible_fall` (docs/features/possible-fall.md, raised by the watchdog); device problems: `device_offline`, `battery_low`, `not_worn` (docs/features/watchdog.md) |
-| `severity` | `critical` | `critical` (falls, device `vitals_alert`, possible falls) or `warning` (the cloud vitals check; always for device problems). Items stored before vitals alerts have none; they are all falls (critical) |
+| `severity` | `critical` | `critical` (falls, device `vitals_alert`, possible falls) or `warning` (the cloud vitals check; always for device problems). Items stored before vitals alerts have none; they are all falls (critical). Wherever `severity` is missing, it is treated as `critical`: by the nurse routing, by the resident status, and by the **API, which returns `"severity": "critical"`** for such an item (the portal requires a severity) |
 | `device_id` | `wearable-0007` | |
 | `event_ts` | `2026-10-18T03:14:07.360Z` | see below |
 | `received_at` | `2026-10-18T03:14:07.410Z` | when the IoT rule received the triggering message (from the alert message) |
 | `created_at` | `2026-10-18T03:14:07.900Z` | when `alert-processor` stored the item |
-| `status` | `open` | `open`, `acknowledged` (health alerts by a nurse; device problems by ops or a caregiver), `cancelled` (health alerts only: the wearable "I'm OK" cancel, docs/features/alert-cancel.md, or a caregiver in the portal, docs/features/alert-routing.md), `resolved` (device problems: by the watchdog when the problem cleared, docs/features/watchdog.md; possible falls: by the watchdog when the resident is back in bed, docs/features/possible-fall.md). Anything but `open` stops escalation. Only `alert-processor` changes `open` to `acknowledged`, or `open` / `acknowledged` to `cancelled` or (device problems) `resolved`, through a [status update](#status-updates) |
+| `status` | `open` | `open`, `acknowledged` (health alerts by a nurse; device problems by ops or a caregiver), `cancelled` (health alerts only: the wearable "I'm OK" cancel, docs/features/alert-cancel.md, or a caregiver in the portal, docs/features/alert-routing.md), `resolved` (health alerts: by a nurse or doctor in the portal, with a note, decided 2026-11-05; device problems: by the watchdog when the problem cleared, docs/features/watchdog.md; possible falls: also by the watchdog when the resident is back in bed, docs/features/possible-fall.md). Anything but `open` stops escalation. Only `alert-processor` changes `open` to `acknowledged`, or `open` / `acknowledged` to `cancelled` or `resolved`, through a [status update](#status-updates) |
 | `source_message_id` | `c2a1d4f0-8b6e-4f0a-a3c9-7e15d2b9f804` | for message-triggered alerts |
 | `details` | `{"confidence": 0.91, "peak_g": 3.8, "still_s": 20, "latest_vitals": {"hr_bpm": 72, "spo2_pct": 97, "ts": "2026-10-18T03:13:00.000Z"}}` | small, type-specific. Fall: `confidence`, `peak_g`, `still_s`, plus `latest_vitals` (`hr_bpm`, `spo2_pct`, `ts` of the device's newest vitals entry, values may be `null`; absent if the device has sent no vitals). Vitals warning: `metric`, `value`, `limit`, `direction`, `previous_value`, e.g. `{"metric": "hr_bpm", "value": 128, "limit": 120, "direction": "above", "previous_value": 125}`. Vitals critical: `metric`, `value`, `limit`, `direction`, `held_s` (`hr_low` `value` 0 = no pulse). Device problems (docs/features/watchdog.md, criteria 8, 8a): `device_offline` `{"last_seen": "<ts>"}` plus `"grouped": true` when the watchdog raised 5 or more in one run; `battery_low` `{"battery_pct": 15}` (integer 0-100); `not_worn` `{"since": "<ts>"}`. Possible fall (docs/features/possible-fall.md, criteria 4 and 9): `{"out_of_bed_since": "<event time of the bed → occupied: false entry>", "wearable": "not_worn" \| "no_recent_status" \| "no_wearable"}`, plus `"test_mode": true` only when the alert was allowed by test mode alone (no other fields) |
 | `notified_at` | `2026-10-18T03:14:08.300Z` | set once, after the caregiver SNS email was published (device problems too); guards against a second email on redelivery. Absent for unassigned alerts |
@@ -526,9 +554,10 @@ gets enough write capacity for every vitals write.
 | `cancelled_by_role` | `resident` | who cancelled: `resident` (the wearable button) or `caregiver` (the portal). Only on cancelled alerts |
 | `cancelled_by` | caregiver `sub` | the caregiver who cancelled; absent when the resident cancelled. The user's name (`by_name`) is never stored |
 | `status_notified_at` | `2026-11-03T02:00:06.100Z` | set once, after the follow-up email(s) for the current `status` (`acknowledged` or `cancelled`) were published, or when nobody is emailed (an unassigned acknowledge) (docs/features/alert-cancel.md, criterion 10); an item with the new `status` but without it gets its follow-up on a retry. A cancel of an acknowledged alert REMOVEs the acknowledge's value, so the cancel's follow-up is tracked on its own |
-| `resolved_by`, `resolved_at` | staff `sub`, timestamp | the `sub` is never returned (see Actor names). `resolved_at` is the resolve's `changed_at`. A watchdog resolve (device problems) has no `resolved_by` |
-| `resolved_by_role` | `system` | who resolved: `system` (the watchdog, when the device problem cleared, docs/features/watchdog.md, criterion 11, or the resident of a possible fall is back in bed, docs/features/possible-fall.md, criterion 8) |
-| `escalates_at` | `2026-10-18T03:19:08.300Z` | *(proposed)* **not stored**: the API adds it to an `open` **warning** from an assigned device that has no `escalated_at` yet, as `notified_at` + 300 s, so the portal can show a countdown to the escalation check (docs/features/escalation.md, alert-routing.md; decided 2026-11-03, delay changed 2026-11-04). Never on critical or unassigned alerts: the nurses are emailed at once and `escalated_at` is set. Approximate: the check runs about 300 s after `escalation_queued_at` |
+| `resolved_by`, `resolved_at` | staff `sub`, timestamp | set by `alert-processor` from a staff resolve's `by` and `changed_at`; the `sub` is never returned (see Actor names). A watchdog resolve has no `resolved_by` |
+| `resolved_by_role` | `nurse` | who resolved: `nurse` or `doctor` (a health alert, in the portal, decided 2026-11-05), or `system` (the watchdog, when the device problem cleared, docs/features/watchdog.md, criterion 11, or the resident of a possible fall is back in bed, docs/features/possible-fall.md, criterion 8) |
+| `resolve_note` | `Synthetic note: resident checked, false alarm.` | a staff resolve's required note (the paper trail, decided 2026-11-05): free text, 1-500 characters, newlines allowed, same rules as `ack_note`. Absent on a watchdog resolve. Never logged; not in the S3 `alerts/` copy. Who sees it and how long it is kept are open (see [Open questions](#open-questions)) |
+| `escalates_at` | `2026-10-18T03:19:08.300Z` | *(proposed)* **not stored**: the API adds it to an `open` **health-alert warning** from an assigned device that has no `escalated_at` yet, as `notified_at` + 300 s. **Never on a device problem** (`device_offline`, `battery_low`, `not_worn`): they are warnings with `notified_at` but are never escalated to the nurses (docs/features/watchdog.md), so they get no countdown. It is added so the portal can show a countdown to the escalation check (docs/features/escalation.md, alert-routing.md; decided 2026-11-03, delay changed 2026-11-04). Never on critical or unassigned alerts: the nurses are emailed at once and `escalated_at` is set. Approximate: the check runs about 300 s after `escalation_queued_at` |
 | `open_pk` | `OPEN` | present until resolved or cancelled (an acknowledged alert keeps it, so the watchdog still sees an acknowledged device problem and resolves it); removing it takes the alert out of the `open` index |
 | `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days, or `cancelled_at` + 30 days for a cancelled alert. See [Retention](#retention) |
 
@@ -662,7 +691,8 @@ third message kind on the `silvercare-alerts` queue (with alert messages and esc
 checks), sent without delay. `critical-alert` sends one for every wearable
 `alert_cancel`; the `watchdog` sends one (`system` / `resolved`) when a device problem
 clears; **Track B's API** sends one when a nurse acknowledges a health alert, a caregiver
-cancels one, or ops or a caregiver acknowledges a device problem. This is the contract
+cancels one, a nurse or doctor resolves one (decided 2026-11-05), or ops or a caregiver
+acknowledges a device problem. This is the contract
 that API uses; it needs only `sqs:SendMessage` on `silvercare-alerts` in its role, and it
 doesn't update the alert item itself (so the follow-up email rules live in one place).
 The `system` role is sent only by the watchdog, never by Track B's API.
@@ -671,7 +701,12 @@ The `system` role is sent only by the watchdog, never by Track B's API.
 before sending**:
 
 - take `by` (`sub`) and, for a caregiver, `by_name` (`name` claim) only from the
-  verified Cognito token, never from the request body; `by_name` is `null` for a nurse;
+  verified Cognito token, never from the request body; `by_name` is `null` for a nurse,
+  a doctor, and ops;
+- a staff resolve needs the caller's current group to be `nurse` or `doctor` (else
+  `403`; `caregiver`, `ops`, and `family` get `403`), any resident (no link check), and
+  a health alert: a device problem gets `409` (only the watchdog resolves those).
+  `by_role` is `nurse` if the caller is in `nurse` (also when in both), else `doctor`;
 - a nurse acknowledge needs the caller's current group to be `nurse` (else `403`); a
   caregiver cancel needs `caregiver` (else `403`) and the link to the resident
   (pattern 13, else `404`; never for `unassigned`); `doctor` and `family` get `403`;
@@ -680,18 +715,25 @@ before sending**:
   `caregiver` and the link (pattern 13). Both only for the three device-problem types
   (`device_offline`, `battery_low`, `not_worn`); a cancel or a nurse acknowledge only
   for health alerts;
-- check in this order, for every acknowledge and cancel: (1) the caller's current group
+- check in this order, for every acknowledge, cancel, and resolve: (1) the caller's current group
   (else `403`); (2) for a caregiver, the link to the resident, pattern 13 (else `404`;
   never for `unassigned`); (3) GetItem of the alert (pattern 25; missing → `404`);
-  (4) the type rule above (else `409`). For `ops`, any alert that is not a device
-  problem gets `404`, not `409`, so ops can't learn that a health alert exists;
+  (4) the type rule above (else `409`); (5) the alert's status: an acknowledge needs
+  `open`, a cancel or resolve `open` or `acknowledged` (else `409`). For `ops`, any alert
+  that is not a device problem gets `404`, not `409`, so ops can't learn that a health
+  alert exists;
 - take the note from the request body: change `\r\n` to `\n`, trim it, then check it
   with the same rules as `alert-processor` (`note` row below); if it fails, return
-  `400` without echoing the note. A note that fails in `alert-processor` instead ends
+  `400` without echoing the note. A resolve **requires** a note: absent, `null`, or
+  empty after trimming is `400`. A note that fails in `alert-processor` instead ends
   in the DLQ and the nurse never sees an error. (Emoji joined with U+200D are rejected
   too, since U+200D is a format character);
 - never log request bodies, the note, or the `name` claim (no Powertools
-  `log_event`, no body in error logs);
+  `log_event`, no body in error logs). The portal sends the **ID token**, which also
+  carries `name` and `email` (docs/features/sign-in.md, API contract), so never log the
+  `Authorization` header, `event["headers"]`, or any JWT claim except `sub` and
+  `cognito:groups`; an API Gateway access-log format uses no `$context.authorizer.claims.*`
+  field except `sub`. A route test checks the log lines for this;
 - take `resident_id`, `alert_id`, and `event_ts` from the stored alert's key (read it
   first), not from the client.
 
@@ -754,9 +796,63 @@ The watchdog's resolve (synthetic values):
 | `caregiver` | `acknowledged` | `{"alert_id", "event_ts"}` | Cognito `sub` | `name` claim, 1-100 characters | absent |
 | `nurse` | `acknowledged` | `{"alert_id", "event_ts"}` | Cognito `sub` | `null` | optional |
 | `ops` | `acknowledged` | `{"alert_id", "event_ts"}` | Cognito `sub` | `null` | absent |
+| `nurse` | `resolved` | `{"alert_id", "event_ts"}` | Cognito `sub` | `null` | **required** |
+| `doctor` | `resolved` | `{"alert_id", "event_ts"}` | Cognito `sub` | `null` | **required** |
 | `system` | `resolved` | `{"alert_id", "event_ts"}` | `null` | `null` | absent |
 
-`resolved` is valid only from `system`, and `system` only with `resolved`.
+`resolved` is valid from `nurse` and `doctor` (a staff resolve, with a note; decided
+2026-11-05) and from `system` (the watchdog, without a note); `system` only with
+`resolved`, and `doctor` only with `resolved`. A staff resolve (synthetic values):
+
+```json
+{
+  "kind": "status_update",
+  "schema_version": 1,
+  "resident_id": "res-0001",
+  "new_status": "resolved",
+  "changed_at": "2026-11-05T03:10:00.000Z",
+  "by_role": "doctor",
+  "by": "3f2b8c1e-0000-4000-8000-000000000002",
+  "by_name": null,
+  "note": "Synthetic note: resident checked, false alarm.",
+  "target": { "alert_id": "6f1c2e0a-5b3d-5e8f-9a47-000000000001", "event_ts": "2026-11-05T02:50:00.000Z" }
+}
+```
+
+**Not built yet in `alert-processor`** (it accepts `resolved` only from `system` today,
+`lambdas/alert-processor/src/message.py`); its owner's change must land before the API
+sends a staff resolve, or every one fails into `silvercare-alerts-dlq`. It must:
+
+- accept `by_role` `doctor` (with `resolved` only), and `nurse` with `resolved` as well
+  as `acknowledged`; `by` a lowercase UUID, `by_name` `null`, no `reason` key;
+- require `note` on a `nurse` / `doctor` resolve (same checks as today's acknowledge
+  note), keep it optional on a nurse acknowledge, and keep rejecting it everywhere else;
+- after reading the target, allow (`nurse` | `doctor`, `resolved`) on health alerts and
+  possible falls only (`not_allowed` on device problems);
+- apply it like the `system` resolve (`#status IN (:open, :acknowledged)`, `resolved_at`,
+  `resolved_by_role`, `expires_at`, REMOVE `open_pk`) plus `resolved_by` and
+  `resolve_note`; log `has_note`, never the note.
+
+#### Track B route: resolve
+
+*(Contract, decided 2026-11-05; it goes into `docs/features/alert-actions-ui.md` next to
+acknowledge and cancel once that spec is on this branch.)*
+
+`POST /residents/{resident_id}/alerts/{alert_id}/resolve`
+
+- Who: `nurse` or `doctor`, any resident (no link check), health alerts only.
+- Body, exactly these keys (any other key → `400`):
+  `{"event_ts": "2026-11-05T02:50:00.000Z", "note": "Synthetic note: resident checked, false alarm."}`.
+  `note` is required: normalised (`\r\n` → `\n`, trimmed), then the `note` rules above;
+  missing, `null`, empty, or invalid → `400`, without echoing the note. No actor in the
+  body: `by` is the token's `sub`, `by_name` `null`, `by_role` `nurse` or `doctor`.
+- The API reads the alert (GetItem) and takes `resident_id`, `alert_id`, `event_ts` from
+  the stored item, then sends the `status_update` above.
+- Response `202` (applied asynchronously; the next poll shows it):
+  `{"alert_id": "6f1c2e0a-5b3d-5e8f-9a47-000000000001", "requested_status": "resolved"}`.
+- Errors: `400` (bad body, unknown key, missing or invalid note, bad `event_ts`), `403`
+  (not `nurse` or `doctor`: caregivers, ops, `family`), `404` (no such alert), `409` (a
+  device problem, or the alert is not `open` or `acknowledged`).
 
 `reason` (docs/features/possible-fall.md, criterion 7) is an optional field allowed
 only on a `system` update, and only with the value `back_in_bed` (any other value, or
@@ -789,11 +885,12 @@ by `alert-processor` after reading the target (it can't be checked earlier):
 | Alert type | Allowed |
 |---|---|
 | device problems (`device_offline`, `battery_low`, `not_worn`) | `ops` or `caregiver` `acknowledged`; `system` `resolved` (no `reason`) |
-| `possible_fall` (docs/features/possible-fall.md, criterion 12) | `nurse` `acknowledged`; `resident` or `caregiver` `cancelled`; `system` `resolved` with `reason = back_in_bed` |
-| health alerts (every other type) | `nurse` `acknowledged`; `resident` or `caregiver` `cancelled` |
+| `possible_fall` (docs/features/possible-fall.md, criterion 12) | `nurse` `acknowledged`; `resident` or `caregiver` `cancelled`; `nurse` or `doctor` `resolved` (with a note); `system` `resolved` with `reason = back_in_bed` |
+| health alerts (every other type) | `nurse` `acknowledged`; `resident` or `caregiver` `cancelled`; `nurse` or `doctor` `resolved` (with a note) |
 
 Anything else (e.g. a nurse acknowledging a low battery, a caregiver cancelling one, ops
-acknowledging a fall): nothing changes, no email, outcome `not_allowed`, not a failure.
+acknowledging a fall, a doctor resolving a device problem): nothing changes, no email,
+outcome `not_allowed`, not a failure.
 
 | Field | Rules |
 |---|---|
@@ -802,10 +899,10 @@ acknowledging a fall): nothing changes, no email, outcome `not_allowed`, not a f
 | `resident_id` | `res-NNNN`, or `unassigned` |
 | `new_status` | `cancelled`, `acknowledged`, or `resolved`, per the table above |
 | `changed_at` | ISO 8601 UTC with ms and `Z`: for a resident cancel, when the IoT rule received the `alert_cancel` (`received_at`, server time, so a wrong device clock can't move the Query bound or the expiry); the API's time for a caregiver cancel or nurse acknowledge |
-| `by_role` | `resident` (wearable cancel), `caregiver`, `nurse`, or `ops` (Track B), `system` (the watchdog only). `staff`, `family`, or anything else is invalid |
-| `by` | `null` for `resident` and `system`; the caller's Cognito `sub` (a lowercase UUID) for `caregiver` / `nurse` / `ops`, from the verified token |
+| `by_role` | `resident` (wearable cancel), `caregiver`, `nurse`, `doctor` (resolve only), or `ops` (Track B), `system` (the watchdog only). `staff`, `family`, or anything else is invalid |
+| `by` | `null` for `resident` and `system`; the caller's Cognito `sub` (a lowercase UUID) for `caregiver` / `nurse` / `doctor` / `ops`, from the verified token |
 | `by_name` | only for `caregiver`: the `name` claim of the verified token, 1-100 characters, not only spaces, no control characters. Used only to build the masked name in the email; never stored, logged, or emailed in full. `null` for every other role |
-| `note` | only for `nurse`, optional: absent or `null` means no note; else a string of 1-500 characters, not only whitespace, no control or other non-printing characters (Unicode category C, e.g. bidi overrides, zero-width spaces, and the line/paragraph separators U+2028/U+2029) except newline (`\n`). Each line is emailed quoted with `> `. Stored as `ack_note`, emailed to caregivers, never logged. A cancel must not have the key |
+| `note` | a nurse **acknowledge**: optional, absent or `null` means no note. A nurse or doctor **resolve**: **required** (absent, `null`, or blank is invalid). Either way, when present a string of 1-500 characters, not only whitespace, no control or other non-printing characters (Unicode category C, e.g. bidi overrides, zero-width spaces, and the line/paragraph separators U+2028/U+2029) except newline (`\n`). An acknowledge's is stored as `ack_note`, emailed to caregivers (each line quoted with `> `); a resolve's as `resolve_note`. Never logged. A cancel, an ops or caregiver acknowledge, and a `system` resolve must not have the key |
 | `reason` | only for `system`, optional: absent (device-problem resolve) or `back_in_bed` (possible-fall resolve, docs/features/possible-fall.md, criterion 7). Any other value, `null`, or the key on another role's update is invalid |
 | `target` | `{"device_id"}` (every open or acknowledged alert from that device up to `changed_at`, plus, for a wearable, the resident's possible falls) or `{"alert_id", "event_ts"}` (one alert) |
 
@@ -825,6 +922,10 @@ acknowledging a fall): nothing changes, no email, outcome `not_allowed`, not a f
   - acknowledge: `#status = :open`; sets `status = acknowledged`, `acknowledged_at`,
     `acknowledged_by`, and `ack_note` if there is a note (plus `acknowledged_by_role`
     `ops` / `caregiver` for a device problem); keeps `open_pk` until resolved;
+  - staff resolve (`nurse` / `doctor`, health alerts): as the `system` resolve below,
+    plus `resolved_by` (`by`) and `resolve_note` (the note), with `resolved_by_role`
+    `nurse` or `doctor`. Whether it sends a follow-up email is open (see
+    [Open questions](#open-questions));
   - resolve (`system`, device problems): `#status IN (:open, :acknowledged)`; sets
     `status = resolved`, `resolved_at` (`changed_at`), `resolved_by_role = system`,
     `expires_at = changed_at + 30 days`, and REMOVEs `open_pk`. Keeps the acknowledge's
@@ -871,10 +972,43 @@ acknowledging a fall): nothing changes, no email, outcome `not_allowed`, not a f
 
 | Index | Hash | Range | Projection | Serves |
 |---|---|---|---|---|
-| `open` | `open_pk` | `sk` | INCLUDE `alert_type`, `device_id`, `status`, `event_ts` | 9 |
+| `open` | `open_pk` | `sk` | INCLUDE `alert_type`, `device_id`, `status`, `event_ts`, `severity`, `acknowledged_at`, `ack_note`, `acknowledged_by_role`, `acknowledged_by`, `escalated_at`, `notified_at` | 9 |
 
 `sk` starts with the event time, so the index sorts open alerts by time across all
 residents.
+
+The projection (changed 2026-11-05) holds the dashboards' alert-row fields
+(`ResidentAlert` in `frontend/src/types/dashboard.ts`): `alert_id` and `resident_id` come
+from the keys (`sk`, `pk`), `escalates_at` is computed from `notified_at`, and the
+resolve and cancel fields (`resolved_*`, `resolve_note`, `cancelled_*`) are not
+projected because they are never needed here: every resolve and every cancel is a
+`status_update` that `alert-processor` applies with REMOVE `open_pk` (the staff resolve
+too, since 2026-11-05: it is no longer a direct UpdateItem), so a resolved or cancelled
+alert is never in this index. `acknowledged_by_role` and `acknowledged_by` (who acknowledged a device
+problem; added 2026-11-05 in the same rebuild, user's decision) let the API tell a
+caregiver's acknowledge from a nurse's without a base-table read; `acknowledged_by` is a
+`sub` that the API turns into a name and never returns (Actor names). **Not
+projected:** the ops view's `details`, which that view reads from the base table. The
+list is explicit rather than `ALL`, so `details` and `source_message_id` stay out of
+the index.
+
+- **The watchdog can't read `ack_note` or who acknowledged:** its role may Query the index only with
+  `Select = SPECIFIC_ATTRIBUTES` and only for `pk`, `sk`, `open_pk`, `alert_type`, and
+  `device_id` (`dynamodb:Attributes` and `dynamodb:Select` conditions, AWS's documented
+  pattern for querying only some projected attributes).
+- **Changing the projection rebuilds the index.** DynamoDB can't change a GSI's
+  projection in place, so the apply deletes `open` and creates it again (the plan
+  comment shows only an update of `silvercare-alerts`). Until it is active again,
+  pattern 9 fails: the watchdog's runs fail (its error alarm may fire) and the
+  dashboards' alert list errors. The index is sparse (open and acknowledged alerts
+  only), so it fills again within minutes. Merge such a change in Singapore daytime
+  (the possible-fall check runs at night), and tell the ops subscribers the watchdog
+  error alarm may fire (user's decision 2026-11-05; no two-index route).
+- **Writes:** setting `notified_at`, `escalated_at`, or an acknowledge's
+  `acknowledged_at` / `ack_note` / `acknowledged_by(_role)` now also writes the index entry, about 2-3 more index
+  writes per alert. Each is usually under 1 KB (1 WCU); a long note in a non-Latin
+  script (up to 500 characters at 3 bytes each) is about 1.5 KB, so 2 WCU. That is a
+  few a day, within the index's 1 WCU plus burst capacity.
 
 ## S3 history
 
@@ -1122,6 +1256,12 @@ someone resolves them, and the doctor dashboard counts them in its alert summary
   `resident_id`, with no payloads, so access to a resident's data can be traced.
 
 ## Open questions
+
+- **Staff resolve note (`resolve_note`, decided 2026-11-05 as required):** who sees it
+  (staff only, or also the resident's caregivers, like `ack_note`); how long it is kept
+  (as a paper trail it may need the patient-health-record retention, but the alert item
+  expires 30 days after the resolve and the S3 `alerts/` copy is never updated); and
+  whether a staff resolve sends a follow-up email.
 
 None for the tables. Threshold defaults and vitals alert rules are set by
 docs/features/vitals-alerts.md (Open decision #2); how links are created comes from
