@@ -12,7 +12,6 @@ with the resident pages feature:
   check on warnings, for the portal's countdown
 - who edits thresholds: [Resident thresholds](#resident-thresholds) and pattern 26
 - [Threshold change history](#threshold-change-history) (pattern 27)
-- the staff devices view reading patterns 4, 5, and 8
 - recording a resident's date of death: a gap, with no field or access pattern yet
   (see [Threshold change history](#threshold-change-history))
 - the S3 history retention figures (90 / 365 days) and daily summaries (see
@@ -111,11 +110,11 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container; `alert_cancel` always reads it uncached, docs/features/possible-fall.md). `device-health` reads no registry |
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | as pattern 1 for `vitals`, assigned devices only (cached 5 min, including "no item") |
 | 3 | `telemetry`, `device-health`, `critical-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
-| 4 | backend: `watchdog` (docs/features/watchdog.md); *(proposed)* staff only: devices view | Every device, assigned or not (the watchdog keeps only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog: eventually consistent, paginated) | every 5 min; per devices-view load |
-| 5 | backend: `watchdog`; staff only: nurse and doctor dashboards, *(proposed)* devices view (`status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
+| 4 | backend: `watchdog` (docs/features/watchdog.md); staff only: devices view | Every device, assigned or not (the watchdog keeps only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog: eventually consistent, paginated) | every 5 min; per devices-view load |
+| 5 | backend: `watchdog`; staff only: nurse and doctor dashboards, devices view (`status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
-| 8 | Staff only: nurse and doctor dashboards, *(proposed)* devices view (names for assigned devices) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
+| 8 | Staff only: nurse and doctor dashboards, devices view (names for assigned devices) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
 | 9 | Staff only: nurse and doctor dashboards; backend: `watchdog` | All open alerts (and acknowledged ones, which keep `open_pk`), newest first | alerts `open` | Query `open_pk = OPEN`, descending. The index projects what the dashboards' alert rows need (`severity`, `acknowledged_at`, `ack_note`, `acknowledged_by_role` and `acknowledged_by` for who acknowledged a device problem, `escalated_at`, and `notified_at` for the computed `escalates_at`; see [Index](#index-1)), so the API needs no base-table read per alert. Watchdog: eventually consistent, paginated, and its role may read only `pk`, `sk`, `open_pk`, `alert_type`, and `device_id` through the index (IAM `dynamodb:Attributes`, so never `ack_note`); it uses only the three device-problem types and `possible_fall`, to keep one open alert per device and type and to find the ones to resolve | every 30 s per open dashboard; every 5 min |
 | 10 | Resident page: staff, or caregiver after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
 | 11 | Resident page: staff, or caregiver after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (per device: wearable `vitals`, `vitals_alert`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
@@ -150,7 +149,8 @@ longer a direct UpdateItem), which only updates an `open` (or, for a cancel or r
 `acknowledged`) alert (pattern 25), so a resolve for a mistyped or expired alert can't
 create an item.
 
-*(proposed)* **Devices view** (patterns 4, 5, and 8, staff only): the route returns
+**Devices view** (patterns 4, 5, and 8, staff only; built 2026-11-07 as `GET /devices`,
+`lambdas/api-devices/`, at the user's request): the route returns
 exactly, per device, `device_id`, `device_type`, `online`, `last_seen` (the newest
 `status` `ts`), `battery_pct`, `charging`, `fw_version`, and `assigned_to`
 (`resident_id`, `display_name`, `home_id`, or null for a spare). It looks up names only
@@ -161,7 +161,8 @@ when a resident took the wearable off, which this view doesn't need. A route tes
 the exact response keys. Pattern 4 doesn't project `assigned_at`, so the route can't
 drop status entries older than the assignment: it relies on reassignment being one
 transaction (see [Device assignment](#device-assignment)). Adding `assigned_at` to the
-`by-type` projection would replace that index, so it's decided when the route is built.
+`by-type` projection would replace that index; the first build leaves it out (open
+question for the user, 2026-11-07).
 
 **Resident status** (decided 2026-11-05): every resident the API returns (dashboards,
 caregiver view, resident page) carries `status` and its sentence `status_text`. The
@@ -398,6 +399,13 @@ anyway). An alert that only test mode allowed has `details.test_mode = true`.
 needs devices, can also read resident display names through it. This is accepted:
 names are the least sensitive field, nothing else from the profile is projected, and
 Lambdas never log names.
+
+`by-message` serves every message type to whoever may query it: IAM can't limit a role
+to one `watch_type` value (it isn't a table partition key) or to fields inside
+`latest`. So the `watchdog` and the `GET /devices` function (`api-devices`), which
+need only some types and fields, could read every resident's newest vitals, bed, and
+motion entries. This is accepted: each handler queries only its types and projects only
+its fields, and its tests check that.
 
 | Index | Hash | Range | Projection | Serves |
 |---|---|---|---|---|
@@ -1144,6 +1152,8 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   - direct S3 reads can be traced (who read which object, when): none are recorded today
   - the shared developer user and its read access are reviewed
   - raw telemetry's expiry rule exists
+  - `http://localhost:5173` is removed from the API's CORS origins (`infra/api.tf`), so
+    developers' local dev servers can no longer call the live API
 
 ## Capacity
 

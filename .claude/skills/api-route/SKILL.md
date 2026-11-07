@@ -30,7 +30,10 @@ Follow `tf-change` and `iam-policy`.
   API's execution ARN and this route.
 - CORS on the API allows only the CloudFront domain (and `http://localhost:5173` for
   local dev), never `*`.
-- Stage throttling limits set.
+- Stage throttling limits set, sized to what the API shares, not to expected traffic:
+  the account's Lambda concurrency (ingest and alert-processor use it too) and the
+  provisioned RCU of the indexes the routes read (some are shared with the watchdog).
+  Any signed-in user can invoke a route, even one that answers 403.
 
 ## Handler
 
@@ -53,6 +56,9 @@ Follow `lambda-python`, plus:
    `sub`.
 6. Errors are `{"error": {"code": "...", "message": "..."}}` with the right status code.
    No stack traces or internal details.
+7. Log `requestContext.requestId` (format-checked) on every log line, so a Lambda log
+   line, which has the caller's `sub`, can be joined to the stage's access log, which
+   has no identity.
 
 ## Frontend
 

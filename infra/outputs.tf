@@ -115,3 +115,15 @@ output "ops_topic_arn" {
   description = "ARN of the silvercare-ops SNS topic (DLQ alarm emails)."
   value       = aws_sns_topic.ops.arn
 }
+
+output "api_url" {
+  description = "Base URL of the silvercare-api HTTP API ($default stage), for the frontend's VITE_API_URL. Not sensitive: it ships in the frontend bundle."
+  value       = aws_apigatewayv2_api.api.api_endpoint
+
+  # The API's CORS origin is pinned in infra/api.tf (to avoid a dependency cycle). An
+  # output is a leaf node, so checking it here adds no cycle, and it fails the plan.
+  precondition {
+    condition     = local.frontend_cloudfront_domain == aws_cloudfront_distribution.frontend.domain_name
+    error_message = "local.frontend_cloudfront_domain in infra/api.tf is not the frontend distribution's domain, so the API's CORS would block the frontend. Set it to `terraform output -raw frontend_distribution_domain`."
+  }
+}

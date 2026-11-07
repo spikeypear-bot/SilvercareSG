@@ -5,6 +5,16 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-07
 
+- **Problem:** the API's CORS-origin guard was a `check` block, whose warning never
+  reaches the PR comment (plan stdout is discarded); the iac-reviewer caught it.
+  **Changed:** `.claude/skills/tf-change/SKILL.md`: guards that must be seen before
+  merging are preconditions (an output precondition adds no cycle), never checks.
+- **Problem:** the first API stage was throttled to expected traffic (10 rps, burst
+  20), enough to use up shared Lambda concurrency and `by-type`'s 2 RCU; and the
+  handler's logs had no request ID to join with the access log. Reviewers caught both.
+  **Changed:** `.claude/skills/api-route/SKILL.md`: size throttling to shared
+  concurrency and index RCU; new handler step 7, log `requestContext.requestId`.
+
 - **Problem:** after merging main, the seed tests failed with `ModuleNotFoundError`
   because main had changed `requirements-dev.txt` and the local dev image was older.
   **Changed:** `.claude/skills/local-dev/SKILL.md` (Changing the toolbox): run
