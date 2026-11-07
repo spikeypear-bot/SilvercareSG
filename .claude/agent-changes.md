@@ -3,8 +3,21 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-08
+
+- **Problem:** the curated-layer go-live checklist said to clean only D−1 and D before a
+  manual summaries run, but summaries also needs D−2 for `bed` and `vitals_alert`; the
+  run failed with "clean partition missing". **Changed:**
+  `.claude/skills/recap/SKILL.md` (To do → You): manual commands and checklists take
+  their inputs and prerequisites from the defining code or doc, covering every
+  precondition the job checks.
+
 ## 2026-11-07
 
+- **Problem:** the nightly-results section added a second `role="status"` to the
+  resident page, breaking a test that found the page's announcer as the only status
+  region; frontend-tester fixed the helper. **Changed:**
+  `.claude/skills/frontend/SKILL.md`: find the announcer by text or container.
 - **Problem:** frontend-tester saved raw zero-width and bidi characters into
   `ackNote.test.ts` and `ResolveNoteForm.test.tsx` instead of `\u` escapes (oxlint
   doesn't flag them). **Changed:** `.claude/agents/frontend-tester.md`: write them as

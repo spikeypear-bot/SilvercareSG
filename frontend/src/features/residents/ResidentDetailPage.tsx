@@ -24,6 +24,7 @@ import { useEscalationWatcher } from '../dashboard/useEscalationWatcher'
 import { AlertHistory } from './AlertHistory'
 import { DevicesSection } from './DevicesSection'
 import { LatestReadings } from './LatestReadings'
+import { NightlySummary } from './NightlySummary'
 import { ThresholdHistory } from './ThresholdHistory'
 import { ThresholdsSection } from './ThresholdsSection'
 
@@ -126,6 +127,9 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
       <ResidentHeader resident={detail.resident} />
       <DevicesSection wearable={detail.wearable} bedroom={detail.bedroom} now={now} />
       <LatestReadings wearable={detail.wearable} bedroom={detail.bedroom} now={now} />
+      {/* Doctor view only (a doctor + nurse user gets the nurse view): the nurse view
+          neither shows it nor calls the route. The API refuses non-doctors anyway. */}
+      {role === 'doctor' && <NightlySummary residentId={detail.resident.resident_id} />}
       <AlertHistory
         alerts={detail.alerts}
         resident={detail.resident}

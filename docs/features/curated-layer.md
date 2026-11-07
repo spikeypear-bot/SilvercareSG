@@ -91,6 +91,14 @@ summaries in this feature. Summaries hold the opaque `resident_id`, no names.
    (no values), and writes and deletes nothing.
 5. Asynchronous invocations get 2 retries and a maximum event age of 1 hour (as clean).
 
+5a. *(Added by `docs/features/nightly-results.md`, 2026-11-07.)* Summaries' own
+    invoke config has an on-success destination, `silvercare-results`, and its role
+    may invoke that function only. Every successful asynchronous summaries run (the
+    chained daily run) loads that night into the Results table; a manual synchronous
+    run doesn't, so follow it with a manual `results` run for the same date. Alarm
+    `silvercare-summaries-destination-failures` emails `silvercare-ops` if the hand-off
+    fails.
+
 ### Device → resident mapping and thresholds
 
 6. The Lambda Queries `by-type` with `entity_type = DEVICE` (eventually consistent,
