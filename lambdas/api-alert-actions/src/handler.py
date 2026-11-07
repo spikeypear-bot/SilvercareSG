@@ -1,5 +1,6 @@
-"""POST /residents/{resident_id}/alerts/{alert_id}/acknowledge and .../cancel
-(docs/data-model.md, Status updates; patterns 13, 16, 25). Behind the HTTP API's
+"""POST /residents/{resident_id}/alerts/{alert_id}/acknowledge, .../cancel, and
+.../resolve (docs/data-model.md, Status updates and Track B route: resolve; patterns 13,
+16, 25). Behind the HTTP API's
 Cognito JWT authorizer (infra/api.tf), payload 2.0. Built like GET /devices and
 GET /dashboard.
 
@@ -9,15 +10,21 @@ Because alert-processor drops an update it can't apply without telling anyone, e
 check is here, in the data model's order:
 
 1. the caller's current group (403): acknowledge `nurse`, `ops`, or `caregiver`;
-   cancel `caregiver`. `doctor` and `family` alone get 403.
-2. the path and body (400): only `event_ts` (and, for acknowledge, `note`).
+   cancel `caregiver`; resolve `nurse` or `doctor`. `family` alone gets 403 everywhere,
+   `doctor` alone on acknowledge and cancel.
+2. the path and body (400): only `event_ts` and, for acknowledge and resolve, `note`
+   (required on a resolve).
 3. for a caregiver, the link to the resident (pattern 13, 404; never `unassigned`).
+   Staff resolve any resident.
 4. GetItem of the alert, strongly consistent (404 if missing).
-5. the type rule (409; ops on a health alert 404, so ops can't learn it exists).
-6. the status: acknowledge needs `open`, cancel `open` or `acknowledged` (409).
+5. the type rule (409; ops on a health alert 404, so ops can't learn it exists; a
+   device problem can't be resolved by staff, 409).
+6. the status: acknowledge needs `open`, cancel and resolve `open` or `acknowledged`
+   (409).
 
-The actor (`by` = sub, `by_name` = the `name` claim for a caregiver) comes only from
-the token. `resident_id`, `alert_id`, and `event_ts` in the message come from the
+The actor (`by` = sub, `by_name` = the `name` claim for a caregiver, null otherwise)
+comes only from the token; a resolve's `by_role` is `nurse` if the caller is in `nurse`,
+else `doctor`. `resident_id`, `alert_id`, and `event_ts` in the message come from the
 stored alert's key.
 
 Logs: outcome, action, by_role, the opaque resident and alert IDs, a fixed refusal
@@ -48,6 +55,7 @@ LOG_MESSAGE = "alert action"
 ALLOWED_GROUPS = {
     rules.ACKNOWLEDGE: frozenset({"nurse", "ops", "caregiver"}),
     rules.CANCEL: frozenset({"caregiver"}),
+    rules.RESOLVE: frozenset({"nurse", "doctor"}),
 }
 GROUP_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9=+/_-]{1,64}\Z")
@@ -107,6 +115,8 @@ def action_of(event: Any) -> str | None:
         return rules.ACKNOWLEDGE
     if route == "POST /residents/{resident_id}/alerts/{alert_id}/cancel":
         return rules.CANCEL
+    if route == "POST /residents/{resident_id}/alerts/{alert_id}/resolve":
+        return rules.RESOLVE
     return None
 
 
@@ -263,12 +273,15 @@ def handle(event: Any, now: datetime) -> dict[str, Any]:
 
         if action == rules.ACKNOWLEDGE:
             by_role = rules.acknowledge_role(groups, alert_type, linked)
+        elif action == rules.RESOLVE:
+            by_role = rules.resolve_role(groups)
+            rules.check_resolve(alert_type)
         else:
             by_role = "caregiver"
             rules.check_cancel(alert_type)
         rules.check_status(action, item.get("status"))
 
-        if request.note is not None and by_role != "nurse":
+        if request.note is not None and not rules.note_allowed(action, by_role):
             raise rules.bad_request("note_not_allowed")
         by_name = None
         if by_role == "caregiver":

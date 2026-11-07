@@ -132,19 +132,21 @@ export async function getDashboard(): Promise<ApiDashboardResponse> {
 /** `202` body of the alert actions: the request is queued, not yet applied. */
 export interface AlertActionResponse {
   alert_id: string
-  requested_status: 'acknowledged' | 'cancelled'
+  requested_status: 'acknowledged' | 'cancelled' | 'resolved'
 }
 
-function isAlertActionResponse(value: unknown, alertId: string): value is AlertActionResponse {
+/** A 202 body for this alert whose `requested_status` is the one this action asked for. */
+function isAlertActionResponse(
+  value: unknown,
+  alertId: string,
+  expected: AlertActionResponse['requested_status'],
+): value is AlertActionResponse {
   if (typeof value !== 'object' || value === null) return false
   const body = value as { alert_id?: unknown; requested_status?: unknown }
-  return (
-    body.alert_id === alertId &&
-    (body.requested_status === 'acknowledged' || body.requested_status === 'cancelled')
-  )
+  return body.alert_id === alertId && body.requested_status === expected
 }
 
-function alertPath(residentId: string, alertId: string, action: 'acknowledge' | 'cancel'): string {
+function alertPath(residentId: string, alertId: string, action: 'acknowledge' | 'cancel' | 'resolve'): string {
   return `/residents/${encodeURIComponent(residentId)}/alerts/${encodeURIComponent(alertId)}/${action}`
 }
 
@@ -161,7 +163,7 @@ export async function acknowledgeAlertApi(
     event_ts: alert.event_ts,
     note,
   })
-  if (!isAlertActionResponse(body, alert.alert_id)) throw new ApiError(202, 'invalid_response')
+  if (!isAlertActionResponse(body, alert.alert_id, 'acknowledged')) throw new ApiError(202, 'invalid_response')
   return body
 }
 
@@ -174,7 +176,24 @@ export async function cancelAlertApi(alert: {
   const body = await apiPost(alertPath(alert.resident_id, alert.alert_id, 'cancel'), {
     event_ts: alert.event_ts,
   })
-  if (!isAlertActionResponse(body, alert.alert_id)) throw new ApiError(202, 'invalid_response')
+  if (!isAlertActionResponse(body, alert.alert_id, 'cancelled')) throw new ApiError(202, 'invalid_response')
+  return body
+}
+
+/**
+ * `POST .../resolve`: a nurse or doctor, health alerts only (device problems are resolved
+ * by the watchdog). Sends only the alert's `event_ts` and the required closing note
+ * (already normalised by `checkResolveNote`): the server takes the actor from the token.
+ */
+export async function resolveAlertApi(
+  alert: { resident_id: string; alert_id: string; event_ts: string },
+  note: string,
+): Promise<AlertActionResponse> {
+  const body = await apiPost(alertPath(alert.resident_id, alert.alert_id, 'resolve'), {
+    event_ts: alert.event_ts,
+    note,
+  })
+  if (!isAlertActionResponse(body, alert.alert_id, 'resolved')) throw new ApiError(202, 'invalid_response')
   return body
 }
 

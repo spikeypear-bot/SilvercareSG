@@ -68,6 +68,9 @@ accessibility matters.
 - A field the backend also validates (e.g. a note) copies the backend's code, not a
   doc's summary of it, and its test uses the backend's own cases: U+2028/U+2029 are
   category Zl/Zp, not C, so a `\p{C}` check alone lets them through.
+- A free-text field's hint says who receives what's typed and how long it is kept, from
+  `docs/data-model.md` (Retention and the attribute's row), e.g. a health record kept for
+  the resident's lifetime + 6 years, not a vague "kept in the record".
 - When a screen starts showing new personal data (a note, another user's name), update
   that feature spec's Privacy section in the same change: data touched, retention, and
   what must not be logged.

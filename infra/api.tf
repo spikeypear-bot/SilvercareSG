@@ -7,9 +7,9 @@
 #   8), Lambda silvercare-api-devices (lambdas/api-devices/).
 # - GET /dashboard: nurse and doctor dashboards (docs/data-model.md, Dashboard;
 #   patterns 9, 8, 5, 4), Lambda silvercare-api-dashboard (lambdas/api-dashboard/).
-# - POST /residents/{resident_id}/alerts/{alert_id}/acknowledge and .../cancel: alert
-#   actions (docs/data-model.md, Status updates; patterns 13, 16, 25), one Lambda
-#   silvercare-api-alert-actions (lambdas/api-alert-actions/) for both routes.
+# - POST /residents/{resident_id}/alerts/{alert_id}/acknowledge, .../cancel, and
+#   .../resolve: alert actions (docs/data-model.md, Status updates; patterns 13, 16, 25),
+#   one Lambda silvercare-api-alert-actions (lambdas/api-alert-actions/) for all three.
 # - GET /residents/{resident_id} (resident page; patterns 10, 11, 12, 18) and
 #   GET /me/residents (caregiver view; pattern 14), one Lambda silvercare-api-residents
 #   (lambdas/api-residents/).
@@ -75,6 +75,7 @@ locals {
   alert_action_routes = {
     acknowledge = "POST /residents/{resident_id}/alerts/{alert_id}/acknowledge"
     cancel      = "POST /residents/{resident_id}/alerts/{alert_id}/cancel"
+    resolve     = "POST /residents/{resident_id}/alerts/{alert_id}/resolve"
   }
 
   # The frontend's CloudFront domain, pinned here rather than read from
@@ -165,9 +166,6 @@ resource "aws_apigatewayv2_stage" "default" {
     throttling_burst_limit = 2
   }
 
-  # Alert actions: two strongly consistent GetItems (1 RCU each, on the registry's and
-  # alerts' 3 RCU base tables, shared with alert-processor) and one SQS send per call.
-  # A nurse may acknowledge a few alerts in a row, so a burst of 5.
   dynamic "route_settings" {
     for_each = local.residents_routes
     content {
@@ -186,6 +184,11 @@ resource "aws_apigatewayv2_stage" "default" {
     }
   }
 
+  # Alert actions (acknowledge, cancel, resolve), per call: a strongly consistent alerts
+  # GetItem (1 RCU on the alerts base table's 3 RCU, shared with alert-processor), for a
+  # caregiver also an eventually consistent registry link GetItem (0.5 RCU), and one SQS
+  # send. Each route has its own allowance. A nurse may acknowledge or resolve a few
+  # alerts in a row, so a burst of 5.
   dynamic "route_settings" {
     for_each = aws_apigatewayv2_route.alert_action
     content {
@@ -333,11 +336,14 @@ data "archive_file" "api_dashboard" {
 #   can't narrow this to one watch_type or to fields inside `latest`.
 # - registry THRESHOLDS# items (for the resident status's abnormal-reading rule): only
 #   those partitions (dynamodb:LeadingKeys, checked for every key), so never a
-#   RESIDENT# profile or USER# link. The attribute list holds only because the handler
-#   sends a ProjectionExpression of the three limits: a request without one would pass
-#   ForAllValues vacuously and could read updated_by (a sub) and updated_by_name. The
-#   Select condition is AWS's documented companion (IfExists: BatchGetItem has no
-#   Select parameter, so plain StringEquals could deny the handler's own call).
+#   RESIDENT# profile or USER# link, and only the three limits (never updated_by, a
+#   sub, or updated_by_name). The Select condition is AWS's documented companion
+#   (IfExists: BatchGetItem has no Select parameter, so plain StringEquals could deny
+#   the handler's own call).
+# Every statement with an attribute list also has Null dynamodb:Attributes = false, as
+# api-residents: a request without a projection would otherwise pass ForAllValues
+# vacuously (dynamodb:Attributes absent) and read whole items. The handler projects on
+# every read. LatestByMessageIndex has no attribute list (see above), so no Null either.
 # - Cognito AdminGetUser with the sub as username: it can't list or search users, so
 #   the role can't enumerate the pool, but each call returns that user's attributes
 #   (email included); the handler keeps only `name`. Accepted while all users are
@@ -361,6 +367,12 @@ data "aws_iam_policy_document" "api_dashboard" {
     }
 
     condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
+    }
+
+    condition {
       test     = "StringEquals"
       variable = "dynamodb:Select"
       values   = ["SPECIFIC_ATTRIBUTES"]
@@ -377,6 +389,12 @@ data "aws_iam_policy_document" "api_dashboard" {
       test     = "ForAllValues:StringEquals"
       variable = "dynamodb:Attributes"
       values   = ["pk", "sk", "entity_type", "resident_id", "home_id", "display_name"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
     }
 
     condition {
@@ -409,6 +427,12 @@ data "aws_iam_policy_document" "api_dashboard" {
       test     = "ForAllValues:StringEquals"
       variable = "dynamodb:Attributes"
       values   = ["pk", "sk", "hr_bpm", "spo2_pct", "skin_temp_c"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
     }
 
     condition {
@@ -479,7 +503,7 @@ resource "aws_lambda_permission" "api_dashboard" {
 }
 
 # ---------------------------------------------------------------------------------------
-# POST /residents/{resident_id}/alerts/{alert_id}/acknowledge and .../cancel
+# POST /residents/{resident_id}/alerts/{alert_id}/acknowledge, .../cancel, .../resolve
 # ---------------------------------------------------------------------------------------
 
 data "archive_file" "api_alert_actions" {
@@ -495,10 +519,11 @@ data "archive_file" "api_alert_actions" {
 # - registry: GetItem on USER# partitions only, so never a RESIDENT# profile or
 #   THRESHOLDS#. IAM can't pin the partition to the caller's own sub (the Lambda, not
 #   the user, is the principal); the handler builds the key from the token's sub.
-# - alerts: GetItem on RESIDENT# partitions; the handler projects only pk, sk,
-#   alert_type, and status. As for the dashboard's thresholds read, the attribute list
-#   holds only because the handler sends that projection (ForAllValues passes an empty
-#   set), so the role could read a whole alert item (details, ack_note, subs).
+# - alerts: GetItem on RESIDENT# partitions, only pk, sk, alert_type, and status (never
+#   details, ack_note, resolve_note, or subs).
+# Both GetItem statements also have Null dynamodb:Attributes = false, as api-residents:
+# a GetItem without a projection would otherwise pass ForAllValues vacuously
+# (dynamodb:Attributes absent) and read the whole item. The handler projects on both.
 # - sqs:SendMessage on silvercare-alerts (SQS-managed encryption: no KMS permission).
 data "aws_iam_policy_document" "api_alert_actions" {
   statement {
@@ -517,6 +542,12 @@ data "aws_iam_policy_document" "api_alert_actions" {
       test     = "ForAllValues:StringEquals"
       variable = "dynamodb:Attributes"
       values   = ["pk", "sk"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
     }
 
     condition {
@@ -545,6 +576,12 @@ data "aws_iam_policy_document" "api_alert_actions" {
     }
 
     condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
+    }
+
+    condition {
       test     = "StringEqualsIfExists"
       variable = "dynamodb:Select"
       values   = ["SPECIFIC_ATTRIBUTES"]
@@ -563,7 +600,7 @@ module "api_alert_actions" {
   source = "./modules/python-lambda"
 
   function_name = local.api_alert_actions_function_name
-  description   = "POST acknowledge / cancel: checks the caller and alert, then queues a status_update."
+  description   = "POST acknowledge / cancel / resolve: checks the caller and alert, then queues a status_update."
   handler       = "handler.lambda_handler"
   zip_path      = data.archive_file.api_alert_actions.output_path
   zip_hash      = data.archive_file.api_alert_actions.output_base64sha256
@@ -602,7 +639,7 @@ resource "aws_apigatewayv2_route" "alert_action" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
-# Only this API's two alert-action routes (any stage) may invoke the function.
+# Only this API's three alert-action routes (any stage) may invoke the function.
 resource "aws_lambda_permission" "api_alert_actions" {
   for_each = local.alert_action_routes
 

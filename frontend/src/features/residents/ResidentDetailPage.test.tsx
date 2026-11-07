@@ -55,6 +55,13 @@ const historyEntries = () => {
   return list ? (Array.from(list.children) as HTMLElement[]) : []
 }
 const announcer = () => screen.getByRole('status')
+const RESOLVE_NOTE = 'Synthetic note: checked, false alarm.'
+/** Resolve opens the closing-note form; type the required note and submit (same name). */
+async function resolveWithNote(user: ReturnType<typeof userEvent.setup>, context: string, note = RESOLVE_NOTE) {
+  await user.click(screen.getByRole('button', { name: `Resolve: ${context}` }))
+  await user.type(screen.getByRole('textbox', { name: 'Closing note (required)' }), note)
+  await user.click(screen.getByRole('button', { name: `Resolve: ${context}` }))
+}
 const location = () => screen.getByTestId('location').textContent
 
 const deviceBox = (name: RegExp) =>
@@ -785,12 +792,13 @@ describe('nurse alert actions', () => {
     const resolve = screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' })
     await waitFor(() => expect(resolve).toHaveFocus())
 
-    await user.click(resolve)
+    await resolveWithNote(user, 'Fall detected, Test Resident C')
     expect(within(row()).getByText('Resolved')).toBeInTheDocument()
     expect(row()).toHaveTextContent('Resolved by Test Nurse D, just now')
     expect(row()).toHaveTextContent('Acknowledged by the care centre nurse, ')
     expect(within(row()).queryAllByRole('button')).toEqual([])
     expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
+    expect(announcer()).not.toHaveTextContent('Synthetic note')
     const heading = screen.getByRole('heading', { level: 2, name: 'Alert history (4)' })
     await waitFor(() => expect(heading).toHaveFocus())
     expect(heading).toHaveAttribute('tabindex', '-1')
@@ -800,12 +808,50 @@ describe('nurse alert actions', () => {
 
   it('resolve straight from open moves focus to the Alert history heading', async () => {
     const { user } = await renderLoaded('res-0003', NURSE_D)
-    await user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
+    await resolveWithNote(user, 'Fall detected, Test Resident C')
     expect(historyRows()[0]).toHaveTextContent('Resolved by Test Nurse D')
     expect(historyRows()[0]).not.toHaveTextContent('Acknowledged by')
     expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.')
     await waitFor(() => expect(screen.getByRole('heading', { level: 2, name: /^Alert history/ })).toHaveFocus())
   })
+
+  it('Resolve only opens the closing-note form: nothing changes or is announced until it is submitted', async () => {
+    const { user } = await renderLoaded('res-0003', NURSE_D)
+    const C = 'Fall detected, Test Resident C'
+    await user.click(screen.getByRole('button', { name: `Resolve: ${C}` }))
+    const form = screen.getByRole('form', { name: `Resolve: ${C}` })
+    expect(within(historyRows()[0]).getByText('Open')).toBeInTheDocument()
+    expect(announcer()).toBeEmptyDOMElement()
+    await waitFor(() => expect(within(form).getByRole('textbox', { name: 'Closing note (required)' })).toHaveFocus())
+
+    // Empty: the error, and still open.
+    await user.click(within(form).getByRole('button', { name: `Resolve: ${C}` }))
+    expect(screen.getByText('Add a note saying how this alert was dealt with.')).toBeInTheDocument()
+    expect(within(historyRows()[0]).getByText('Open')).toBeInTheDocument()
+    expect(announcer()).toBeEmptyDOMElement()
+
+    // Cancel: closed, still open, focus back on Resolve.
+    await user.click(within(form).getByRole('button', { name: `Cancel, don't resolve: ${C}` }))
+    expect(screen.queryByRole('form', { name: `Resolve: ${C}` })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: `Resolve: ${C}` })).toHaveFocus())
+    expect(within(historyRows()[0]).getByText('Open')).toBeInTheDocument()
+    expect(announcer()).toBeEmptyDOMElement()
+  })
+
+  it('the closing note is never announced or shown on the page after the resolve', async () => {
+    const { user } = await renderLoaded('res-0003', NURSE_D)
+    await resolveWithNote(user, 'Fall detected, Test Resident C', 'Synthetic note: ambulance called.')
+    await waitFor(() => expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.'))
+    expect(document.body).not.toHaveTextContent('ambulance called')
+  })
+
+  it('has no axe violations with the resolve form open and showing an error', async () => {
+    const { user, container } = await renderLoaded('res-0003', NURSE_D)
+    await user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
+    await user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
+    expect(screen.getByText('Add a note saying how this alert was dealt with.')).toBeInTheDocument()
+    expect(await axeViolations(container)).toEqual([])
+  }, 30_000)
 
   it.each(['res-0003', 'res-0007', 'res-0008'])('the doctor sees no Acknowledge/Resolve buttons (%s)', async (id) => {
     await renderLoaded(id, TEST_USERS.doctor)
@@ -1181,7 +1227,8 @@ describe('privacy', () => {
     const nurse = await renderLoaded('res-0003', NURSE_D)
     await nurse.user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     await nurse.user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
-    await nurse.user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
+    await resolveWithNote(nurse.user, 'Fall detected, Test Resident C')
+    expect(historyRows()[0]).toHaveTextContent('Resolved by Test Nurse D')
     nurse.unmount()
 
     const doctor = await renderLoaded('res-0003', DOCTOR_C)

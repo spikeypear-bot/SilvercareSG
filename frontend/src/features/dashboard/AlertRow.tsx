@@ -16,6 +16,7 @@ import { cx } from '../../lib/cx'
 import { useNow } from '../../lib/useNow'
 import type { Resident, ResidentAlert } from '../../types/dashboard'
 import { AckNoteForm } from './AckNoteForm'
+import { ResolveNoteForm } from './ResolveNoteForm'
 import { ALERT_TYPE_LABELS } from './labels'
 import { ResidentLine } from './ResidentLine'
 import { isDeviceProblem, isOnOpenList, sentToNurseAtOnce } from './stats'
@@ -30,8 +31,14 @@ export interface AlertActions {
    * only when the note form is submitted, never when it is cancelled.
    */
   onAcknowledge: (ackNote: string | undefined) => void
-  onResolve: () => void
+  /**
+   * Resolves with the required closing note (normalised, never empty). Called only when
+   * the resolve form is submitted with a valid note, never when it is cancelled.
+   */
+  onResolve: (resolveNote: string) => void
 }
+
+type NoteFormKind = 'acknowledge' | 'resolve'
 
 interface AlertRowProps {
   alert: ResidentAlert
@@ -66,30 +73,40 @@ export function AlertRow({
 }: AlertRowProps) {
   const resolveRef = useRef<HTMLButtonElement>(null)
   const acknowledgeRef = useRef<HTMLButtonElement>(null)
-  // Acknowledge opens the note form first (docs/features/alert-actions-ui.md, criterion 1).
-  const [noteOpen, setNoteOpen] = useState(false)
-  const returnFocusToAcknowledge = useRef(false)
+  // Acknowledge opens the optional note form first (docs/features/alert-actions-ui.md,
+  // criterion 1); Resolve opens the required closing-note form. One form at a time.
+  const [openForm, setOpenForm] = useState<NoteFormKind | null>(null)
+  // The button to focus once the form has closed (its button is back in the row).
+  const returnFocusTo = useRef<NoteFormKind | null>(null)
   const typeLabel = ALERT_TYPE_LABELS[alert.alert_type]
   const context = `${typeLabel}, ${resident?.name ?? 'Unknown resident'}`
   const canAcknowledge = alert.status === 'open'
 
   useEffect(() => {
-    if (!noteOpen && returnFocusToAcknowledge.current) {
-      returnFocusToAcknowledge.current = false
-      acknowledgeRef.current?.focus()
-    }
-  }, [noteOpen])
+    if (openForm !== null || returnFocusTo.current === null) return
+    const target = returnFocusTo.current === 'acknowledge' ? acknowledgeRef : resolveRef
+    returnFocusTo.current = null
+    target.current?.focus()
+  }, [openForm])
 
-  function submitNote(ackNote: string | undefined) {
-    setNoteOpen(false)
+  function submitAckNote(ackNote: string | undefined) {
+    setOpenForm(null)
     actions?.onAcknowledge(ackNote)
     // The Acknowledge button goes away; keep focus in the row.
     resolveRef.current?.focus()
   }
 
-  function cancelNote() {
-    returnFocusToAcknowledge.current = true
-    setNoteOpen(false)
+  function submitResolveNote(resolveNote: string) {
+    // Back on the Resolve button while the request is in flight; once accepted, the
+    // caller moves focus somewhere stable (the row's buttons go away).
+    returnFocusTo.current = 'resolve'
+    setOpenForm(null)
+    actions?.onResolve(resolveNote)
+  }
+
+  function cancelForm(kind: NoteFormKind) {
+    returnFocusTo.current = kind
+    setOpenForm(null)
   }
 
   return (
@@ -114,22 +131,29 @@ export function AlertRow({
       <AcknowledgedLines alert={alert} now={now} />
       <CancelledLine alert={alert} now={now} />
       <ResolvedLine alert={alert} now={now} />
-      {actions && isOnOpenList(alert) && canAcknowledge && noteOpen && (
-        <AckNoteForm context={context} onSubmit={submitNote} onCancel={cancelNote} />
-      )}
       {actions && isOnOpenList(alert) && !isDeviceProblem(alert) && (
-        <div className="flex flex-wrap gap-2 pt-1">
-          {canAcknowledge && !noteOpen && (
-            <Button ref={acknowledgeRef} variant="secondary" onClick={() => setNoteOpen(true)}>
-              <UserCheck className="size-5" aria-hidden="true" />
-              Acknowledge<span className="sr-only">: {context}</span>
-            </Button>
+        <>
+          {canAcknowledge && openForm === 'acknowledge' && (
+            <AckNoteForm context={context} onSubmit={submitAckNote} onCancel={() => cancelForm('acknowledge')} />
           )}
-          <Button ref={resolveRef} variant="secondary" onClick={actions.onResolve}>
-            <CircleCheckBig className="size-5" aria-hidden="true" />
-            Resolve<span className="sr-only">: {context}</span>
-          </Button>
-        </div>
+          {openForm === 'resolve' && (
+            <ResolveNoteForm context={context} onSubmit={submitResolveNote} onCancel={() => cancelForm('resolve')} />
+          )}
+          <div className="flex flex-wrap gap-2 pt-1">
+            {canAcknowledge && openForm !== 'acknowledge' && (
+              <Button ref={acknowledgeRef} variant="secondary" onClick={() => setOpenForm('acknowledge')}>
+                <UserCheck className="size-5" aria-hidden="true" />
+                Acknowledge<span className="sr-only">: {context}</span>
+              </Button>
+            )}
+            {openForm !== 'resolve' && (
+              <Button ref={resolveRef} variant="secondary" onClick={() => setOpenForm('resolve')}>
+                <CircleCheckBig className="size-5" aria-hidden="true" />
+                Resolve<span className="sr-only">: {context}</span>
+              </Button>
+            )}
+          </div>
+        </>
       )}
     </li>
   )

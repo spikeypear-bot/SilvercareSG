@@ -64,7 +64,7 @@ export function NurseDashboard() {
 interface NurseContentProps {
   data: DashboardData
   onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
-  onResolve: (alertId: string, by: string) => void
+  onResolve: (alertId: string, by: string, resolveNote: string) => Promise<boolean>
 }
 
 function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
@@ -90,7 +90,7 @@ function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
           residentsById={residentsById}
           announce={announce}
           onAcknowledge={onAcknowledge}
-          onResolve={(id) => onResolve(id, staffName)}
+          onResolve={(id, resolveNote) => onResolve(id, staffName, resolveNote)}
         />
       )}
       {panel === 'offline' && <OfflineDevicesPanel residents={data.residents} />}
@@ -107,7 +107,7 @@ interface AlertInboxProps {
   residentsById: Map<string, Resident>
   announce: (message: string) => void
   onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
-  onResolve: (alertId: string) => void
+  onResolve: (alertId: string, resolveNote: string) => Promise<boolean>
 }
 
 function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve }: AlertInboxProps) {
@@ -150,11 +150,14 @@ function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve 
                       if (ok) announce(`Acknowledged: ${described}.`)
                     })
                   },
-                  onResolve: () => {
-                    onResolve(alert.alert_id)
-                    announce(`Resolved: ${described}.`)
-                    // The row goes away; move focus somewhere stable.
-                    headingRef.current?.focus()
+                  onResolve: (resolveNote) => {
+                    // Only once accepted (with API data, after the 202). Never the note.
+                    void onResolve(alert.alert_id, resolveNote).then((ok) => {
+                      if (!ok) return
+                      announce(`Resolved: ${described}.`)
+                      // The row goes away; move focus somewhere stable.
+                      headingRef.current?.focus()
+                    })
                   },
                 }}
               />

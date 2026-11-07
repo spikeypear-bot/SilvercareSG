@@ -854,7 +854,7 @@ requested_status}` once the update is queued. Choices where this section is sile
 *(proposed)*: a nurse note on an ops or caregiver acknowledge is `400`; a nurse's
 acknowledge of a device problem and a caregiver's of a health alert are `409`; a
 caregiver whose token has no valid `name` gets `403 account_incomplete` (alert-processor
-would drop the update); the resolve route is not built.
+would drop the update). The resolve route is built in the same Lambda (below).
 
 A caregiver cancel has `"by_role": "caregiver"`, `"new_status": "cancelled"`, the
 caregiver's `sub` as `by`, their `name` claim as `by_name`, an alert target, and no
@@ -920,8 +920,9 @@ deployed are in `silvercare-alerts-dlq`; the owner redrives them after the deplo
 
 #### Track B route: resolve
 
-*(Contract, decided 2026-11-05; it goes into `docs/features/alert-actions-ui.md` next to
-acknowledge and cancel once that spec is on this branch.)*
+*(Contract, decided 2026-11-05. **Built 2026-11-07** in `lambdas/api-alert-actions/`
+next to acknowledge and cancel, same checks and order; the portal's Resolve button
+opens a required note form and calls it.)*
 
 `POST /residents/{resident_id}/alerts/{alert_id}/resolve`
 
