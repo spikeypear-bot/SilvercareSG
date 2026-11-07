@@ -389,3 +389,33 @@ def back_in_bed_message(**overrides: Any) -> dict[str, Any]:
 
 def back_in_bed_body(**overrides: Any) -> str:
     return _compact(back_in_bed_message(**overrides))
+
+
+# ---- staff resolve (docs/features/staff-resolve.md, criterion 1) ----
+
+DOCTOR_SUB = "a1b2c3d4-0000-4000-8000-0000000d0c70"
+RESOLVE_NOTE = "Synthetic closing note: checked by the care centre, all fine."
+
+
+def staff_resolve_message(
+    by_role: str = "nurse", note: Any = RESOLVE_NOTE, **overrides: Any
+) -> dict[str, Any]:
+    """A valid nurse (or doctor) resolve of the default alert: alert target, sub,
+    by_name null, the required closing note. Pass note=DELETE to leave the key out
+    (None sends "note": null)."""
+    body = cancel_message(
+        new_status="resolved",
+        by_role=by_role,
+        by=DOCTOR_SUB if by_role == "doctor" else NURSE_SUB,
+        by_name=None,
+        target={"alert_id": ALERT_ID, "event_ts": EVENT_TS},
+    )
+    if note is not DELETE:
+        body["note"] = note
+    return _apply(body, overrides)
+
+
+def staff_resolve_body(
+    by_role: str = "nurse", note: Any = RESOLVE_NOTE, **overrides: Any
+) -> str:
+    return _compact(staff_resolve_message(by_role, note, **overrides))

@@ -46,7 +46,13 @@ function from the same zip, each with its own role, log group, and failure handl
   that comes from the payload (e.g. `message_id`) is logged only if it matches its
   expected format, otherwise as `invalid`: a free-text "ID" can carry health data.
 - **Idempotency:** IoT Core and async Lambda invocations retry and can deliver
-  duplicates. Writes use deterministic keys or condition expressions.
+  duplicates. Writes use deterministic keys or condition expressions. When a message
+  counts as a retry of an earlier one (e.g. same user, same target), build its side
+  effects (emails, archive copies) from the **stored** item, not the new message: a
+  second, different request can match the retry rule (a shared account, two clicks).
+  A "done" marker reused across steps (e.g. `status_notified_at` for each status
+  change) must be cleared when the next step starts, or that step's retry looks
+  already done and its side effects are lost.
 - **Errors:**
   - Invalid input: log the reason (without the data) and return without raising, so
     retries don't loop on a message that can never succeed.

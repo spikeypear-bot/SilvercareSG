@@ -39,9 +39,13 @@
 #
 # The queues and DLQs hold alert messages (falls with the fall details, vitals alerts
 # with the reading and limit, linked to a resident ID; status updates with the changed
-# alert's target and, for a Track B acknowledge, the user's sub and full name);
-# critical-alert-dlq can hold raw fall, vitals_alert, and alert_cancel payloads. Retention: alerts queue 4 days, DLQs 14 days, S3
-# alerts/ no expiry until Open decision #4 (retention).
+# alert's target and, from Track B, the user's sub, a caregiver's full name, and a
+# nurse's acknowledge note or a nurse's or doctor's closing note, which every staff
+# resolve carries); critical-alert-dlq can hold raw fall, vitals_alert, and
+# alert_cancel payloads. Retention: alerts queue 4 days, DLQs 14 days, S3 alerts/
+# (the original copy and the <alert_id>.final.json record with the notes,
+# docs/features/staff-resolve.md) the resident's lifetime + 6 years (Open decision #4,
+# decided 2026-11-01; see Retention in docs/data-model.md).
 #
 # Cost: pay per use only, no fixed fees. SNS (1,000 emails/month free, shared by the
 # alert and nurse emails) and Lambda stay

@@ -159,7 +159,7 @@ def test_invalid_top_level_field_is_rejected_with_its_reason(overrides, reason):
 
 
 @pytest.mark.parametrize(
-    "by_role", ["staff", "family", "doctor", "Nurse", "CAREGIVER", "", "admin"]
+    "by_role", ["staff", "family", "Doctor", "Nurse", "CAREGIVER", "", "admin"]
 )
 @pytest.mark.parametrize(
     "build",
@@ -168,6 +168,18 @@ def test_invalid_top_level_field_is_rejected_with_its_reason(overrides, reason):
 )
 def test_other_by_role_is_rejected(by_role, build):
     assert parse(build(by_role=by_role)) == Rejection("invalid:by_role")
+
+
+@pytest.mark.parametrize(
+    "build",
+    [cancel_message, caregiver_cancel_message, nurse_ack_message],
+    ids=["resident-shape", "caregiver-shape", "nurse-shape"],
+)
+def test_doctor_with_a_cancel_or_acknowledge_shape_is_invalid_new_status(build):
+    """docs/features/staff-resolve.md, criterion 2: doctor is a known by_role now, but
+    it may only send resolved, so a cancel or acknowledge from a doctor is still
+    rejected (by its new_status rather than its by_role)."""
+    assert parse(build(by_role="doctor")) == Rejection("invalid:new_status")
 
 
 def test_old_staff_acknowledge_is_rejected():
@@ -398,11 +410,20 @@ def test_system_only_resolves(new_status):
 
 @pytest.mark.parametrize(
     "build",
-    [cancel_message, caregiver_cancel_message, nurse_ack_message, ops_ack],
-    ids=["resident", "caregiver", "nurse", "ops"],
+    [cancel_message, caregiver_cancel_message, ops_ack],
+    ids=["resident", "caregiver", "ops"],
 )
-def test_resolved_comes_only_from_system(build):
+def test_resolved_comes_only_from_system_nurse_or_doctor(build):
+    """Staff-resolve criteria 1-2: nurse and doctor resolves are valid (with a note,
+    test_message_staff_resolve.py); every other role's resolve is still invalid."""
     assert parse(build(new_status="resolved")) == Rejection("invalid:new_status")
+
+
+def test_nurse_resolve_without_a_note_is_rejected_as_invalid_note():
+    """The old nurse-acknowledge shape with new_status resolved (no note key) is no
+    longer an invalid new_status, but it is still rejected: the closing note is
+    required."""
+    assert parse(nurse_ack_message(new_status="resolved")) == Rejection("invalid:note")
 
 
 @pytest.mark.parametrize("by", [NURSE_SUB, "", "system"])

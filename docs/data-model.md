@@ -123,7 +123,7 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 13 | API, caregiver | Is this user linked to this resident? | registry | GetItem `pk = USER#<sub>`, `sk = RESIDENT#<resident_id>` | every caregiver request for a resident |
 | 14 | API, caregiver | Which residents can this user see? | registry | Query `pk = USER#<sub>`, `begins_with(sk, "RESIDENT#")` | caregiver home page |
 | 15 | *(not used yet)* backend: `alert-processor` | Who is linked to this resident (to notify) | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "USER#")` | per new alert. Not used by alerts-core: it notifies through SNS email subscriptions whose filter policy matches `resident_id`, set in Terraform variables (docs/features/alerts-core.md, criteria 21 and 24), because SNS can only email confirmed subscribers |
-| 16 | Health alerts: acknowledge `nurse` only, any resident; cancel caregiver after 13. Device problems (docs/features/watchdog.md): acknowledge `ops`, any resident, or caregiver after 13; no cancel. Resolve: `nurse` or `doctor`, any resident, **health alerts only**, with a required note (decided 2026-11-05; `doctor` neither acknowledges nor cancels); device problems are resolved only by the `watchdog` (`system`) | Acknowledge, cancel, or resolve an alert | alerts | Acknowledge, cancel, and resolve: the API sends a `status_update` to the alerts queue and `alert-processor` applies it (pattern 25; see [Status updates](#status-updates)); the API never writes the alert item. The watchdog's resolve is a `status_update` too (`system` / `resolved`) | per action |
+| 16 | Health alerts: acknowledge `nurse` only, any resident; cancel caregiver after 13. Device problems (docs/features/watchdog.md): acknowledge `ops`, any resident, or caregiver after 13; no cancel. Resolve: `nurse` or `doctor`, any resident, **health alerts only** (possible falls included), with a required closing note (decided 2026-11-05, built in docs/features/staff-resolve.md; `doctor` neither acknowledges nor cancels); device problems are resolved only by the `watchdog` (`system`) | Acknowledge, cancel, or resolve an alert | alerts | Acknowledge, cancel, and resolve: the API sends a `status_update` to the alerts queue and `alert-processor` applies it (pattern 25; see [Status updates](#status-updates)); the API never writes the alert item. The watchdog's resolve is a `status_update` too (`system` / `resolved`) | per action |
 | 17 | Staff only, seed script | Add or edit a resident, assign a device, link a user | registry | PutItem / UpdateItem / DeleteItem | rare |
 | 18 | Resident page: staff, or caregiver after 13 | This resident's profile and thresholds | registry | BatchGetItem `RESIDENT#<resident_id>` / `PROFILE` and `THRESHOLDS#<resident_id>` / `THRESHOLDS` | per page view |
 | 19 | Resident page: staff, or caregiver after 13 | This resident's photo | S3 `silvercare-photos-<account_id>` | API returns a presigned GET URL for `photo_key`, valid 5 min | per page view |
@@ -132,7 +132,7 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 22 | backend: `alert-processor` | Re-read an alert that already exists (a redelivered message) | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent | per redelivered alert message |
 | 23 | backend: `alert-processor` | Escalation (warnings from assigned devices): mark the check queued; 300 s later read the alert's `status` and mark it escalated (docs/features/escalation.md, alert-routing.md). Critical and unassigned alerts only `SET escalated_at` after the nurse email sent at once | alerts | UpdateItem `SET escalation_queued_at` with `attribute_not_exists(escalation_queued_at)`; GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; UpdateItem `SET escalated_at` with `attribute_not_exists(escalated_at)` | per stored alert (one GetItem, up to two UpdateItems) |
 | 24 | backend: `alert-processor` | Resident cancel: this resident's alerts from one device that are `open` or `acknowledged` (or already `cancelled` but without `status_notified_at`, a retry), up to the press, except device problems, plus the resident's possible falls from any device (docs/features/alert-cancel.md, criterion 8; alert-routing.md, criterion 10; watchdog.md, criterion 14a; possible-fall.md, criterion 13) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk <= "ALERT#<changed_at>#~"` (alerts at exactly `changed_at` included, later ones not), strongly consistent, `FilterExpression` `((device_id = :device AND NOT alert_type IN (:offline, :battery, :not_worn)) OR alert_type = :possible_fall) AND (#status IN (:open, :acknowledged) OR (#status = :new AND attribute_not_exists(status_notified_at)))` (the `OR alert_type = :possible_fall` only for a wearable target, which every resident cancel is), paginated; then per target a conditional UpdateItem (`#status IN (:open, :acknowledged)`) and `SET status_notified_at` with `attribute_not_exists(status_notified_at)` | per `alert_cancel` (rare) |
-| 25 | backend: `alert-processor` | Acknowledge or cancel of one alert (a `status_update` from Track B's API: nurse or caregiver for health alerts, ops or caregiver for device problems), or the watchdog's resolve of a device problem | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; then the role/type rule (else `not_allowed`); conditional UpdateItem (acknowledge `#status = :open`; cancel and resolve `#status IN (:open, :acknowledged)`); `SET status_notified_at` with `attribute_not_exists(status_notified_at)` (not for a resolve, which emails nobody) | per acknowledge, caregiver cancel, or resolve |
+| 25 | backend: `alert-processor` | Acknowledge, cancel, or resolve of one alert (a `status_update` from Track B's API: nurse or caregiver for health alerts, ops or caregiver for device problems, nurse or doctor resolve of health alerts, docs/features/staff-resolve.md), or the watchdog's resolve of a device problem or possible fall | alerts | GetItem `pk = RESIDENT#<resident_id>`, `sk = ALERT#<event_ts>#<alert_id>`, strongly consistent; then the role/type rule (else `not_allowed`); conditional UpdateItem (acknowledge `#status = :open`; cancel and resolve `#status IN (:open, :acknowledged)`, `ReturnValues = ALL_NEW`); for every resolve, the final record to S3 (see [S3 history](#s3-history)); `SET status_notified_at` with `attribute_not_exists(status_notified_at)` (not for a device-problem resolve, which emails nobody) | per acknowledge, caregiver cancel, or resolve |
 | 26 | *(proposed)* Doctor only: resident page | Change this resident's thresholds, and record the change (27) | registry | TransactWriteItems: UpdateItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS`, condition `attribute_exists(pk)` and `updated_at` unchanged since the read; PutItem of the change | rare |
 | 27 | *(proposed)* Resident page: staff only | This resident's threshold changes, newest first | registry | Query `pk = THRESHOLD_LOG#<resident_id>`, descending | per page view |
 | 28 | backend: `watchdog` | `worn_false_since` of the wearables whose newest `status` has `worn = false` (docs/features/watchdog.md, criterion 2) | latest | BatchGetItem `pk = DEVICE#<device_id>`, `sk = MSG#status` (up to 100 keys per call, `UnprocessedKeys` retried), eventually consistent, projecting `pk`, `worn_false_since` | every 5 min, only for wearables off the wrist |
@@ -627,14 +627,15 @@ gets enough write capacity for every vitals write.
 | `escalated_at` | `2026-10-18T03:14:08.700Z` | the nurses were emailed: set once, after the nurse email was published, at once (critical and unassigned alerts) or after the 5-minute wait (warnings, escalation criterion 5); docs/features/alert-routing.md, criterion 2. Guards against a second nurse email. `status` stays `open` |
 | `acknowledged_by`, `acknowledged_at` | user `sub`, timestamp | health alerts: only nurses acknowledge (docs/features/alert-routing.md; the nurse account is shared, so emails and the portal say "the care centre nurse"); device problems: ops or a caregiver (docs/features/watchdog.md). Set by `alert-processor` from a `status_update`: `by` and `changed_at`. Kept when the alert is later cancelled or resolved |
 | `acknowledged_by_role` | `ops` | device problems only: `ops` or `caregiver`, who acknowledged (watchdog criterion 14a). Emails say "the ops team" for ops (no person's name) and the caregiver's masked name. Absent on nurse acknowledges of health alerts. Kept when resolved |
-| `ack_note` | `Synthetic note: ambulance on the way.` | the nurse's optional note at acknowledge: free text, 1-500 characters, newlines allowed. Emailed to the resident's caregivers and shown in the portal to everyone who can see the alert; never logged, not in the S3 archive. Kept when the alert is later cancelled; deleted with the item |
+| `ack_note` | `Synthetic note: ambulance on the way.` | the nurse's optional note at acknowledge: free text, 1-500 characters, newlines allowed. Emailed to the resident's caregivers and shown in the portal to everyone who can see the alert; never logged, not in the original S3 `alerts/` copy. Kept when the alert is later cancelled or resolved; deleted with the item, but a resolved alert's note is kept in its S3 final record (docs/features/staff-resolve.md, criterion 8; see [S3 history](#s3-history)) |
 | `cancelled_at` | `2026-11-03T02:00:05.000Z` | the update's `changed_at`: for the resident's "I'm OK" press, when the cloud received it (the `alert_cancel`'s `received_at`, server time, not the device's `ts`); for a caregiver, the API's time. Only on cancelled alerts |
 | `cancelled_by_role` | `resident` | who cancelled: `resident` (the wearable button) or `caregiver` (the portal). Only on cancelled alerts |
 | `cancelled_by` | caregiver `sub` | the caregiver who cancelled; absent when the resident cancelled. The user's name (`by_name`) is never stored |
-| `status_notified_at` | `2026-11-03T02:00:06.100Z` | set once, after the follow-up email(s) for the current `status` (`acknowledged` or `cancelled`) were published, or when nobody is emailed (an unassigned acknowledge) (docs/features/alert-cancel.md, criterion 10); an item with the new `status` but without it gets its follow-up on a retry. A cancel of an acknowledged alert REMOVEs the acknowledge's value, so the cancel's follow-up is tracked on its own |
-| `resolved_by`, `resolved_at` | staff `sub`, timestamp | set by `alert-processor` from a staff resolve's `by` and `changed_at`; the `sub` is never returned (see Actor names). A watchdog resolve has no `resolved_by` |
-| `resolved_by_role` | `nurse` | who resolved: `nurse` or `doctor` (a health alert, in the portal, decided 2026-11-05), or `system` (the watchdog, when the device problem cleared, docs/features/watchdog.md, criterion 11, or the resident of a possible fall is back in bed, docs/features/possible-fall.md, criterion 8) |
-| `resolve_note` | `Synthetic note: resident checked, false alarm.` | a staff resolve's required note (the paper trail, decided 2026-11-05): free text, 1-500 characters, newlines allowed, same rules as `ack_note`. Absent on a watchdog resolve. Never logged; not in the S3 `alerts/` copy. Who sees it and how long it is kept are open (see [Open questions](#open-questions)) |
+| `status_notified_at` | `2026-11-03T02:00:06.100Z` | set once, after the follow-up email(s) for the current `status` (`acknowledged`, `cancelled`, or `resolved` by a nurse, a doctor, or the back-in-bed check) were published, or when nobody is emailed (an unassigned acknowledge) (docs/features/alert-cancel.md, criterion 10); an item with the new `status` but without it gets its follow-up on a retry. A cancel of an acknowledged alert REMOVEs the acknowledge's value, so the cancel's follow-up is tracked on its own |
+| `resolved_at` | timestamp | the resolve's `changed_at` (staff or watchdog) |
+| `resolved_by` | nurse or doctor `sub` | set by `alert-processor` from a staff resolve's `by` (docs/features/staff-resolve.md, criterion 4); the `sub` is never returned (see Actor names). Absent on a watchdog (`system`) resolve. In the S3 final record |
+| `resolved_by_role` | `nurse` | who resolved: `nurse` or `doctor` (a health alert or possible fall, in the portal, decided 2026-11-05, docs/features/staff-resolve.md), or `system` (the watchdog, when the device problem cleared, docs/features/watchdog.md, criterion 11, or the resident of a possible fall is back in bed, docs/features/possible-fall.md, criterion 8). Emails say "the care centre nurse" or "a SilverCare doctor", never a name |
+| `resolve_note` | `Synthetic note: resident checked, false alarm.` | a staff resolve's required closing note (the paper trail, decided 2026-11-05): free text, 1-500 characters, newlines allowed, same rules as `ack_note`; may hold health or logistics details. Absent on a watchdog resolve. Emailed to the resident's caregivers (quoted under `Closing note:`; nurses are not emailed); never logged. Deleted with the item (30 days after the resolve), and kept with `ack_note` in the S3 final record for the resident's lifetime + 6 years (user, 2026-11-07; docs/features/staff-resolve.md) |
 | `escalates_at` | `2026-10-18T03:19:08.300Z` | *(proposed)* **not stored**: the API adds it to an `open` **health-alert warning** from an assigned device that has no `escalated_at` yet, as `notified_at` + 300 s. **Never on a device problem** (`device_offline`, `battery_low`, `not_worn`): they are warnings with `notified_at` but are never escalated to the nurses (docs/features/watchdog.md), so they get no countdown. It is added so the portal can show a countdown to the escalation check (docs/features/escalation.md, alert-routing.md; decided 2026-11-03, delay changed 2026-11-04). Never on critical or unassigned alerts: the nurses are emailed at once and `escalated_at` is set. Approximate: the check runs about 300 s after `escalation_queued_at` |
 | `open_pk` | `OPEN` | present until resolved or cancelled (an acknowledged alert keeps it, so the watchdog still sees an acknowledged device problem and resolves it); removing it takes the alert out of the `open` index |
 | `expires_at` | `1765000000` | epoch seconds, `resolved_at` + 30 days, or `cancelled_at` + 30 days for a cancelled alert. See [Retention](#retention) |
@@ -906,19 +907,16 @@ The watchdog's resolve (synthetic values):
 }
 ```
 
-**Not built yet in `alert-processor`** (it accepts `resolved` only from `system` today,
-`lambdas/alert-processor/src/message.py`); its owner's change must land before the API
-sends a staff resolve, or every one fails into `silvercare-alerts-dlq`. It must:
-
-- accept `by_role` `doctor` (with `resolved` only), and `nurse` with `resolved` as well
-  as `acknowledged`; `by` a lowercase UUID, `by_name` `null`, no `reason` key;
-- require `note` on a `nurse` / `doctor` resolve (same checks as today's acknowledge
-  note), keep it optional on a nurse acknowledge, and keep rejecting it everywhere else;
-- after reading the target, allow (`nurse` | `doctor`, `resolved`) on health alerts and
-  possible falls only (`not_allowed` on device problems);
-- apply it like the `system` resolve (`#status IN (:open, :acknowledged)`, `resolved_at`,
-  `resolved_by_role`, `expires_at`, REMOVE `open_pk`) plus `resolved_by` and
-  `resolve_note`; log `has_note`, never the note.
+**Built in `alert-processor`** (docs/features/staff-resolve.md, 2026-11-07): it accepts
+`by_role` `doctor` (with `resolved` only) and `nurse` with `resolved` as well as
+`acknowledged`; `by` a lowercase UUID, `by_name` `null`, no `reason` key; `note`
+required on a `nurse` / `doctor` resolve (same checks as the acknowledge note), still
+optional on a nurse acknowledge and rejected everywhere else. After reading the target
+it allows a staff resolve on health alerts and possible falls only (`not_allowed` on
+device problems), applies it like the `system` resolve plus `resolved_by` and
+`resolve_note`, writes the final record to S3, emails the caregivers, and logs
+`has_note`, never the note (details below). Staff resolves sent before this was
+deployed are in `silvercare-alerts-dlq`; the owner redrives them after the deploy.
 
 #### Track B route: resolve
 
@@ -985,7 +983,7 @@ outcome `not_allowed`, not a failure.
 | `schema_version` | `1` |
 | `resident_id` | `res-NNNN`, or `unassigned` |
 | `new_status` | `cancelled`, `acknowledged`, or `resolved`, per the table above |
-| `changed_at` | ISO 8601 UTC with ms and `Z`: for a resident cancel, when the IoT rule received the `alert_cancel` (`received_at`, server time, so a wrong device clock can't move the Query bound or the expiry); the API's time for a caregiver cancel or nurse acknowledge |
+| `changed_at` | ISO 8601 UTC with ms and `Z`: for a resident cancel, when the IoT rule received the `alert_cancel` (`received_at`, server time, so a wrong device clock can't move the Query bound or the expiry); the API's time for a caregiver cancel, an acknowledge, or a staff resolve; the watchdog's time for a `system` resolve |
 | `by_role` | `resident` (wearable cancel), `caregiver`, `nurse`, `doctor` (resolve only), or `ops` (Track B), `system` (the watchdog only). `staff`, `family`, or anything else is invalid |
 | `by` | `null` for `resident` and `system`; the caller's Cognito `sub` (a lowercase UUID) for `caregiver` / `nurse` / `doctor` / `ops`, from the verified token |
 | `by_name` | only for `caregiver`: the `name` claim of the verified token, 1-100 characters, not only spaces, no control characters. Used only to build the masked name in the email; never stored, logged, or emailed in full. `null` for every other role |
@@ -1009,10 +1007,11 @@ outcome `not_allowed`, not a failure.
   - acknowledge: `#status = :open`; sets `status = acknowledged`, `acknowledged_at`,
     `acknowledged_by`, and `ack_note` if there is a note (plus `acknowledged_by_role`
     `ops` / `caregiver` for a device problem); keeps `open_pk` until resolved;
-  - staff resolve (`nurse` / `doctor`, health alerts): as the `system` resolve below,
-    plus `resolved_by` (`by`) and `resolve_note` (the note), with `resolved_by_role`
-    `nurse` or `doctor`. Whether it sends a follow-up email is open (see
-    [Open questions](#open-questions));
+  - staff resolve (`nurse` / `doctor`, health alerts and possible falls;
+    docs/features/staff-resolve.md, criterion 4): as the `system` resolve below, plus
+    `resolved_by` (`by`) and `resolve_note` (the note), with `resolved_by_role`
+    `nurse` or `doctor`. Keeps `acknowledged_at`, `acknowledged_by`, and `ack_note`.
+    An alert not `open` or `acknowledged` (or missing) ends `not_open`;
   - resolve (`system`, device problems): `#status IN (:open, :acknowledged)`; sets
     `status = resolved`, `resolved_at` (`changed_at`), `resolved_by_role = system`,
     `expires_at = changed_at + 30 days`, and REMOVEs `open_pk`. Keeps the acknowledge's
@@ -1021,6 +1020,14 @@ outcome `not_allowed`, not a failure.
     (`reason = back_in_bed`, docs/features/possible-fall.md, criterion 8) is applied
     the same way but does get a follow-up (below).
   A failed condition skips that alert without an email.
+- **Final record** (every resolve: staff, back in bed, device problem;
+  docs/features/staff-resolve.md, criterion 8): after the UpdateItem succeeds (its
+  `ALL_NEW` result), or on a retry (the strongly consistent GetItem), the item as it
+  now stands is written to S3 as `alerts/date=<date>/<alert_id>.final.json` (see
+  [S3 history](#s3-history)), before any email. A failed write fails the record
+  (retried, then the DLQ). A device-problem resolve has no `status_notified_at` to
+  mark it done, so a redelivery that finds the item already resolved by `system`
+  writes the final record again (same key) and still ends `not_open`.
 - Then the follow-up (one email per alert, then `SET status_notified_at` with
   `attribute_not_exists(status_notified_at)`):
   - cancel (resident or caregiver): caregivers through `silvercare-alerts` with the
@@ -1044,16 +1051,27 @@ outcome `not_allowed`, not a failure.
     Possible fall - <resident_id> resolved`; first line `The alert below was resolved
     at <changed_at> SGT: the resident is back in bed.`, then the usual lines. An item
     already `resolved` by `system` without `status_notified_at` gets its follow-up on
-    a retry.
+    a retry;
+  - staff resolve (docs/features/staff-resolve.md, criterion 6): the caregivers only
+    (`silvercare-alerts`, `resident_id` attribute; nobody for `unassigned`, and
+    `status_notified_at` is still set); the nurses are not emailed. Subject
+    `SilverCare update: <label> - <resident_id> resolved`; first line `The alert below
+    was resolved by the care centre nurse at <time> SGT.` (or `by a SilverCare
+    doctor`; no names), the usual lines, then `Closing note:` and the note's lines,
+    each quoted with `> `. An item already `resolved` by the same `sub` and role
+    without `status_notified_at` gets the final record and the follow-up again on a
+    retry.
   An unassigned alert's follow-up adds `Device: <device_id>`, or `Device: invalid`. An
   item that already has the new `status` from the same kind of update (the resident;
-  or the same caregiver, nurse, or ops `sub`) but no `status_notified_at` gets its
+  or the same caregiver, nurse, doctor, or ops `sub`) but no `status_notified_at` gets its
   follow-up on a retry; a duplicate is accepted, a missing one isn't.
-- The log line per alert has `by_role` and, for an acknowledge, `has_note`; never
-  `by`, `by_name`, or `note`.
+- The log line per alert has `by_role` and, for an acknowledge or a staff resolve,
+  `has_note`; never `by`, `by_name`, or `note`.
 - A cancelled or acknowledged alert's escalation check ends `not_escalated`
   (`status:cancelled` / `status:acknowledged`).
-- The S3 `alerts/` copy is not updated: it stays as stored (open), without `ack_note`.
+- The original S3 `alerts/<alert_id>.json` copy is not updated: it stays as stored
+  (open), without `ack_note`. A resolve adds the separate final record (above); a
+  cancel doesn't (a cancelled alert's `ack_note` expires with the item).
 
 ### Index
 
@@ -1129,6 +1147,19 @@ and Athena (docs/features/ingest-history.md; the History path in
   `alert-processor` may write `alerts/` (its role, plus a Deny for every other
   principal in the bucket policy). The `alert_id` key reveals neither the resident nor
   the type of event.
+- **Alert final records** (docs/features/staff-resolve.md, criterion 8; user,
+  2026-11-07): `alerts/date=<yyyy-mm-dd>/<alert_id>.final.json`, next to the original
+  (same `<date>`, the UTC date of `event_ts`), written by `alert-processor` on **every
+  resolve** (nurse or doctor, the watchdog's device-problem resolve, a possible fall's
+  back-in-bed resolve) after the UpdateItem and before any email: the resolved
+  `silvercare-alerts` item as it then stands, in the same JSON format and content type
+  as the original, overwritten on a retry. It holds `ack_note`, `resolve_note`, and
+  the acknowledger's and resolver's Cognito `sub` (`acknowledged_by`, `resolved_by`),
+  never a name (`by_name` is never stored). The notes may hold health details, so it
+  is a health record, kept like `alerts/` (below). The incident's paper trail outlives
+  the item's 30-day expiry. Not written for a cancel. The original `<alert_id>.json`
+  is unchanged. The existing `HistoryAlertObjects` IAM statement
+  (`s3:PutObject` on `alerts/*`) already covers it.
 - **Daily summaries** (the curated layer, docs/features/curated-layer.md):
   `summaries/date=<yyyy-mm-dd>/<uuid4>.json`, one object per resident per day, where
   `<date>` is the **Singapore** date (unlike `telemetry/` and `alerts/`, whose dates are
@@ -1163,8 +1194,9 @@ and Athena (docs/features/ingest-history.md; the History path in
   summaries run fails, naming the table and date, if a clean partition it needs is
   missing; nothing is written or deleted then.
 - **Retention** (decided 2026-11-01; see [Retention](#retention)):
-  - **Derived records that informed care** (alerts under `alerts/`, daily summaries
-    under `summaries/`): the resident's lifetime + 6 years, the same rule as the
+  - **Derived records that informed care** (alerts under `alerts/`, their final
+    records with the acknowledge and closing notes included, daily summaries under
+    `summaries/`): the resident's lifetime + 6 years, the same rule as the
     threshold change history (MOH Circular 85/2022, Licence Conditions on the Retention Periods of Patient Health Records, under the Healthcare Services Act 2020).
   - **Raw telemetry** (`telemetry/`): downsampled to daily summaries per resident and
     metric after 90 days *(proposed)*, and the raw files deleted at 365 days
@@ -1277,6 +1309,11 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   query history age out rather than being erased.
 - **Before any real resident data arrives:**
   - the per-device erasure tool above exists
+  - one resident's S3 `alerts/` objects can be found and deleted (access, correction,
+    and date-of-death + 6 years requests): the keys hold only dates and alert IDs, and
+    the `<alert_id>.final.json` records hold free-text acknowledge and closing notes
+    (docs/features/staff-resolve.md). E.g. tag each object with its opaque
+    `resident_id` (needs `s3:PutObjectTagging` for alert-processor)
   - direct S3 reads can be traced (who read which object, when): none are recorded today
   - the shared developer user and its read access are reviewed
   - the clean job refuses dates whose raw files have expired (raw telemetry's expiry
@@ -1365,12 +1402,13 @@ critical-alert and `silvercare-iot-rules`.
 | History (S3 `telemetry/`, raw) | daily summaries made by 90 days, raw deleted at 365 days *(both figures proposed)* | daily summaries made the next morning (`summaries` Lambda); S3 lifecycle expiry on `telemetry/` 365 days after each file was written |
 | Clean tables (S3 `silvercare-clean-<account_id>`, `tables/`, `rejected` included) | 365 days after a file is written *(proposed)*, matching raw; re-running a date restarts its clock | S3 lifecycle expiry on `tables/` |
 | Athena results and query history | result files 7 days; query text 45 days (AWS's fixed limit) | S3 lifecycle expiry; AWS ages out the history |
-| Alert copies and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; summaries can be found by their `resident_id` tag, alert copies can't yet, and there is no date of death or deletion tool (gaps, see [S3 history](#s3-history)); no expiry rule. A re-run of a date replaces its summaries |
+| Alert copies, alert final records (`<alert_id>.final.json`, with `ack_note` and `resolve_note`), and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; summaries can be found by their `resident_id` tag, alert copies can't yet, and there is no date of death or deletion tool (gaps, see [S3 history](#s3-history)); no expiry rule. A re-run of a date replaces its summaries |
 | Failed fall and `vitals_alert` events (SQS `silvercare-critical-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
 | Latest device `vitals_alert`s | 5 per device | write rule |
 | Latest `alert_cancel`s ("I'm OK" presses) | 5 per wearable | write rule |
-| Nurse acknowledge notes (`ack_note` on the alert item) | deleted with the alert: 30 days after resolve or cancel (an acknowledged alert that is never resolved keeps it, see below); never in the S3 `alerts/` copy | TTL `expires_at` |
-| Status updates in `silvercare-alerts` (normally seconds; up to 4 days while retried) and `silvercare-alerts-dlq` (a Track B caregiver cancel, and a caregiver acknowledge of a device problem, carry the user's full name, `by_name`; a nurse acknowledge may carry the `note`) | up to 4 days in the queue, 14 days in the DLQ | SQS message retention |
+| Nurse acknowledge notes (`ack_note` on the alert item) | deleted with the alert: 30 days after resolve or cancel (an acknowledged alert that is never resolved keeps it, see below); not in the original S3 `alerts/` copy; a **resolved** alert's note is kept in its S3 final record (row above) | TTL `expires_at` |
+| Staff closing notes (`resolve_note` on the alert item; docs/features/staff-resolve.md) | deleted with the alert, 30 days after the resolve; kept in the S3 final record for the resident's lifetime + 6 years (user, 2026-11-07) | TTL `expires_at`; S3 as `alerts/` |
+| Status updates in `silvercare-alerts` (normally seconds; up to 4 days while retried) and `silvercare-alerts-dlq` (a Track B caregiver cancel, and a caregiver acknowledge of a device problem, carry the user's full name, `by_name`; a nurse acknowledge may carry the `note`, and a nurse or doctor resolve always does) | up to 4 days in the queue, 14 days in the DLQ | SQS message retention |
 | Device-problem alerts (`device_offline`, `battery_low`, `not_worn`; docs/features/watchdog.md) | open (or acknowledged) until the watchdog resolves them; resolved (or, for any cancelled one, cancelled) → 30 days after `resolved_at` / `cancelled_at`. An alert for a device that never recovers stays open until it is resolved by unassigning the device (the next watchdog run then resolves it) | TTL `expires_at` (the S3 `alerts/` copy stays, Open decision #4) |
 | `worn_false_since` (wearable `MSG#status` item) | while the wearable is off the wrist: overwritten or removed by `device-health` with the next newest status, gone when the item is replaced or removed (e.g. the device is unassigned or moved) | write rule |
 | Suppressed repeat alerts | not kept (log line with IDs and outcome only, 30 days) | — |
@@ -1401,11 +1439,11 @@ someone resolves them, and the doctor dashboard counts them in its alert summary
 
 ## Open questions
 
-- **Staff resolve note (`resolve_note`, decided 2026-11-05 as required):** who sees it
-  (staff only, or also the resident's caregivers, like `ack_note`); how long it is kept
-  (as a paper trail it may need the patient-health-record retention, but the alert item
-  expires 30 days after the resolve and the S3 `alerts/` copy is never updated); and
-  whether a staff resolve sends a follow-up email.
+- **Staff resolve note in the portal (`resolve_note`):** the email, retention, and
+  S3 final record were decided 2026-11-07 (docs/features/staff-resolve.md: emailed to
+  the resident's caregivers, kept in the final record for the resident's lifetime + 6
+  years). Whether Track B's API also returns `resolve_note` to caregivers in the
+  portal (as it does `ack_note`) is still Track B's to decide.
 
 None for the tables. Threshold defaults and vitals alert rules are set by
 docs/features/vitals-alerts.md (Open decision #2); how links are created comes from
