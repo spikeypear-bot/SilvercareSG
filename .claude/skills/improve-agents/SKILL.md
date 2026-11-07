@@ -37,7 +37,9 @@ After any of these, once the actual fix is done:
    - specs missing something builders needed → `feature-spec` (template or checklist)
    Prefer fixing an existing sentence over adding a new one. Match the file's style.
 4. **Verify the edit.**
-   - Workflows: `node --check .claude/workflows/<name>.js`, and re-read the changed part.
+   - Workflows: syntax-check, and re-read the changed part. Plain `node --check` fails
+     on every workflow (top-level `return`), so wrap it first:
+     `{ echo "(async function(){"; sed 's/^export const meta/const meta/' .claude/workflows/<name>.js; echo "})"; } > "$TMP/wf.js" && node --check "$TMP/wf.js"`.
    - Anything that changes what a `make` target runs: run that target.
    - Re-read the whole edited section to check it doesn't contradict the rest of the
      file or `CLAUDE.md`.

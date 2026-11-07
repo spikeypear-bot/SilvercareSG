@@ -24,8 +24,11 @@ lambdas/<name>/tests/
   `AWS_ACCESS_KEY_ID=testing`, `AWS_SECRET_ACCESS_KEY=testing`,
   `AWS_DEFAULT_REGION=ap-southeast-1`, and the env vars the handler reads
   (table names etc.)
-- provide fixtures that start moto (`from moto import mock_aws`) and create the tables
-  and buckets the handler needs, matching the key schema in Terraform **and each
+- provide fixtures that start moto (`from moto import mock_aws`) for the services the
+  dev image installs moto's extras for (`requirements-dev.txt`: DynamoDB, S3, Cognito);
+  for any other service (Athena, Glue) write a small recording fake of just the calls
+  the handler makes (see `FakeAthena`, `FakeGlue` in `lambdas/summaries/tests/helpers.py`),
+  and create the tables and buckets the handler needs, matching the key schema in Terraform **and each
   index's projection**: read it from `infra/dynamodb.tf` with the `tf_projection()`
   helper the existing conftests have, never `ProjectionType: ALL`, so a handler that
   reads an attribute the index doesn't project fails in tests too
