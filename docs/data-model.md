@@ -14,8 +14,9 @@ with the resident pages feature:
 - [Threshold change history](#threshold-change-history) (pattern 27)
 - recording a resident's date of death: a gap, with no field or access pattern yet
   (see [Threshold change history](#threshold-change-history))
-- the S3 history retention figures (90 / 365 days) and daily summaries (see
-  [S3 history](#s3-history) and [Retention](#retention))
+- the S3 history retention figures (90 / 365 days; see [S3 history](#s3-history) and
+  [Retention](#retention)). Daily summaries are built (docs/features/curated-layer.md,
+  2026-11-07)
 
 DynamoDB holds the **live state** the portal and the backend Lambdas read: the device
 registry, the latest 5 messages per device and message type, and alerts. It does not
@@ -110,7 +111,7 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container; `alert_cancel` always reads it uncached, docs/features/possible-fall.md). `device-health` reads no registry |
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | as pattern 1 for `vitals`, assigned devices only (cached 5 min, including "no item") |
 | 3 | `telemetry`, `device-health`, `critical-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
-| 4 | backend: `watchdog` (docs/features/watchdog.md); staff only: devices view, nurse and doctor dashboards (`GET /dashboard`: `pk`, `resident_id`) | Every device, assigned or not (the watchdog keeps only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog: eventually consistent, paginated) | every 5 min; per devices-view load |
+| 4 | backend: `watchdog` (docs/features/watchdog.md), `summaries` (docs/features/curated-layer.md); staff only: devices view, nurse and doctor dashboards (`GET /dashboard`: `pk`, `resident_id`) | Every device, assigned or not (the watchdog and summaries keep only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog, summaries: eventually consistent, paginated; summaries projects `pk`, `resident_id`) | every 5 min; once a day (summaries); per devices-view load |
 | 5 | backend: `watchdog`; staff only: nurse and doctor dashboards, devices view (`status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: `vitals` and `status`, see Dashboard) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
@@ -136,6 +137,7 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 27 | *(proposed)* Resident page: staff only | This resident's threshold changes, newest first | registry | Query `pk = THRESHOLD_LOG#<resident_id>`, descending | per page view |
 | 28 | backend: `watchdog` | `worn_false_since` of the wearables whose newest `status` has `worn = false` (docs/features/watchdog.md, criterion 2) | latest | BatchGetItem `pk = DEVICE#<device_id>`, `sk = MSG#status` (up to 100 keys per call, `UnprocessedKeys` retried), eventually consistent, projecting `pk`, `worn_false_since` | every 5 min, only for wearables off the wrist |
 | 27 | backend: `watchdog` (docs/features/possible-fall.md, criterion 3a) | Bedroom units in possible-fall test mode | registry `by-type` | Query `entity_type = TEST_MODE` (as pattern 4), eventually consistent, paginated, projecting `pk`, `sk`; usually returns nothing | every 5 min |
+| 29 | backend: `summaries` (docs/features/curated-layer.md, criteria 6-8) | Every assigned device's `assigned_at` (which `by-type` doesn't project), and each assigned resident's thresholds | registry | BatchGetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` (projecting `pk`, `resident_id`, `device_type`, `assigned_at`), then `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` (projecting `pk`, `hr_bpm`, `spo2_pct`, `skin_temp_c`); eventually consistent, up to 100 keys per call, `UnprocessedKeys` retried with back-off. IAM limits the role to `DEVICE#*` and `THRESHOLDS#*` partitions (`dynamodb:LeadingKeys`) | once a day (after the clean job) |
 
 No pattern uses `Scan`.
 
@@ -477,7 +479,7 @@ its fields, and its tests check that.
 
 | Index | Hash | Range | Projection | Serves |
 |---|---|---|---|---|
-| `by-type` | `entity_type` | `pk` | INCLUDE `display_name`, `home_id`, `photo_key`, `device_type`, `resident_id` | 4, 8, 27, photo cleanup |
+| `by-type` | `entity_type` | `pk` | INCLUDE `display_name`, `home_id`, `photo_key`, `device_type`, `resident_id` | 4 (also `summaries`), 8, 27, photo cleanup |
 | `by-resident` | `gsi1_pk` | `gsi1_sk` | INCLUDE `device_type`, `relationship` | 10, 15 |
 
 ## Photos
@@ -1121,12 +1123,15 @@ and Athena (docs/features/ingest-history.md; the History path in
 
 - **Bucket** `silvercare-history-<account_id>` in `ap-southeast-1`: all public access
   blocked, `BucketOwnerEnforced`, SSE-S3, TLS-only bucket policy. Versioning **off**,
-  so a delete really deletes (e.g. for a PDPA erasure request). One lifecycle rule:
-  abort incomplete multipart uploads after 1 day. Retention is decided (see
-  [Retention](#retention)) but not in Terraform yet: `telemetry/` needs an expiry
-  rule at 365 days *(proposed)*, added only once daily summaries exist. The clean job must
-  refuse dates older than that limit in the same change: a re-run deletes a date's output
-  first, so with its raw files gone it would leave that date empty.
+  so a delete really deletes (e.g. for a PDPA erasure request). Lifecycle rules: objects
+  under `telemetry/` expire 365 days after they were written *(figure proposed, see
+  [Retention](#retention))*, added with the daily summaries
+  (docs/features/curated-layer.md, criterion 23); abort incomplete multipart uploads
+  after 1 day. `alerts/` and `summaries/` have no expiry. No raw file reaches 365 days
+  before the project ends (November 2026), so nothing is deleted unsummarised. *(Not built, open question)* The clean job doesn't
+  yet refuse dates whose raw files have expired: a re-run deletes a date's output first,
+  so with its raw files gone it would leave that date empty. Don't re-run clean for a
+  date older than 365 days.
 - **Key layout:**
   `telemetry/message=<message>/date=<yyyy-mm-dd>/<yyyymmddTHHMMSSZ>-<uuid4>.jsonl.gz`.
   `<message>` is the body's `message` if it matches `^[a-z_]{1,16}$`, else `unknown`;
@@ -1155,7 +1160,39 @@ and Athena (docs/features/ingest-history.md; the History path in
   the item's 30-day expiry. Not written for a cancel. The original `<alert_id>.json`
   is unchanged. The existing `HistoryAlertObjects` IAM statement
   (`s3:PutObject` on `alerts/*`) already covers it.
-- **Daily summaries:** `summaries/` is reserved for them *(proposed, not built)*.
+- **Daily summaries** (the curated layer, docs/features/curated-layer.md):
+  `summaries/date=<yyyy-mm-dd>/<uuid4>.json`, one object per resident per day, where
+  `<date>` is the **Singapore** date (unlike `telemetry/` and `alerts/`, whose dates are
+  UTC). The body is one line of compact JSON (UTF-8, `Content-Type: application/json`)
+  with the fields of the curated-layer spec, criterion 11 (`resident_id`, `date`, the
+  heart-rate, SpO2, and skin-temperature min / avg / max, `activity_pct_avg`,
+  `vitals_readings`, the below / above counts, `thresholds`, `bed_minutes`,
+  `motion_events`, `falls`, `vitals_alert_episodes`, `cancels`, `generated_at`,
+  `schema_version` = 1). Each object carries the tag `resident_id=<id>`, set in the same
+  PutObject, so one resident's summaries can be found for erasure. The key is random, so
+  it reveals neither the resident nor any value. A re-run of a date replaces it: the
+  Lambda completes the query and builds every summary first, then deletes everything
+  under that date and writes the new objects. Only the `summaries` Lambda may write or
+  delete `summaries/` (its role, plus a Deny on `s3:PutObject` and `s3:DeleteObject` for
+  every other principal in the bucket policy; this blocks admins too, so erasure needs
+  that statement changed or a tool running as the role).
+- **Backfill** (manual, the owner, after merge; curated-layer criterion 24): for each
+  Singapore date since the first raw file, oldest first, re-run `clean` for that date if
+  its clean tables are missing, then `summaries` for the same date. Summarising date D
+  reads clean partitions D−1 and D (and D−2 for `bed` and `vitals_alert`), so clean must
+  have run for those dates first. A synchronous `aws lambda invoke` of clean doesn't
+  trigger summaries (only asynchronous runs do), so run both:
+
+  ```sh
+  aws lambda invoke --function-name silvercare-clean --cli-binary-format raw-in-base64-out \
+    --payload '{"date": "2026-10-25"}' clean-out.json
+  aws lambda invoke --function-name silvercare-summaries --cli-binary-format raw-in-base64-out \
+    --payload '{"date": "2026-10-25"}' summaries-out.json
+  ```
+
+  Each output file holds only the date (and, for summaries, the count written). A
+  summaries run fails, naming the table and date, if a clean partition it needs is
+  missing; nothing is written or deleted then.
 - **Retention** (decided 2026-11-01; see [Retention](#retention)):
   - **Derived records that informed care** (alerts under `alerts/`, their final
     records with the acknowledge and closing notes included, daily summaries under
@@ -1167,12 +1204,11 @@ and Athena (docs/features/ingest-history.md; the History path in
     record, and keeping every reading for lifetime + 6 years would cost more and serve
     no clinical purpose.
   - *(proposed)* **Gap: deleting one resident's derived records.** Lifetime + 6 years
-    is per resident, but neither key layout names the resident: `telemetry/` batches
-    many devices into one file, and an `alerts/` key holds only the date and
-    `alert_id`. Deleting one resident's alerts and summaries at date of death + 6 years
-    needs a way to find them (for example, an object tag with the opaque `resident_id`,
-    like photos), designed with the summary job. This needs the date-of-death field too
-    (see [Threshold change history](#threshold-change-history)).
+    is per resident, but no key layout names the resident: `telemetry/` batches many
+    devices into one file, and an `alerts/` key holds only the date and `alert_id`.
+    Summaries carry a `resident_id` object tag, so they can be found by it (no tool
+    yet); alerts can't yet. Deleting at date of death + 6 years needs the date-of-death
+    field too (see [Threshold change history](#threshold-change-history)).
 - **Format:** gzip-compressed JSON Lines (`Content-Type: application/gzip`, no
   `Content-Encoding`), UTF-8, one compact JSON object per line in the order received,
   ending with a newline. Each line is the IoT rule's output (device payload plus
@@ -1182,10 +1218,13 @@ and Athena (docs/features/ingest-history.md; the History path in
 - **Writers:** the `history` Lambda (`silvercare-history`), one file per message type and
   UTC day per batch (up to 1,000 messages or 5 minutes) from the `silvercare-history`
   queue. It may only add objects under `telemetry/`. `alert-processor` writes
-  `alerts/` only.
+  `alerts/` only. The `summaries` Lambda (`silvercare-summaries`) lists, writes, and
+  deletes `summaries/` only.
 - **Readers:** developers (the shared IAM user's `ReadProjectBuckets` statement; read
   only, no write or delete), e.g. `scripts/ingest-check.py --history`. The `clean`
   Lambda, through Athena, reads `telemetry/` only (see [S3 clean layer](#s3-clean-layer)).
+  Through Athena, `summaries/` is the `daily_summaries` table (developers: `DESCRIBE`
+  and `SELECT`); the `summaries` Lambda never reads it back.
 
 ## S3 clean layer
 
@@ -1198,7 +1237,9 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   `BucketOwnerEnforced`, SSE-S3, a TLS-only bucket policy, and versioning off:
   - `silvercare-clean-<account_id>`: `tables/<table>/date=<yyyy-mm-dd>/`, Parquet
     (Snappy). Expires at 365 days *(proposed)*, see [Retention](#retention).
-  - `silvercare-athena-results-<account_id>`: `clean/` for the Lambda, `analysis/` for
+  - `silvercare-athena-results-<account_id>`: `clean/` for the clean Lambda,
+    `summaries/` for the summaries Lambda (workgroup `silvercare-summaries`, the same
+    settings as `silvercare-clean`: engine 3, enforced, 1 GB scan limit), `analysis/` for
     developers. Objects expire after 7 days.
 - **Glue database** `silvercare_lake`:
   - `raw_telemetry`: one `line string` column (text input, gzip read automatically),
@@ -1206,6 +1247,15 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
     `alerts/` is not part of it.
   - The eight clean tables and `rejected` below, each partitioned by `date` (the raw
     file's `date`, from `received_at`).
+  - `daily_summaries` (the curated layer, docs/features/curated-layer.md): JSON (OpenX
+    JSON SerDe) at `s3://silvercare-history-<account_id>/summaries/`, partitioned by
+    `date` (string, the **Singapore** date; it is the partition key, so not also a
+    column). Columns as the summary fields in [S3 history](#s3-history), with
+    `thresholds` a
+    `struct<hr_bpm:struct<min:int,max:int>,spo2_pct:struct<min:int>,skin_temp_c:struct<min:double,max:double>>`.
+    `summaries/` is a Lake Formation location with the `silvercare-lake-location` role,
+    which may only read it. The `summaries` Lambda adds each date's partition
+    (`ALTER TABLE ... ADD IF NOT EXISTS PARTITION`) after writing it.
 
 | Table | From raw `message` | Columns besides the common ones |
 |---|---|---|
@@ -1244,7 +1294,8 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   | Who | Through Athena and the catalog (Lake Formation) | Direct S3 |
   |---|---|---|
   | `silvercare-clean` role | runs queries in `silvercare-clean`; reads `raw_telemetry`, adds partitions | read `telemetry/` (no write or delete); list, write, and delete `tables/` in the clean bucket; own results prefix |
-  | Developers | run queries in `silvercare-analysis`; the eight clean tables only, not `raw_telemetry` or `rejected` | read everything, including `rejected` and raw, through `ReadProjectBuckets`; write only to `analysis/` results |
+  | `silvercare-summaries` role | runs queries in `silvercare-summaries`; `DESCRIBE` on `default` and `silvercare_lake`; `SELECT` on `vitals`, `fall`, `vitals_alert`, `alert_cancel`, `bed`, `motion`; `ALTER`, `DESCRIBE`, `INSERT` on `daily_summaries` (adds partitions) | list, write (with tags), and delete `summaries/` in the history bucket (no read, no `telemetry/` or `alerts/`); own `summaries/` results prefix |
+  | Developers | run queries in `silvercare-analysis`; the eight clean tables and `daily_summaries`, not `raw_telemetry` or `rejected` | read everything, including `rejected`, raw, and `summaries/`, through `ReadProjectBuckets`; write only to `analysis/` results |
 
   Lake Formation doesn't limit direct S3 reads. That matches today's rule while all data
   is synthetic.
@@ -1265,7 +1316,8 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
     `resident_id` (needs `s3:PutObjectTagging` for alert-processor)
   - direct S3 reads can be traced (who read which object, when): none are recorded today
   - the shared developer user and its read access are reviewed
-  - raw telemetry's expiry rule exists
+  - the clean job refuses dates whose raw files have expired (raw telemetry's expiry
+    rule exists since the curated layer)
   - `http://localhost:5173` is removed from the API's CORS origins (`infra/api.tf`), so
     developers' local dev servers can no longer call the live API
   - the `GET /dashboard` role's `cognito-idp:AdminGetUser` (it reads a caregiver's whole
@@ -1286,6 +1338,7 @@ read of up to 4 KB per second, or two eventually consistent ones.
 | `by-message` index writes | vitals 0.33/s + status/bed/motion 0.15/s, 1 WCU each ≈ **0.5 WCU** |
 | registry reads | cached in Lambdas; dashboards ≈ **< 1 RCU** |
 | `watchdog` (every 5 min) | eventually consistent Queries of `by-type` (~40 devices, plus `TEST_MODE`, normally empty), `by-message` `status` (~40 items, a few KB), `bed` and `motion` (~20 items each), and `open`, plus one BatchGetItem for wearables off the wrist: a few RCU per run, about 1 run per 300 s ≈ **< 0.1 RCU** on average |
+| `summaries` (once a day) | an eventually consistent Query of `by-type` (~40 devices), then BatchGetItem of ~40 ASSIGNMENT and ~20 THRESHOLDS items (pattern 29): about 60 items × 0.5 RCU = **30 RCU at once** on the 3-RCU registry, absorbed by burst capacity; throttled keys come back as `UnprocessedKeys` and are retried with back-off. ≈ **0 RCU** on average |
 | alerts | rare writes (plus up to two escalation UpdateItems per alert: `escalated_at` at once for critical and unassigned alerts, or `escalation_queued_at` and `escalated_at` for warnings; and two per alert a status update changes); one strongly consistent Query per non-fall alert (repeat check) and per `alert_cancel` (pattern 24, rare), one strongly consistent GetItem per escalation check, per acknowledge, and per caregiver cancel; dashboard polling ≈ **< 1 RCU** |
 
 Provisioned (fixed, no auto scaling):
@@ -1346,10 +1399,10 @@ critical-alert and `silvercare-iot-rules`.
 | Cancelled alerts | 30 days after the cancel (`cancelled_at`, when the press was received) | TTL `expires_at` (the S3 `alerts/` copy stays, see below) |
 | Residents (profile, thresholds, photo), devices, links | while the resident or user is in the programme | deleted at offboarding (below) |
 | Threshold change history *(proposed)* | the resident's lifetime + 6 years (MOH Circular 85/2022); kept after offboarding | TTL `expires_at` = date of death + 6 years, set when a date of death is recorded (no field for it yet); no expiry until then |
-| History (S3 `telemetry/`, raw) | daily summaries made by 90 days, raw deleted at 365 days *(both proposed)* | S3 lifecycle expiry on `telemetry/` at 365 days (not in Terraform yet) |
+| History (S3 `telemetry/`, raw) | daily summaries made by 90 days, raw deleted at 365 days *(both figures proposed)* | daily summaries made the next morning (`summaries` Lambda); S3 lifecycle expiry on `telemetry/` 365 days after each file was written |
 | Clean tables (S3 `silvercare-clean-<account_id>`, `tables/`, `rejected` included) | 365 days after a file is written *(proposed)*, matching raw; re-running a date restarts its clock | S3 lifecycle expiry on `tables/` |
 | Athena results and query history | result files 7 days; query text 45 days (AWS's fixed limit) | S3 lifecycle expiry; AWS ages out the history |
-| Alert copies, alert final records (`<alert_id>.final.json`, with `ack_note` and `resolve_note`), and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; finding one resident's objects and the date of death are gaps (see [S3 history](#s3-history)); no expiry rule until then |
+| Alert copies, alert final records (`<alert_id>.final.json`, with `ack_note` and `resolve_note`), and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; summaries can be found by their `resident_id` tag, alert copies can't yet, and there is no date of death or deletion tool (gaps, see [S3 history](#s3-history)); no expiry rule. A re-run of a date replaces its summaries |
 | Failed fall and `vitals_alert` events (SQS `silvercare-critical-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
 | Latest device `vitals_alert`s | 5 per device | write rule |
 | Latest `alert_cancel`s ("I'm OK" presses) | 5 per wearable | write rule |
