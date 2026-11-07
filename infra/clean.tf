@@ -62,10 +62,12 @@ locals {
   }
 
   # summaries: docs/features/curated-layer.md, criterion 21 (its Lambda is in summaries.tf).
+  # tableau: docs/features/tableau-access.md, criterion 8 (its users are in tableau.tf).
   athena_workgroups = {
     clean     = { name = "silvercare-clean", prefix = "clean" }
     analysis  = { name = "silvercare-analysis", prefix = "analysis" }
     summaries = { name = "silvercare-summaries", prefix = "summaries" }
+    tableau   = { name = "silvercare-tableau", prefix = "tableau" }
   }
 
   # Keys are a hash of the stable user ID, because resource addresses appear in the

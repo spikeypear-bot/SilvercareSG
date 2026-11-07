@@ -59,6 +59,9 @@ justified by something the code actually does.
   `display_name`, `home_id`, `photo_key`; see `api_devices` in `infra/api.tf`): list
   only the attributes read plus keys, and send `Select: SPECIFIC_ATTRIBUTES` in the
   request.
+- **Lake Formation principals:** an IAM user or role that gets Lake Formation grants has
+  no `path`, since its ARN is the principal and AWS documents only plain
+  `user/<name>` / `role/<name>` ARNs there.
 - **Prefix-protecting Denies** in a bucket policy that rely on object tags (e.g. a
   `resident_id` tag used for erasure) also deny `s3:PutObjectTagging` and
   `s3:DeleteObjectTagging` to everyone but the writer.
