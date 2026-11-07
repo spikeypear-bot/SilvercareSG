@@ -32,8 +32,10 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 
 - [ ] Every acceptance criterion is testable: a tester could write a pass/fail test for it.
 - [ ] Anything the spec says about existing behaviour was checked in the code that runs it,
-      not a comment or memory, and anything about AWS behaviour in AWS's docs. Every
-      "see Open questions" pointer has a matching item.
+      not a comment or memory, and anything about AWS behaviour in AWS's docs, and
+      about a third-party tool (what it stores on the user's machine, which edition
+      has which feature) in that tool's docs. Every "see Open questions" pointer has a
+      matching item.
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
       **specific resident** is decided. A new group (e.g. `ops`) also lists which
       existing access patterns in `docs/data-model.md` it gets and which it's refused,
