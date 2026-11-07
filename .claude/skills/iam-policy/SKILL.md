@@ -48,6 +48,12 @@ justified by something the code actually does.
   / `kms:GenerateDataKey` as needed, on that key's ARN.
 - **Use conditions** to narrow further where useful (e.g.
   `dynamodb:LeadingKeys`, `aws:SecureTransport`).
+- **DynamoDB attribute lists:** `ForAllValues:StringEquals` on `dynamodb:Attributes`
+  passes vacuously when a read sends no `ProjectionExpression` (the key is absent), so
+  on its own it doesn't stop a GetItem / BatchGetItem / Query reading the whole item.
+  Pair it with `Null` `dynamodb:Attributes` = `"false"` (and `dynamodb:Select` =
+  `SPECIFIC_ATTRIBUTES`, `IfExists` for the GetItem family) on every read statement
+  that is meant to hide fields such as `medical_notes` or a `sub`.
 
 ## IoT device policies
 

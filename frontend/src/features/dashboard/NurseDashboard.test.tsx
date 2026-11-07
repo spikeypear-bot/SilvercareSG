@@ -1,13 +1,20 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { apiAlert, apiResident } from '../../test/apiDashboard'
 import { axeViolations } from '../../test/axe'
 import { dashboardLoader, demoDataFor, resetDashboardLoader } from '../../test/dashboardMock'
 import { TEST_USERS, deferred } from '../../test/fixtures'
 import { renderWithAuth } from '../../test/render'
 import type { AuthUser } from '../../types/auth'
-import type { DashboardData, ResidentAlert } from '../../types/dashboard'
+import type {
+  ApiDashboardAlert,
+  ApiDashboardResident,
+  DashboardData,
+  ResidentAlert,
+} from '../../types/dashboard'
+import type { DemoDashboardData } from './demoData'
 import { NurseDashboard } from './NurseDashboard'
-import type { DashboardView } from './useDashboardData'
+import { toResident, toResidentAlert, type DashboardView } from './useDashboardData'
 
 vi.mock('./useDashboardData', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./useDashboardData')>()
@@ -30,7 +37,7 @@ function renderNurse(user: AuthUser = TEST_USERS.nurse) {
   return { user: ue, ...view }
 }
 
-async function renderLoaded(data: DashboardData = demoDataFor('staff'), user?: AuthUser) {
+async function renderLoaded(data: DemoDashboardData = demoDataFor('staff'), user?: AuthUser) {
   dashboardLoader.mockResolvedValue(data)
   const ctx = renderNurse(user)
   await screen.findByRole('heading', { level: 2, name: /^Open alerts/ })
@@ -60,9 +67,12 @@ async function acknowledge(user: ReturnType<typeof userEvent.setup>, context: st
   await user.click(ackButton(context))
   await user.click(ackButton(context))
 }
-function acknowledgeNow(context: string) {
+/** Clicks Acknowledge twice (opens the note form, submits it), then lets the action's
+ * promise settle: the announcement comes only once the change is accepted. */
+async function acknowledgeNow(context: string) {
   fireEvent.click(ackButton(context))
   fireEvent.click(ackButton(context))
+  await act(async () => {})
 }
 const resolveButton = (context: string) => screen.getByRole('button', { name: `Resolve: ${context}` })
 /**
@@ -99,7 +109,7 @@ const DEMO_INBOX_ORDER: ReadonlyArray<[string, string]> = [
 ]
 
 /** A single synthetic alert for focused tests. */
-function oneAlert(overrides: Partial<ResidentAlert> = {}): DashboardData {
+function oneAlert(overrides: Partial<ResidentAlert> = {}): DemoDashboardData {
   const data = demoDataFor('staff')
   const alert: ResidentAlert = {
     alert_id: 'alert-test-001',
@@ -118,7 +128,7 @@ function oneAlert(overrides: Partial<ResidentAlert> = {}): DashboardData {
 
 describe('loading, error, and layout', () => {
   it('shows skeletons with a loading status, plus header, banner, and greeting', () => {
-    dashboardLoader.mockReturnValue(deferred<DashboardData>().promise)
+    dashboardLoader.mockReturnValue(deferred<DemoDashboardData>().promise)
     renderNurse()
     expect(screen.getByRole('status')).toHaveTextContent('Loading dashboard')
     expect(screen.getByRole('heading', { level: 1, name: 'Nurse dashboard' })).toBeInTheDocument()
@@ -706,7 +716,7 @@ describe('escalation countdown (fake clock)', () => {
     return { ...data, alerts: data.alerts.filter((a) => !(a.resident_id === 'res-0002' && a.escalates_at)) }
   }
 
-  async function renderAtNow(data: DashboardData = withoutB()) {
+  async function renderAtNow(data: DemoDashboardData = withoutB()) {
     dashboardLoader.mockResolvedValue(data)
     renderWithAuth(<NurseDashboard />, { user: TEST_USERS.nurse })
     await act(async () => {
@@ -754,7 +764,7 @@ describe('escalation countdown (fake clock)', () => {
     tick(180_000)
     expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
     // fireEvent, not user-event: user-event's internal delays stall under fake timers.
-    acknowledgeNow(H)
+    await acknowledgeNow(H)
     expect(announcer()).toHaveTextContent(`Acknowledged: ${H}.`)
     expect(rowFor(H)).not.toHaveTextContent('Escalated to the care centre nurse')
   })
@@ -782,7 +792,7 @@ describe('escalation countdown (fake clock)', () => {
   it('acknowledging before the deadline means no escalation announcement', async () => {
     await renderAtNow()
     tick(140_000)
-    acknowledgeNow(H)
+    await acknowledgeNow(H)
     expect(announcer()).toHaveTextContent(`Acknowledged: ${H}.`)
     const announced = announcer().textContent
     tick(5 * 60_000)
@@ -837,7 +847,7 @@ describe('escalation countdown (fake clock)', () => {
   it('acknowledging a different alert does not reset or repeat the countdown announcement', async () => {
     await renderAtNow()
     tick(10_000)
-    acknowledgeNow('Fall detected, Test Resident C')
+    await acknowledgeNow('Fall detected, Test Resident C')
     expect(within(rowFor(H)).getByText('Not yet escalated')).toBeInTheDocument()
     tick(139_000)
     expect(within(rowFor(H)).getByText('Not yet escalated')).toBeInTheDocument()
@@ -845,7 +855,7 @@ describe('escalation countdown (fake clock)', () => {
     tick(1_000)
     expect(announcer()).toHaveTextContent(`Escalated to the care centre nurse: ${H}.`)
     const announced = announcer().textContent
-    acknowledgeNow('Fall detected, Test Resident Q')
+    await acknowledgeNow('Fall detected, Test Resident Q')
     expect(announcer()).toHaveTextContent('Acknowledged: Fall detected, Test Resident Q.')
     expect(announcer().textContent).not.toBe(announced)
     const afterAck = announcer().textContent
@@ -1015,7 +1025,7 @@ describe('accessibility', { timeout: 30_000 }, () => {
   )
 
   it('has no axe violations in the loading state', async () => {
-    dashboardLoader.mockReturnValue(deferred<DashboardData>().promise)
+    dashboardLoader.mockReturnValue(deferred<DemoDashboardData>().promise)
     const { container } = renderNurse()
     expect(await axeViolations(container)).toEqual([])
   })
@@ -1058,7 +1068,7 @@ describe('staff area nav', () => {
   })
 
   it('is shown in the loading and error states too', async () => {
-    dashboardLoader.mockReturnValue(deferred<DashboardData>().promise)
+    dashboardLoader.mockReturnValue(deferred<DemoDashboardData>().promise)
     renderNurse()
     expect(screen.getByRole('navigation', { name: 'Staff area' })).toBeInTheDocument()
     cleanup()
@@ -1072,5 +1082,173 @@ describe('staff area nav', () => {
     const { user } = await renderLoaded()
     await user.click(screen.getByRole('link', { name: 'Devices' }))
     expect(screen.getByTestId('location')).toHaveTextContent('/devices')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GET /dashboard data: API-shaped bodies mapped through toResident / toResidentAlert,
+// with the nulls the API sends (no device assigned, never reported, unknown battery).
+
+describe('rendered from GET /dashboard data', () => {
+  const minutesFromNow = (m: number) => new Date(Date.now() + m * 60_000).toISOString()
+
+  /**
+   * A: all normal. B: no wearable, no bedroom unit, no readings. C: wearable offline and
+   * never reported. D: wearable at 12%, bedroom unit offline (last seen 30 min ago).
+   * E: wearable with an unknown battery, bedroom unit offline and never reported.
+   */
+  function apiDashboardData(): DashboardData {
+    const residents: ApiDashboardResident[] = [
+      apiResident(1, { status: 'urgent', status_text: 'Synthetic: fall detected.' }),
+      apiResident(2, { wearable: null, bedroom: null, vitals: [], home_id: null }),
+      apiResident(3, { wearable: { ts: null, battery_pct: null, worn: null, online: false }, vitals: [] }),
+      apiResident(4, { wearable: { battery_pct: 12 }, bedroom: { online: false, ts: minutesFromNow(-30) } }),
+      apiResident(5, { wearable: { battery_pct: null }, bedroom: { online: false, ts: null } }),
+    ]
+    const alerts: ApiDashboardAlert[] = [
+      apiAlert({
+        alert_id: 'alert-test-001',
+        resident_id: 'resident-test-001',
+        device_id: 'wearable-test-001',
+        alert_type: 'fall',
+        severity: 'critical',
+        event_ts: minutesFromNow(-1),
+        escalated_at: minutesFromNow(-1),
+      }),
+      apiAlert({
+        alert_id: 'alert-test-002',
+        resident_id: 'resident-test-004',
+        device_id: 'wearable-test-004',
+        alert_type: 'spo2_low',
+        severity: 'warning',
+        event_ts: minutesFromNow(-2),
+        escalates_at: minutesFromNow(3),
+      }),
+      apiAlert({
+        alert_id: 'alert-test-003',
+        resident_id: 'resident-test-004',
+        device_id: 'wearable-test-004',
+        alert_type: 'battery_low',
+        severity: 'warning',
+        status: 'acknowledged',
+        event_ts: minutesFromNow(-20),
+        acknowledged_at: minutesFromNow(-10),
+        acknowledged_by_role: 'caregiver',
+        acknowledged_by: 'Test Caregiver A',
+      }),
+    ]
+    return { residents: residents.map(toResident), alerts: alerts.map(toResidentAlert) }
+  }
+
+  async function renderApiLoaded() {
+    dashboardLoader.mockResolvedValue(apiDashboardData())
+    const ctx = renderNurse()
+    await screen.findByRole('heading', { level: 2, name: /^Open alerts/ })
+    return ctx
+  }
+
+  it('tiles count only devices that exist and batteries that are known', async () => {
+    await renderApiLoaded()
+    expect(tileValue('Residents monitored')).toBe('5')
+    expect(tileValue('Open alerts')).toBe('3')
+    expect(within(tile('Open alerts')).getByText('1 critical')).toBeInTheDocument()
+    // C's wearable, D's and E's bedroom units; B has no devices to be offline.
+    expect(tileValue('Devices offline')).toBe('3')
+    // D only: C and E have an unknown battery, B has no wearable.
+    expect(tileValue('Wearables low on battery')).toBe('1')
+  })
+
+  it('shows the API alerts in the inbox, with the escalation label and the caregiver acknowledge', async () => {
+    await renderApiLoaded()
+    expect(inboxHeading()).toHaveTextContent('Open alerts (3)')
+    expect(openRows()).toHaveLength(3)
+
+    const fall = rowFor('Fall detected, Test Resident A')
+    expect(within(fall).getByText('Open')).toBeInTheDocument()
+    expect(ackButton('Fall detected, Test Resident A')).toBeInTheDocument()
+
+    const spo2 = rowFor('Low blood oxygen, Test Resident D')
+    expect(within(spo2).getByText('Not yet escalated')).toBeInTheDocument()
+    expect(spo2.querySelector('[role="timer"]')).toBeNull()
+
+    const battery = rowFor('Low battery, Test Resident D')
+    expect(battery).toHaveTextContent(/Acknowledged by Test Caregiver A \(caregiver\), 10 min ago/)
+    expect(battery).not.toHaveTextContent(/care centre nurse/)
+    expect(within(battery).queryAllByRole('button')).toEqual([])
+  })
+
+  it('the nurse can acknowledge an alert mapped from the API', async () => {
+    const { user } = await renderApiLoaded()
+    await acknowledge(user, 'Fall detected, Test Resident A')
+    const fall = rowFor('Fall detected, Test Resident A')
+    expect(within(fall).getByText('Acknowledged')).toBeInTheDocument()
+    expect(fall).toHaveTextContent(/Acknowledged by the care centre nurse/)
+    await waitFor(() => expect(announcer()).toHaveTextContent('Acknowledged: Fall detected, Test Resident A.'))
+  })
+
+  it('offline panel: "Never reported" for a device with no ts, "Last seen" otherwise, nothing for no device', async () => {
+    const { user } = await renderApiLoaded()
+    await user.click(tile('Devices offline'))
+    const panel = screen.getByRole('region', { name: /^Devices offline/ })
+    const items = within(panel).getAllByRole('listitem')
+    expect(items).toHaveLength(3)
+
+    expect(items[0]).toHaveTextContent('wearable-test-003')
+    expect(items[0]).toHaveTextContent('Test Resident C')
+    expect(items[0]).toHaveTextContent('Never reported')
+    expect(items[0]).not.toHaveTextContent('Last seen')
+
+    expect(items[1]).toHaveTextContent('bedroom-test-004')
+    expect(items[1]).toHaveTextContent('Test Resident D')
+    expect(items[1]).toHaveTextContent('Last seen 30 min ago')
+
+    expect(items[2]).toHaveTextContent('bedroom-test-005')
+    expect(items[2]).toHaveTextContent('Test Resident E')
+    expect(items[2]).toHaveTextContent('Never reported')
+
+    expect(panel).not.toHaveTextContent(/Test Resident B|NaN|Invalid|undefined|null/)
+  })
+
+  it('low-battery panel leaves out unknown batteries and residents with no wearable', async () => {
+    const { user } = await renderApiLoaded()
+    await user.click(tile('Wearables low on battery'))
+    const panel = screen.getByRole('region', { name: /^Wearables low on battery/ })
+    const items = within(panel).getAllByRole('listitem')
+    expect(items).toHaveLength(1)
+    expect(items[0]).toHaveTextContent('12%')
+    expect(items[0]).toHaveTextContent('wearable-test-004')
+    expect(items[0]).toHaveTextContent('Test Resident D')
+    expect(panel).not.toHaveTextContent(/Unknown|Test Resident [BCE]/)
+  })
+
+  it('residents panel: cards with no wearable, no bedroom unit, or never reported render without crashing', async () => {
+    const { user, container } = await renderApiLoaded()
+    await user.click(tile('Residents monitored'))
+    const cards = residentCards()
+    expect(cards).toHaveLength(5)
+    const cardOf = (name: string) => {
+      const card = cards.find((c) => within(c).queryByRole('heading', { level: 3, name }))
+      if (!card) throw new Error(`No card for ${name}`)
+      return card
+    }
+    const b = cardOf('Test Resident B')
+    expect(b).toHaveTextContent('No wearable assigned')
+    expect(b).toHaveTextContent('No readings yet')
+    expect(b).toHaveTextContent('Unknown')
+    expect(within(b).getByRole('link', { name: 'Test Resident B' })).toHaveAttribute('href', '/residents/resident-test-002')
+
+    const c = cardOf('Test Resident C')
+    expect(c).toHaveTextContent('Offline · Never reported')
+    expect(c).toHaveTextContent('No readings yet')
+
+    expect(cardOf('Test Resident E')).toHaveTextContent('Unknown')
+    expect(cardOf('Test Resident D')).toHaveTextContent('12%')
+    for (const card of cards) expect(card).not.toHaveTextContent(/NaN|Invalid date|undefined|null/)
+    expect(await axeViolations(container)).toEqual([])
+  })
+
+  it('the open-alerts view of API data has no axe violations', async () => {
+    const { container } = await renderApiLoaded()
+    expect(await axeViolations(container)).toEqual([])
   })
 })

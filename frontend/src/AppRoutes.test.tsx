@@ -1,7 +1,10 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AuthFlowError } from './lib/auth'
+import type { DashboardView } from './features/dashboard/useDashboardData'
 import { authMock, resetAuthMock } from './test/authMock'
+import { dashboardLoader, resetDashboardLoader } from './test/dashboardMock'
+import { resetResidentDetailLoader } from './test/residentMock'
 import { TEST_USERS, deferred } from './test/fixtures'
 import { renderApp } from './test/render'
 import { flushPromises, trackUnhandledRejections } from './test/unhandled'
@@ -13,8 +16,24 @@ vi.mock('./lib/auth', async (importOriginal) => {
   return { ...actual, ...authMock }
 })
 
+// The dashboards and the resident page load from the API; these routing tests use the
+// demo-data loaders instead, so they never depend on the API (src/test/dashboardMock.ts,
+// src/test/residentMock.ts).
+vi.mock('./features/dashboard/useDashboardData', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./features/dashboard/useDashboardData')>()
+  const { dashboardLoader } = await import('./test/dashboardMock')
+  const { residentDetailLoader } = await import('./test/residentMock')
+  return {
+    ...actual,
+    useDashboardData: (view: DashboardView) => actual.useDashboardData(view, dashboardLoader),
+    useResidentDetail: (id: string) => actual.useResidentDetail(id, residentDetailLoader),
+  }
+})
+
 beforeEach(() => {
   resetAuthMock()
+  resetDashboardLoader()
+  resetResidentDetailLoader()
 })
 
 const location = () => screen.getByTestId('location').textContent
@@ -72,6 +91,17 @@ describe('signed in', () => {
     renderApp('/')
     expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
     expect(location()).toBe('/')
+  })
+
+  it.each([
+    ['nurse', 'staff'],
+    ['doctor', 'staff'],
+    ['caregiver', 'family'],
+  ] as const)('a %s user at / loads the %s dashboard data', async (key, view) => {
+    authMock.getCurrentUser.mockResolvedValue(TEST_USERS[key])
+    renderApp('/')
+    await waitFor(() => expect(dashboardLoader).toHaveBeenCalledWith(view))
+    expect(dashboardLoader.mock.calls.every(([v]) => v === view)).toBe(true)
   })
 
   it('a user only in the removed "family" group does not get the family view', async () => {

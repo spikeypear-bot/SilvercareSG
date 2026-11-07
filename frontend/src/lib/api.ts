@@ -8,6 +8,14 @@
  * - Error responses (`{"error": {"code", "message"}}`) become an `ApiError` with the
  *   status and code. The token, URLs, and response bodies are never logged.
  */
+import type { ApiDashboardResponse } from '../types/dashboard'
+import type {
+  ApiMyResidentsResponse,
+  ApiResidentDetail,
+  ApiThresholdChange,
+  ApiThresholdsSaveResponse,
+  VitalsThresholds,
+} from '../types/resident'
 import type { ApiDevice, DevicesResponse } from '../types/devices'
 import { getApiToken } from './auth'
 
@@ -47,18 +55,20 @@ async function errorCode(response: Response): Promise<string> {
   return `http_${response.status}`
 }
 
-/** GET `path` (e.g. "/devices") with the caller's ID token; resolves to the parsed JSON. */
-export async function apiGet(path: string): Promise<unknown> {
+async function apiRequest(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<unknown> {
   const base = baseUrl()
   if (!base) throw new ApiError(0, 'not_configured')
   const token = await getApiToken()
   if (!token) throw new ApiError(401, 'unauthenticated')
 
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
   let response: Response
   try {
     response = await fetch(`${base}${path}`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      method,
+      headers,
+      ...(body !== undefined && { body: JSON.stringify(body) }),
       cache: 'no-store',
       credentials: 'omit',
     })
@@ -71,6 +81,21 @@ export async function apiGet(path: string): Promise<unknown> {
   } catch {
     throw new ApiError(response.status, 'invalid_response')
   }
+}
+
+/** GET `path` (e.g. "/devices") with the caller's ID token; resolves to the parsed JSON. */
+export async function apiGet(path: string): Promise<unknown> {
+  return apiRequest('GET', path)
+}
+
+/** POST a JSON `body` to `path` with the caller's ID token; resolves to the parsed JSON. */
+export async function apiPost(path: string, body: unknown): Promise<unknown> {
+  return apiRequest('POST', path, body)
+}
+
+/** PUT a JSON `body` to `path` with the caller's ID token; resolves to the parsed JSON. */
+export async function apiPut(path: string, body: unknown): Promise<unknown> {
+  return apiRequest('PUT', path, body)
 }
 
 function isDevicesResponse(value: unknown): value is DevicesResponse {
@@ -86,4 +111,132 @@ export async function getDevices(): Promise<ApiDevice[]> {
   const body = await apiGet('/devices')
   if (!isDevicesResponse(body)) throw new ApiError(200, 'invalid_response')
   return body.devices
+}
+
+function isDashboardResponse(value: unknown): value is ApiDashboardResponse {
+  if (typeof value !== 'object' || value === null) return false
+  const body = value as { residents?: unknown; alerts?: unknown }
+  return Array.isArray(body.residents) && Array.isArray(body.alerts)
+}
+
+/**
+ * `GET /dashboard` (staff only): every resident with their status and device state,
+ * sorted by resident_id, and the open list (open and acknowledged alerts), newest first.
+ */
+export async function getDashboard(): Promise<ApiDashboardResponse> {
+  const body = await apiGet('/dashboard')
+  if (!isDashboardResponse(body)) throw new ApiError(200, 'invalid_response')
+  return body
+}
+
+/** `202` body of the alert actions: the request is queued, not yet applied. */
+export interface AlertActionResponse {
+  alert_id: string
+  requested_status: 'acknowledged' | 'cancelled'
+}
+
+function isAlertActionResponse(value: unknown, alertId: string): value is AlertActionResponse {
+  if (typeof value !== 'object' || value === null) return false
+  const body = value as { alert_id?: unknown; requested_status?: unknown }
+  return (
+    body.alert_id === alertId &&
+    (body.requested_status === 'acknowledged' || body.requested_status === 'cancelled')
+  )
+}
+
+function alertPath(residentId: string, alertId: string, action: 'acknowledge' | 'cancel'): string {
+  return `/residents/${encodeURIComponent(residentId)}/alerts/${encodeURIComponent(alertId)}/${action}`
+}
+
+/**
+ * `POST .../acknowledge`: a nurse (health alert), ops or a linked caregiver (device
+ * problem). Sends only the alert's `event_ts` and the nurse's note (null for none): the
+ * server takes the actor from the token.
+ */
+export async function acknowledgeAlertApi(
+  alert: { resident_id: string; alert_id: string; event_ts: string },
+  note: string | null,
+): Promise<AlertActionResponse> {
+  const body = await apiPost(alertPath(alert.resident_id, alert.alert_id, 'acknowledge'), {
+    event_ts: alert.event_ts,
+    note,
+  })
+  if (!isAlertActionResponse(body, alert.alert_id)) throw new ApiError(202, 'invalid_response')
+  return body
+}
+
+/** `POST .../cancel`: a linked caregiver, health alerts only. Sends only `event_ts`. */
+export async function cancelAlertApi(alert: {
+  resident_id: string
+  alert_id: string
+  event_ts: string
+}): Promise<AlertActionResponse> {
+  const body = await apiPost(alertPath(alert.resident_id, alert.alert_id, 'cancel'), {
+    event_ts: alert.event_ts,
+  })
+  if (!isAlertActionResponse(body, alert.alert_id)) throw new ApiError(202, 'invalid_response')
+  return body
+}
+
+/**
+ * `GET /residents/{resident_id}` (staff any resident; a caregiver only when linked, else
+ * 404): devices with their latest 5 entries per message type, every stored alert, and
+ * the resolved thresholds.
+ */
+export async function getResident(residentId: string): Promise<ApiResidentDetail> {
+  const body = await apiGet(`/residents/${encodeURIComponent(residentId)}`)
+  const ok =
+    typeof body === 'object' &&
+    body !== null &&
+    typeof (body as { resident?: unknown }).resident === 'object' &&
+    (body as { resident?: unknown }).resident !== null &&
+    Array.isArray((body as { alerts?: unknown }).alerts) &&
+    typeof (body as { thresholds?: unknown }).thresholds === 'object'
+  if (!ok) throw new ApiError(200, 'invalid_response')
+  return body as ApiResidentDetail
+}
+
+/** `GET /me/residents` (caregiver only): the linked residents and all their alerts. */
+export async function getMyResidents(): Promise<ApiMyResidentsResponse> {
+  const body = await apiGet('/me/residents')
+  if (!isDashboardResponse(body)) throw new ApiError(200, 'invalid_response')
+  return body as unknown as ApiMyResidentsResponse
+}
+
+function thresholdsPath(residentId: string): string {
+  return `/residents/${encodeURIComponent(residentId)}/thresholds`
+}
+
+/**
+ * `PUT /residents/{resident_id}/thresholds` (doctor only, pattern 26). Sends exactly the
+ * five limits, copied by name so nothing else (e.g. updated_by) can ride along; the server
+ * takes the actor from the token and records the change. `409` if someone else saved
+ * first, `400` if the server refuses a value.
+ */
+export async function putThresholds(
+  residentId: string,
+  values: VitalsThresholds,
+): Promise<ApiThresholdsSaveResponse> {
+  const body = await apiPut(thresholdsPath(residentId), {
+    hr_bpm: { min: values.hr_bpm.min, max: values.hr_bpm.max },
+    spo2_pct: { min: values.spo2_pct.min },
+    skin_temp_c: { min: values.skin_temp_c.min, max: values.skin_temp_c.max },
+  })
+  const ok =
+    typeof body === 'object' &&
+    body !== null &&
+    typeof (body as { changed?: unknown }).changed === 'boolean' &&
+    typeof (body as { thresholds?: unknown }).thresholds === 'object' &&
+    (body as { thresholds?: unknown }).thresholds !== null
+  if (!ok) throw new ApiError(200, 'invalid_response')
+  return body as ApiThresholdsSaveResponse
+}
+
+/** `GET /residents/{resident_id}/thresholds/history` (staff only, pattern 27): newest first. */
+export async function getThresholdHistory(residentId: string): Promise<ApiThresholdChange[]> {
+  const body = await apiGet(`${thresholdsPath(residentId)}/history`)
+  if (typeof body !== 'object' || body === null || !Array.isArray((body as { history?: unknown }).history)) {
+    throw new ApiError(200, 'invalid_response')
+  }
+  return (body as { history: ApiThresholdChange[] }).history
 }

@@ -50,6 +50,11 @@ checks happen in the API. The frontend only uses groups to choose which screens 
   `name` claim (`by_name`, `*_by_name`), and only the ID token carries it; the access
   token has no profile attributes (docs/features/sign-in.md, API contract).
 - Group checks happen in the handler (see `api-route`).
+- A Lambda that looks up a user's name from a stored `sub` (Actor names) uses
+  `cognito-idp:AdminGetUser` with `Username = <sub>` (in this pool, with email as the
+  username attribute, the username is the `sub`), and treats `UserNotFoundException` as
+  "account deleted". Never `ListUsers`: IAM can't limit its filter or attributes, so the
+  role could list every user's email.
 
 ## Frontend
 

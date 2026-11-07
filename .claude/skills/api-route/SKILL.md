@@ -34,6 +34,9 @@ Follow `tf-change` and `iam-policy`.
   the account's Lambda concurrency (ingest and alert-processor use it too) and the
   provisioned RCU of the indexes the routes read (some are shared with the watchdog).
   Any signed-in user can invoke a route, even one that answers 403.
+  `default_route_settings` applies to **each route** separately, not to the API, so
+  every new route adds its own allowance: give a route that reads a shared index its
+  own `route_settings` block, sized from its RCU per call (see `infra/api.tf`).
 
 ## Handler
 

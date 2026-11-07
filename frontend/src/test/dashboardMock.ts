@@ -11,12 +11,11 @@
  *   })
  */
 import { vi } from 'vitest'
-import { FAMILY_LINKED_RESIDENT_IDS, createDemoData } from '../features/dashboard/demoData'
+import { FAMILY_LINKED_RESIDENT_IDS, createDemoData, type DemoDashboardData } from '../features/dashboard/demoData'
 import type { DashboardLoader, DashboardView } from '../features/dashboard/useDashboardData'
-import type { DashboardData } from '../types/dashboard'
 
 /** Demo data without the 400 ms delay, filtered the same way as the real loader. */
-export function demoDataFor(view: DashboardView, now: Date = new Date()): DashboardData {
+export function demoDataFor(view: DashboardView, now: Date = new Date()): DemoDashboardData {
   const data = createDemoData(now)
   if (view === 'staff') return data
   const linked = new Set(FAMILY_LINKED_RESIDENT_IDS)

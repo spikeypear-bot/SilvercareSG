@@ -1,6 +1,8 @@
 import { useId, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import { WifiOff } from 'lucide-react'
+import { Button } from '../../components/Button'
 import { Card } from '../../components/Card'
+import { Notice } from '../../components/Notice'
 import { RelativeTime } from '../../components/RelativeTime'
 import { Skeleton } from '../../components/Skeleton'
 import { useNow } from '../../lib/useNow'
@@ -29,10 +31,23 @@ import { useEscalationWatcher } from './useEscalationWatcher'
 
 /** Nurse view: alert response. Acknowledge and resolve, see what needs a visit. */
 export function NurseDashboard() {
-  const { data, loading, error, retry, acknowledgeAlert, resolveAlert } = useDashboardData('staff')
+  const { data, loading, error, retry, acknowledgeAlert, resolveAlert, actionError, dismissActionError } =
+    useDashboardData('staff')
 
   return (
     <MainLayout title="Nurse dashboard" before={<StaffNav />}>
+      {actionError && (
+        <Notice
+          tone="error"
+          action={
+            <Button variant="secondary" onClick={dismissActionError}>
+              Dismiss
+            </Button>
+          }
+        >
+          {actionError}
+        </Notice>
+      )}
       {error ? (
         <DashboardError onRetry={retry} />
       ) : loading || !data ? (
@@ -48,7 +63,7 @@ export function NurseDashboard() {
 
 interface NurseContentProps {
   data: DashboardData
-  onAcknowledge: (alertId: string, ackNote?: string) => void
+  onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
   onResolve: (alertId: string, by: string) => void
 }
 
@@ -91,7 +106,7 @@ interface AlertInboxProps {
   alerts: ResidentAlert[]
   residentsById: Map<string, Resident>
   announce: (message: string) => void
-  onAcknowledge: (alertId: string, ackNote?: string) => void
+  onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
   onResolve: (alertId: string) => void
 }
 
@@ -130,9 +145,10 @@ function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve 
                 readerIsRecipient
                 actions={{
                   onAcknowledge: (ackNote) => {
-                    onAcknowledge(alert.alert_id, ackNote)
-                    // Never the note: it isn't read out.
-                    announce(`Acknowledged: ${described}.`)
+                    // Only once accepted (with API data, after the 202). Never the note.
+                    void onAcknowledge(alert.alert_id, ackNote).then((ok) => {
+                      if (ok) announce(`Acknowledged: ${described}.`)
+                    })
                   },
                   onResolve: () => {
                     onResolve(alert.alert_id)
@@ -190,7 +206,7 @@ function OfflineDevicesPanel({ residents }: { residents: Resident[] }) {
               </p>
               <ResidentLine resident={resident} residentId={resident.resident_id} />
               <p className="text-sm text-slate-600">
-                Last seen <RelativeTime iso={device.ts} now={now} />
+                {device.ts === null ? 'Never reported' : <>Last seen <RelativeTime iso={device.ts} now={now} /></>}
               </p>
             </li>
           ))}

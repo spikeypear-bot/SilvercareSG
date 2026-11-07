@@ -3,7 +3,14 @@
  * and units follow docs/metrics.md and the `silvercare-latest` allow-list, so the demo
  * module can later be replaced by src/lib/api.ts.
  */
-import type { Resident, ResidentAlert, VitalsReading } from './dashboard'
+import type {
+  AlertStatus,
+  ApiDashboardAlert,
+  ApiDashboardResident,
+  Resident,
+  ResidentAlert,
+  VitalsReading,
+} from './dashboard'
 
 /** Fields every stored entry keeps besides its message fields. */
 interface LatestEntry {
@@ -125,4 +132,58 @@ export interface ResidentDetail {
   thresholds: ResidentThresholds
   /** Earlier threshold changes, newest first (Threshold change history). */
   threshold_history: ThresholdChangeEntry[]
+}
+
+/**
+ * `GET /residents/{resident_id}` and `GET /me/residents` (lambdas/api-residents/), exactly
+ * as the API returns them; absent values are null. Mapped by `toResidentDetail` and the
+ * caregiver loader in useDashboardData.ts.
+ */
+export interface ApiResidentAlert extends Omit<ApiDashboardAlert, 'status'> {
+  status: AlertStatus
+  resolved_at: string | null
+  /** Staff display name, or "Former staff member". Null for a watchdog resolve. */
+  resolved_by: string | null
+  cancelled_at: string | null
+  cancelled_by_role: 'resident' | 'caregiver' | null
+  /** Caregiver display name, or "Former caregiver". */
+  cancelled_by: string | null
+}
+
+/** The dashboard's resident shape, with up to 5 vitals including `activity_pct`. */
+export interface ApiLinkedResident extends Omit<ApiDashboardResident, 'vitals'> {
+  vitals: VitalsReading[]
+}
+
+export interface ApiResidentDetail {
+  resident: ApiLinkedResident
+  wearable: WearableDevice | null
+  bedroom: BedroomDevice | null
+  /** Every stored alert, newest first. */
+  alerts: ApiResidentAlert[]
+  /** Resolved limits; `updated_*` only for staff, and only once changed. */
+  thresholds: VitalsThresholds & { updated_at: string | null; updated_by: string | null }
+  /** Always []: the history comes from `GET .../thresholds/history` (ApiThresholdChange). */
+  threshold_history: ThresholdChangeEntry[]
+}
+
+/** `GET /residents/{resident_id}/thresholds/history`: one change, the stored name only (never a sub). */
+export interface ApiThresholdChange {
+  change_id: string
+  changed_at: string
+  changed_by_name: string
+  changes: ThresholdValueChange[]
+}
+
+/** `PUT /residents/{resident_id}/thresholds`: the thresholds now stored. */
+export interface ApiThresholdsSaveResponse {
+  /** false when the save matched the current values: nothing was written. */
+  changed: boolean
+  thresholds: ApiResidentDetail['thresholds']
+}
+
+export interface ApiMyResidentsResponse {
+  residents: ApiLinkedResident[]
+  /** Every stored alert of those residents, newest first. */
+  alerts: ApiResidentAlert[]
 }

@@ -51,16 +51,26 @@ export interface OfflineDevice {
   kind: 'wearable' | 'bedroom'
 }
 
+/** Assigned devices that are offline (one that has never reported counts). */
 export function offlineDevices(residents: readonly Resident[]): OfflineDevice[] {
-  return residents.flatMap((resident): OfflineDevice[] => [
-    ...(resident.wearable.online ? [] : [{ resident, device: resident.wearable, kind: 'wearable' as const }]),
-    ...(resident.bedroom.online ? [] : [{ resident, device: resident.bedroom, kind: 'bedroom' as const }]),
-  ])
+  return residents.flatMap((resident): OfflineDevice[] => {
+    const { wearable, bedroom } = resident
+    return [
+      ...(wearable && !wearable.online ? [{ resident, device: wearable, kind: 'wearable' as const }] : []),
+      ...(bedroom && !bedroom.online ? [{ resident, device: bedroom, kind: 'bedroom' as const }] : []),
+    ]
+  })
 }
 
-/** Display filter for the low-battery tile. Not an alert threshold. */
-export function lowBatteryResidents(residents: readonly Resident[]): Resident[] {
-  return residents.filter((r) => r.wearable.battery_pct < LOW_BATTERY_DISPLAY_PCT)
+/** A resident whose wearable has reported a battery level. */
+export type ResidentWithBattery = Resident & { wearable: WearableState & { battery_pct: number } }
+
+/** Display filter for the low-battery tile. Not an alert threshold. Unknown levels are left out. */
+export function lowBatteryResidents(residents: readonly Resident[]): ResidentWithBattery[] {
+  return residents.filter(
+    (r): r is ResidentWithBattery =>
+      r.wearable !== null && r.wearable.battery_pct !== null && r.wearable.battery_pct < LOW_BATTERY_DISPLAY_PCT,
+  )
 }
 
 export interface DashboardStats {

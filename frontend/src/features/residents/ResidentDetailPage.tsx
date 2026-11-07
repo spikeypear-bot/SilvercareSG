@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, type Ref } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, House } from 'lucide-react'
 import { Avatar } from '../../components/Avatar'
-import { buttonBase } from '../../components/Button'
+import { Button, buttonBase } from '../../components/Button'
 import { Card } from '../../components/Card'
 import { EmptyState } from '../../components/EmptyState'
+import { Notice } from '../../components/Notice'
 import { Skeleton } from '../../components/Skeleton'
 import { StatusBadge } from '../../components/StatusBadge'
 import { cx } from '../../lib/cx'
@@ -61,13 +62,27 @@ function StaffResidentDetail({ role }: { role: StaffRole }) {
           description="Check the link, or go back to the dashboard and choose a resident."
         />
       ) : (
-        <DetailContent
-          detail={detail.data}
+        <>
+          {detail.actionError && (
+            <Notice
+              tone="error"
+              action={
+                <Button variant="secondary" onClick={detail.dismissActionError}>
+                  Dismiss
+                </Button>
+              }
+            >
+              {detail.actionError}
+            </Notice>
+          )}
+          <DetailContent
+            detail={detail.data}
           role={role}
           onAcknowledge={detail.acknowledgeAlert}
           onResolve={detail.resolveAlert}
-          onSaveThresholds={detail.updateThresholds}
-        />
+            onSaveThresholds={detail.updateThresholds}
+          />
+        </>
       )}
     </MainLayout>
   )
@@ -85,9 +100,9 @@ function BackLink({ ref }: { ref: Ref<HTMLAnchorElement> }) {
 interface DetailContentProps {
   detail: ResidentDetail
   role: 'nurse' | 'doctor'
-  onAcknowledge: (alertId: string, ackNote?: string) => void
+  onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
   onResolve: (alertId: string, by: string) => void
-  onSaveThresholds: (values: VitalsThresholds, by: string) => void
+  onSaveThresholds: (values: VitalsThresholds, by: string) => Promise<string | null>
 }
 
 function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThresholds }: DetailContentProps) {

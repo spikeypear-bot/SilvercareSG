@@ -3,9 +3,11 @@ import userEvent from '@testing-library/user-event'
 import { AuthFlowError } from '../../lib/auth'
 import { axeViolations } from '../../test/axe'
 import { authMock, resetAuthMock } from '../../test/authMock'
+import { resetDashboardLoader } from '../../test/dashboardMock'
 import { TEST_USERS, VALID_PASSWORD, deferred } from '../../test/fixtures'
 import { renderApp } from '../../test/render'
 import type { AuthUser, SignInStep } from '../../types/auth'
+import type { DashboardView } from '../dashboard/useDashboardData'
 
 vi.mock('../../lib/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/auth')>()
@@ -13,10 +15,22 @@ vi.mock('../../lib/auth', async (importOriginal) => {
   return { ...actual, ...authMock }
 })
 
+// After sign-in the staff dashboards load GET /dashboard; use the demo-data loader instead
+// so these tests never depend on the API (src/test/dashboardMock.ts).
+vi.mock('../dashboard/useDashboardData', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../dashboard/useDashboardData')>()
+  const { dashboardLoader } = await import('../../test/dashboardMock')
+  return {
+    ...actual,
+    useDashboardData: (view: DashboardView) => actual.useDashboardData(view, dashboardLoader),
+  }
+})
+
 const EMAIL = 'test.nurse.a@example.test'
 
 beforeEach(() => {
   resetAuthMock()
+  resetDashboardLoader()
 })
 
 /** After sign-in completes, the provider re-reads the session and finds `user`. */
