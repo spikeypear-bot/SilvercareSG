@@ -364,6 +364,31 @@ data "aws_iam_policy_document" "summaries" {
       variable = "dynamodb:LeadingKeys"
       values   = ["DEVICE#*", "THRESHOLDS#*"]
     }
+
+    # Only the fields the handler projects (assignments: resident_id, device_type,
+    # assigned_at; thresholds: the three limits), so the role can't read a threshold
+    # item's updated_by (a staff sub) or updated_by_name. The Null condition makes a
+    # read with no projection fail: ForAllValues alone passes when the key is absent.
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values = [
+        "pk", "sk", "resident_id", "device_type", "assigned_at",
+        "hr_bpm", "spo2_pct", "skin_temp_c",
+      ]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "dynamodb:Select"
+      values   = ["SPECIFIC_ATTRIBUTES"]
+    }
   }
 }
 

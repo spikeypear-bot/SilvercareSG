@@ -4,7 +4,8 @@ import { axeViolations } from '../../test/axe'
 import { dashboardLoader, demoDataFor, resetDashboardLoader } from '../../test/dashboardMock'
 import { TEST_USERS, deferred } from '../../test/fixtures'
 import { renderWithAuth } from '../../test/render'
-import type { DashboardData, ResidentAlert } from '../../types/dashboard'
+import type { ResidentAlert } from '../../types/dashboard'
+import type { DemoDashboardData } from './demoData'
 import { CaregiverView } from './CaregiverView'
 import { formatActivity, formatHr, formatSpo2, formatTemp } from './labels'
 import type { DashboardView } from './useDashboardData'
@@ -28,7 +29,7 @@ function renderCaregiver() {
   return { user, ...view }
 }
 
-async function renderLoaded(data: DashboardData = demoDataFor('family')) {
+async function renderLoaded(data: DemoDashboardData = demoDataFor('family')) {
   dashboardLoader.mockResolvedValue(data)
   const ctx = renderCaregiver()
   await screen.findAllByRole('article')
@@ -48,7 +49,7 @@ const timelineItems = (card: HTMLElement) => {
 }
 
 /** A synthetic alert for one of the caregiver's linked residents (res-0002 or res-0005). */
-function alertFor(data: DashboardData, residentId: string, overrides: Partial<ResidentAlert> = {}): ResidentAlert {
+function alertFor(data: DemoDashboardData, residentId: string, overrides: Partial<ResidentAlert> = {}): ResidentAlert {
   const resident = data.residents.find((r) => r.resident_id === residentId)
   if (!resident) throw new Error(`Not a linked demo resident: ${residentId}`)
   return {
@@ -64,7 +65,7 @@ function alertFor(data: DashboardData, residentId: string, overrides: Partial<Re
 }
 
 /** The demo caregiver data with these alerts instead of the demo ones. */
-function withAlerts(alerts: (data: DashboardData) => ResidentAlert[]): DashboardData {
+function withAlerts(alerts: (data: DemoDashboardData) => ResidentAlert[]): DemoDashboardData {
   const data = demoDataFor('family')
   return { ...data, alerts: alerts(data) }
 }
@@ -73,7 +74,7 @@ function withAlerts(alerts: (data: DashboardData) => ResidentAlert[]): Dashboard
 
 describe('loading, error, and empty states', () => {
   it('shows a loading status, the "My residents" header and the greeting while loading', async () => {
-    const pending = deferred<DashboardData>()
+    const pending = deferred<DemoDashboardData>()
     dashboardLoader.mockReturnValue(pending.promise)
     renderCaregiver()
     expect(screen.getByRole('status')).toHaveTextContent("Loading your residents' information")
@@ -95,7 +96,7 @@ describe('loading, error, and empty states', () => {
   })
 
   it('never says "My family" or "family\'s"', async () => {
-    const pending = deferred<DashboardData>()
+    const pending = deferred<DemoDashboardData>()
     dashboardLoader.mockReturnValue(pending.promise)
     const { container } = renderCaregiver()
     expect(container).not.toHaveTextContent(/My family|family's/)
@@ -555,6 +556,8 @@ describe('countdown to escalation (fake clock)', () => {
     tick(60_000)
     fireEvent.click(screen.getByRole('button', { name: `Cancel alert: ${INACTIVITY}` }))
     fireEvent.click(screen.getByRole('button', { name: `Yes, cancel alert: ${INACTIVITY}` }))
+    // The announcement waits for the cancel's promise.
+    await act(async () => {})
     expect(within(cardFor('Test Resident E')).queryByRole('timer')).not.toBeInTheDocument()
     expect(announcer()).toHaveTextContent(`Alert cancelled: ${INACTIVITY}.`)
     const announced = announcer().textContent
@@ -843,7 +846,7 @@ describe('accessibility', { timeout: 30_000 }, () => {
   })
 
   it('has no axe violations while loading', async () => {
-    dashboardLoader.mockReturnValue(deferred<DashboardData>().promise)
+    dashboardLoader.mockReturnValue(deferred<DemoDashboardData>().promise)
     const { container } = renderCaregiver()
     expect(await axeViolations(container)).toEqual([])
   })

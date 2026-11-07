@@ -155,6 +155,62 @@ def test_handler_batch_keys_fit_the_leading_keys_condition(document, monkeypatch
         assert any(fnmatchcase(pk, pattern) for pattern in leading["values"]), pk
 
 
+BATCH_GET_ATTRIBUTES = {
+    "pk",
+    "sk",
+    "resident_id",
+    "device_type",
+    "assigned_at",
+    "hr_bpm",
+    "spo2_pct",
+    "skin_temp_c",
+}
+
+
+def _attribute_conditions(block: str) -> dict[str, dict]:
+    """The statement's dynamodb:Attributes conditions, by test (there are two)."""
+    return {
+        c["test"]: c
+        for c in conditions(block)
+        if c["variable"] == "dynamodb:Attributes"
+    }
+
+
+def test_batch_get_statement_limits_the_attributes(document):
+    block = statement(document, "RegistryAssignmentsAndThresholds")
+    by_test = _attribute_conditions(block)
+    assert set(by_test["ForAllValues:StringEquals"]["values"]) == BATCH_GET_ATTRIBUTES
+    # Threshold items also hold updated_by (a staff sub) and updated_by_name.
+    assert not {"updated_by", "updated_by_name", "updated_at"} & BATCH_GET_ATTRIBUTES
+
+
+def test_batch_get_statement_refuses_a_read_without_a_projection(document):
+    block = statement(document, "RegistryAssignmentsAndThresholds")
+    by_test = _attribute_conditions(block)
+    assert by_test["Null"]["values"] == ["false"]
+    select = condition(block, "dynamodb:Select")
+    assert select["test"] == "StringEqualsIfExists"
+    assert select["values"] == ["SPECIFIC_ATTRIBUTES"]
+
+
+def test_handler_batch_projections_fit_the_attributes_condition(document, monkeypatch):
+    client = _BatchRecorder()
+    monkeypatch.setattr(handler, "dynamodb_client", lambda: client)
+    handler.read_devices(["wearable-0001", "bedroom-0001"])
+    handler.read_limits(["res-0001"])
+    block = statement(document, "RegistryAssignmentsAndThresholds")
+    allowed = set(_attribute_conditions(block)["ForAllValues:StringEquals"]["values"])
+    assert len(client.requests) == 2
+    for request in client.requests:
+        for table in request["RequestItems"].values():
+            names = table["ExpressionAttributeNames"]
+            projected = {
+                names[a.strip()] for a in table["ProjectionExpression"].split(",")
+            }
+            assert projected
+            assert projected <= allowed
+
+
 def test_no_other_dynamodb_access(document):
     granted = set()
     for block in re.split(r"\n  statement \{", document)[1:]:
@@ -196,7 +252,12 @@ def test_bucket_policy_denies_summary_writes_to_everyone_else():
     document = HISTORY_TF.read_text(encoding="utf-8")
     block = statement(document, "DenySummaryWritesFromOthers")
     assert re.search(r'effect\s*=\s*"Deny"', block)
-    assert {"s3:PutObject", "s3:DeleteObject"} <= set(actions(block))
+    assert set(actions(block)) == {
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:PutObjectTagging",
+        "s3:DeleteObjectTagging",
+    }
     assert "${local.summaries_prefix}/*" in block
     (principal,) = conditions(block)
     assert principal["test"] == "StringNotEquals"

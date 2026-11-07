@@ -203,7 +203,11 @@ summaries in this feature. Summaries hold the opaque `resident_id`, no names.
     `s3:ListBucket` on the history bucket limited to prefix `summaries/`;
     `s3:PutObject`, `s3:PutObjectTagging`, `s3:DeleteObject` on `summaries/*`;
     DynamoDB `Query` on the registry's `by-type` index and `BatchGetItem` on the
-    registry limited by `dynamodb:LeadingKeys` to `DEVICE#*` and `THRESHOLDS#*`. No
+    registry limited by `dynamodb:LeadingKeys` to `DEVICE#*` and `THRESHOLDS#*` and by
+    `dynamodb:Attributes` to the fields it projects (`pk`, `sk`, `resident_id`,
+    `device_type`, `assigned_at`, `hr_bpm`, `spo2_pct`, `skin_temp_c`), with `Null`
+    `dynamodb:Attributes` = `false` so a read without a projection is refused (never
+    `updated_by` or `updated_by_name` on threshold items). No
     access to `telemetry/`, `alerts/`, other tables, or other registry partitions.
 
 ### Raw expiry

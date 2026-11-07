@@ -22,7 +22,24 @@ a wasted step. Newest first. Review these in the diff before committing.
 - **Problem:** `node --check` on a workflow always fails (top-level `return`), so the
   improve-agents verify step couldn't pass. **Changed:**
   `.claude/skills/improve-agents/SKILL.md`: wrap the script before checking.
-
+- **Problem:** `api-residents`' read statements listed allowed attributes with
+  `ForAllValues`, which passes when no projection is sent, so the role could read
+  `medical_notes` and emergency contacts; the user caught it.
+  **Changed:** `.claude/skills/iam-policy/SKILL.md`: pair attribute lists with
+  `Null dynamodb:Attributes = false` on every read statement that hides fields.
+- **Problem:** `GET /dashboard` turned skin temperature into a float before comparing it
+  with a Decimal limit (36.6 at a 36.6 limit read as abnormal), and a list value in an
+  alert item crashed a set lookup into a 500; lambda-tester caught both.
+  **Changed:** `.claude/skills/lambda-python/SKILL.md`: type-check raw item values before
+  set lookups; compare numbers as Decimal, convert to float only for the response.
+- **Problem:** the stage throttle was assumed to cap the whole API, but
+  `default_route_settings` applies per route, so each new route added load on the
+  shared indexes; iac-reviewer caught it. **Changed:**
+  `.claude/skills/api-route/SKILL.md`: routes reading a shared index get their own
+  `route_settings`.
+- **Problem:** the first name lookup used Cognito `ListUsers`, which lets the role list
+  every user's email; iac-reviewer caught it. **Changed:**
+  `.claude/skills/cognito-auth/SKILL.md`: look names up with `AdminGetUser` by `sub`.
 - **Problem:** the API's CORS-origin guard was a `check` block, whose warning never
   reaches the PR comment (plan stdout is discarded); the iac-reviewer caught it.
   **Changed:** `.claude/skills/tf-change/SKILL.md`: guards that must be seen before

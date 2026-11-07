@@ -21,7 +21,11 @@ function BatteryIcon({ pct, charging }: { pct: number; charging: boolean }) {
   return <BatteryFull className={BATTERY_ICON_CLASS} aria-hidden="true" />
 }
 
-export function BatteryLevel({ wearable }: { wearable: Pick<WearableState, 'battery_pct' | 'charging'> }) {
+/** "64%" with an icon, or "Unknown" (no wearable, or it has never reported a level). */
+export function BatteryLevel({ wearable }: { wearable: Pick<WearableState, 'battery_pct' | 'charging'> | null }) {
+  if (wearable === null || wearable.battery_pct === null) {
+    return <span className="text-slate-600">Unknown</span>
+  }
   const { battery_pct: pct, charging } = wearable
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -75,11 +79,25 @@ export function DeviceBattery({ battery_pct, charging, mainsPowered }: DeviceBat
   )
 }
 
-/** "Worn", "Not worn", "Charging", "Offline": icon + text. */
-export function WearableStatusText({ wearable }: { wearable: WearableState }) {
+/**
+ * "Worn", "Not worn", "Worn status unknown", "Charging", "Offline", "Never reported", or
+ * "No wearable assigned":
+ * icon + text.
+ */
+export function WearableStatusText({ wearable }: { wearable: WearableState | null }) {
+  if (wearable === null) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <Watch className="size-5 shrink-0 text-slate-600" aria-hidden="true" />
+        <span>No wearable assigned</span>
+      </span>
+    )
+  }
   const parts: string[] = []
   if (!wearable.online) parts.push('Offline')
-  parts.push(wearable.worn ? 'Worn' : 'Not worn')
+  if (wearable.ts === null) parts.push('Never reported')
+  else if (wearable.worn === null) parts.push('Worn status unknown')
+  else parts.push(wearable.worn ? 'Worn' : 'Not worn')
   if (wearable.charging) parts.push('Charging')
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -93,11 +111,11 @@ export function WearableStatusText({ wearable }: { wearable: WearableState }) {
   )
 }
 
-export function BedroomStatusText({ bedroom }: { bedroom: BedroomSensorState }) {
+export function BedroomStatusText({ bedroom }: { bedroom: BedroomSensorState | null }) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <BedDouble className="size-5 shrink-0 text-slate-600" aria-hidden="true" />
-      <OnlineStatus online={bedroom.online} />
+      {bedroom === null ? <span>No bedroom sensor assigned</span> : <OnlineStatus online={bedroom.online} />}
     </span>
   )
 }

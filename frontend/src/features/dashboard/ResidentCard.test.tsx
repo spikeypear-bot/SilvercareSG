@@ -1,6 +1,8 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { apiResident } from '../../test/apiDashboard'
 import { authMock, resetAuthMock } from '../../test/authMock'
+import { axeViolations } from '../../test/axe'
 import { resetDashboardLoader } from '../../test/dashboardMock'
 import { TEST_USERS } from '../../test/fixtures'
 import { renderApp, renderWithAuth } from '../../test/render'
@@ -8,7 +10,8 @@ import { resetResidentDetailLoader } from '../../test/residentMock'
 import { DoctorDashboard } from './DoctorDashboard'
 import { CaregiverView } from './CaregiverView'
 import { NurseDashboard } from './NurseDashboard'
-import type { DashboardView } from './useDashboardData'
+import { ResidentCard } from './ResidentCard'
+import { toResident, type DashboardView } from './useDashboardData'
 
 vi.mock('../../lib/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/auth')>()
@@ -115,5 +118,69 @@ describe('ResidentCard link to the resident page', () => {
     await user.click(screen.getByRole('link', { name: 'Back to dashboard' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Nurse dashboard' })).toBeInTheDocument()
     expect(location()).toBe('/')
+  })
+})
+
+describe('ResidentCard with missing devices and readings (GET /dashboard nulls)', () => {
+  const NOW = new Date('2026-11-07T02:10:00Z')
+  const card = () => screen.getByRole('article')
+  const metric = (label: string) => within(card()).getByText(label, { selector: 'dt' }).nextElementSibling
+
+  it('no wearable, no bedroom unit, no vitals: "No wearable assigned", battery Unknown, "No readings yet"', async () => {
+    const resident = toResident(apiResident(2, { wearable: null, bedroom: null, vitals: [] }))
+    const { container } = renderWithAuth(<ResidentCard resident={resident} now={NOW} />)
+    expect(within(card()).getByRole('heading', { level: 3, name: 'Test Resident B' })).toBeInTheDocument()
+    expect(card()).toHaveTextContent('No wearable assigned')
+    expect(metric('Battery')).toHaveTextContent(/^Unknown$/)
+    for (const label of ['Heart rate', 'SpO2', 'Skin temp']) expect(metric(label)).toHaveTextContent(/^No reading$/)
+    expect(card()).toHaveTextContent('No readings yet')
+    expect(card()).not.toHaveTextContent(/Last updated|NaN|undefined|null/)
+    expect(await axeViolations(container)).toEqual([])
+  })
+
+  it('a wearable that has never reported: "Never reported", battery Unknown, "No readings yet"', async () => {
+    const resident = toResident(
+      apiResident(3, {
+        wearable: { ts: null, battery_pct: null, worn: null, online: false },
+        bedroom: { ts: null, online: false },
+        vitals: [],
+      }),
+    )
+    const { container } = renderWithAuth(<ResidentCard resident={resident} now={NOW} />)
+    expect(card()).toHaveTextContent('Offline · Never reported')
+    expect(metric('Battery')).toHaveTextContent(/^Unknown$/)
+    expect(card()).toHaveTextContent('No readings yet')
+    expect(card()).not.toHaveTextContent(/Last updated|NaN|undefined|null/)
+    expect(await axeViolations(container)).toEqual([])
+  })
+
+  it('vitals but no wearable: "Last updated" from the vitals reading', () => {
+    const resident = toResident(
+      apiResident(4, {
+        wearable: null,
+        vitals: [{ ts: '2026-11-07T02:05:00Z', hr_bpm: 70, spo2_pct: 96, skin_temp_c: 33 }],
+      }),
+    )
+    renderWithAuth(<ResidentCard resident={resident} now={NOW} />)
+    expect(card()).toHaveTextContent('No wearable assigned')
+    expect(metric('Heart rate')).toHaveTextContent('70 bpm')
+    expect(card()).toHaveTextContent(/Last updated/)
+    expect(card()).not.toHaveTextContent('No readings yet')
+  })
+
+  it('a reported wearable but no vitals: "Last updated" from the wearable status', () => {
+    const resident = toResident(apiResident(5, { vitals: [] }))
+    renderWithAuth(<ResidentCard resident={resident} now={NOW} />)
+    expect(metric('Battery')).toHaveTextContent('80%')
+    expect(card()).toHaveTextContent(/Last updated/)
+    expect(card()).not.toHaveTextContent('No readings yet')
+  })
+
+  it('with trends on (doctor view) and no vitals, renders without a sparkline and without crashing', () => {
+    const resident = toResident(apiResident(2, { wearable: null, bedroom: null, vitals: [] }))
+    renderWithAuth(<ResidentCard resident={resident} now={NOW} showTrends />)
+    expect(card()).toHaveTextContent('No readings yet')
+    // The card's sparklines are 96 x 28 (ResidentCard); icons are other sizes.
+    expect(card().querySelector('svg[viewBox="0 0 96 28"]')).toBeNull()
   })
 })

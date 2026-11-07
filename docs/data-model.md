@@ -111,8 +111,8 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container; `alert_cancel` always reads it uncached, docs/features/possible-fall.md). `device-health` reads no registry |
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | as pattern 1 for `vitals`, assigned devices only (cached 5 min, including "no item") |
 | 3 | `telemetry`, `device-health`, `critical-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
-| 4 | backend: `watchdog` (docs/features/watchdog.md), `summaries` (docs/features/curated-layer.md); staff only: devices view | Every device, assigned or not (the watchdog and summaries keep only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog, summaries: eventually consistent, paginated; summaries projects `pk`, `resident_id`) | every 5 min; once a day; per devices-view load |
-| 5 | backend: `watchdog`; staff only: nurse and doctor dashboards, devices view (`status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: all four) | every 5 min; every 30 s per open dashboard (polling) |
+| 4 | backend: `watchdog` (docs/features/watchdog.md), `summaries` (docs/features/curated-layer.md); staff only: devices view, nurse and doctor dashboards (`GET /dashboard`: `pk`, `resident_id`) | Every device, assigned or not (the watchdog and summaries keep only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog, summaries: eventually consistent, paginated; summaries projects `pk`, `resident_id`) | every 5 min; once a day (summaries); per devices-view load |
+| 5 | backend: `watchdog`; staff only: nurse and doctor dashboards, devices view (`status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: `vitals` and `status`, see Dashboard) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
 | 8 | Staff only: nurse and doctor dashboards, devices view (names for assigned devices) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
@@ -165,6 +165,71 @@ drop status entries older than the assignment: it relies on reassignment being o
 transaction (see [Device assignment](#device-assignment)). Adding `assigned_at` to the
 `by-type` projection would replace that index; the first build leaves it out (open
 question for the user, 2026-11-07).
+
+**Dashboard** (patterns 9, 8, 5, and 4, staff only; built 2026-11-07 as
+`GET /dashboard`, `lambdas/api-dashboard/`, at the user's request): one route serves the
+nurse and doctor dashboards. `doctor` and `nurse` only: `caregiver`, `ops`, `family`,
+and no group get `403`. It returns exactly `{"residents": [...], "alerts": [...]}`:
+
+- per resident (every RESIDENT profile, sorted by `resident_id`): `resident_id`,
+  `display_name`, `home_id`, `status`, `status_text` ([Resident status](#access-patterns),
+  below), `wearable` (`device_id`, `ts`, `battery_pct`, `worn`, `charging`, `online`, or
+  null if none is assigned), `bedroom` (`device_id`, `ts`, `online`, or null), and
+  `vitals` (at most one entry, the newest: `ts`, `hr_bpm`, `spo2_pct`, `skin_temp_c`;
+  not `activity_pct`, which the staff dashboards don't show). A never-reported device has `ts`, `battery_pct`, `worn` null and
+  `online` false. With two wearables, the one with the newest `status` is shown (the
+  status checks every assigned wearable's newest vitals);
+- per alert (pattern 9, newest first): `alert_id`, `resident_id`, `device_id`,
+  `alert_type`, `severity` ("critical" when missing), `status`, `event_ts`,
+  `acknowledged_at`, `acknowledged_by_role` and `acknowledged_by` (device problems only:
+  the caregiver's Cognito `name`, "Former caregiver" once the account is gone, null for
+  ops and for a nurse's acknowledge), `ack_note`, `escalated_at`, and the computed
+  `escalates_at`. Absent values are null. A route test checks the exact keys.
+
+*(proposed, decided by the builder 2026-11-07; for the user to confirm)*:
+
+- **Pattern 4 is needed too:** pattern 8 and pattern 5 don't say which devices belong to
+  which resident, so the route also reads `by-type` `entity_type = DEVICE` (`pk`,
+  `resident_id`), with `GET /devices`' IAM attribute list minus `device_type`.
+- **Thresholds for the abnormal-reading rule:** a BatchGetItem of
+  `THRESHOLDS#<resident_id>` / `THRESHOLDS` (projecting only the three limits), only for
+  residents with no open alert and a wearable with a vitals entry, cached 5 minutes per
+  container as telemetry caches pattern 2. IAM allows only `THRESHOLDS#` partitions, and
+  those attributes as long as the handler sends the projection (a request without one
+  would pass the attribute condition vacuously). Up to 20 items × 0.5 RCU ≈ 10 RCU once per 5 minutes per container,
+  within the registry's burst capacity. Thresholds aren't returned.
+- **Only `status` and `vitals` from pattern 5:** the dashboards don't show `bed` or
+  `motion`, so they aren't read (pattern 5's row said "all four").
+- **One vitals entry, not five:** `by-message` projects only `latest`, so the doctor
+  dashboard's sparklines have one point. Five would need a BatchGetItem of the base
+  `latest` items (about 10 RCU per poll); not done.
+- **Caregiver names** come from Cognito `AdminGetUser` (the `sub` is the username, as
+  the pool's username attribute is email), keeping only `name`, cached 5 minutes.
+  `UserNotFoundException` means the account is gone. The role can't list users, but each
+  call returns that user's other attributes (email): accepted while all accounts are
+  synthetic, and on the "Before any real resident data arrives" list below. A failed lookup returns
+  `acknowledged_by` null (the portal shows "a caregiver") rather than failing the
+  dashboard. "Former staff member" never arises here: resolved alerts (`resolved_by`)
+  are not in the `open` index.
+- As for the devices view, `assigned_at` isn't projected, so entries older than the
+  assignment aren't dropped (relies on reassignment being one transaction).
+- **Throttling:** the stage limits `GET /dashboard` and `GET /devices` to 0.5 requests/s
+  each (burst 2), because they share `by-type` (2 RCU) and `by-message` (3 RCU) with the
+  watchdog; that still serves about 15 dashboards polling every 30 s.
+- The dashboard is loaded once per page view: the 30-second polling in patterns 5, 8,
+  and 9 is not built yet, because the alert actions are still local-only and a reload
+  would undo them on screen.
+
+**Resident page and caregiver view** (patterns 10, 11, 12, 13, 14, 18; built 2026-11-07
+as `GET /residents/{resident_id}` and `GET /me/residents`, `lambdas/api-residents/`, at
+the user's request). *(proposed, builder's choices)*: the profile is read for
+`display_name` and `home_id` only; the devices' ASSIGNMENT items are read too (for
+`assigned_at` and a current `resident_id`, since `by-resident` can lag a move); only
+`vitals`, `fall`, `status`, `motion`, `bed` are read (not `vitals_alert` or
+`alert_cancel`); alerts without `details` or `resolve_note`; `updated_by` on thresholds
+for staff only; `threshold_history` is always `[]` (the portal reads pattern 27 from
+`GET .../thresholds/history`); a caregiver sees up to
+20 linked residents; ops get `403`.
 
 **Resident status** (decided 2026-11-05): every resident the API returns (dashboards,
 caregiver view, resident page) carries `status` and its sentence `status_text`. The
@@ -295,8 +360,11 @@ above, and `spo2_pct {"min": 88}` for `res-0002`, as the seed script creates.
 | `changed_by_name` | `Test Doctor A` | copied from Cognito at write time, so the history keeps the name after the account is deleted (see Actor names) |
 | `changes` | `[{"field": "hr_bpm.max", "old_value": 110, "new_value": 120}]` | only the values that changed; `field` is one of `hr_bpm.min`, `hr_bpm.max`, `spo2_pct.min`, `skin_temp_c.min`, `skin_temp_c.max` |
 
-- **Write path: not implemented.** It lands with the pattern 26 route. The route reads
-  the thresholds, then writes the new values and this item in one `TransactWriteItems`,
+- **Write path: built 2026-11-07** (user's request) as
+  `PUT /residents/{resident_id}/thresholds` and, for reading,
+  `GET /residents/{resident_id}/thresholds/history` (newest 100 changes, never
+  `changed_by`), one Lambda `lambdas/api-thresholds/`. The route reads (strongly
+  consistent) the thresholds, then writes the new values and this item in one `TransactWriteItems`,
   with the condition that `updated_at` hasn't changed since the read, so two doctors
   saving at once can't record the wrong old values. A save that changes nothing writes
   no item.
@@ -778,6 +846,15 @@ A nurse acknowledge from Track B (synthetic values):
 }
 ```
 
+**Built 2026-11-07** (user's request) as `lambdas/api-alert-actions/` for the acknowledge
+and cancel routes (`POST /residents/{resident_id}/alerts/{alert_id}/acknowledge`, body
+`{event_ts, note?}`; `.../cancel`, body `{event_ts}`), answering `202 {alert_id,
+requested_status}` once the update is queued. Choices where this section is silent
+*(proposed)*: a nurse note on an ops or caregiver acknowledge is `400`; a nurse's
+acknowledge of a device problem and a caregiver's of a health alert are `409`; a
+caregiver whose token has no valid `name` gets `403 account_incomplete` (alert-processor
+would drop the update); the resolve route is not built.
+
 A caregiver cancel has `"by_role": "caregiver"`, `"new_status": "cancelled"`, the
 caregiver's `sub` as `by`, their `name` claim as `by_name`, an alert target, and no
 `note` key. A caregiver acknowledge of a device problem is the same with
@@ -1206,6 +1283,10 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
     rule exists since the curated layer)
   - `http://localhost:5173` is removed from the API's CORS origins (`infra/api.tf`), so
     developers' local dev servers can no longer call the live API
+  - the `GET /dashboard` role's `cognito-idp:AdminGetUser` (it reads a caregiver's whole
+    Cognito record to show their name) is replaced, e.g. by a name-only store the role
+    can read, or names copied to the alert at acknowledge time (both are product
+    decisions: the second changes the Actor names rule)
 
 ## Capacity
 

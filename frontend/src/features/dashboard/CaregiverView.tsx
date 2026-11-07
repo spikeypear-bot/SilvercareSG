@@ -4,6 +4,7 @@ import { Button } from '../../components/Button'
 import { Avatar } from '../../components/Avatar'
 import { Card } from '../../components/Card'
 import { EmptyState } from '../../components/EmptyState'
+import { Notice } from '../../components/Notice'
 import { RelativeTime } from '../../components/RelativeTime'
 import { Skeleton } from '../../components/Skeleton'
 import { StatusBadge } from '../../components/StatusBadge'
@@ -45,7 +46,8 @@ const MAX_RECENT_ALERTS = 5
  * decisions 2026-11-05, docs/data-model.md pattern 16).
  */
 export function CaregiverView() {
-  const { data, loading, error, retry, cancelAlert, acknowledgeDeviceProblem } = useDashboardData('family')
+  const { data, loading, error, retry, cancelAlert, acknowledgeDeviceProblem, actionError, dismissActionError } =
+    useDashboardData('family')
 
   let content: ReactNode
   if (error) {
@@ -62,7 +64,23 @@ export function CaregiverView() {
     )
   }
 
-  return <MainLayout title="My residents">{content}</MainLayout>
+  return (
+    <MainLayout title="My residents">
+      {actionError && (
+        <Notice
+          tone="error"
+          action={
+            <Button variant="secondary" onClick={dismissActionError}>
+              Dismiss
+            </Button>
+          }
+        >
+          {actionError}
+        </Notice>
+      )}
+      {content}
+    </MainLayout>
+  )
 }
 
 function CaregiverContent({
@@ -71,9 +89,9 @@ function CaregiverContent({
   onAcknowledge,
 }: {
   data: DashboardData
-  onCancel: (alertId: string, by: string) => void
+  onCancel: (alertId: string, by: string) => Promise<boolean>
   /** Acknowledges an open device problem; `by` is display only, never sent. */
-  onAcknowledge: (alertId: string, by: string) => void
+  onAcknowledge: (alertId: string, by: string) => Promise<boolean>
 }) {
   const { user } = useAuth()
   // Display only, never sent: the API takes who cancelled from the token.
@@ -97,13 +115,16 @@ function CaregiverContent({
             <ResidentOverview
               resident={resident}
               alerts={data.alerts.filter((a) => a.resident_id === resident.resident_id)}
+              // Announced only once accepted (with API data, after the 202).
               onCancel={(alert) => {
-                onCancel(alert.alert_id, caregiverName)
-                announce(`Alert cancelled: ${describeAlert(alert, residentsById)}.`)
+                void onCancel(alert.alert_id, caregiverName).then((ok) => {
+                  if (ok) announce(`Alert cancelled: ${describeAlert(alert, residentsById)}.`)
+                })
               }}
               onAcknowledge={(alert) => {
-                onAcknowledge(alert.alert_id, caregiverName)
-                announce(`Acknowledged: ${describeAlert(alert, residentsById)}.`)
+                void onAcknowledge(alert.alert_id, caregiverName).then((ok) => {
+                  if (ok) announce(`Acknowledged: ${describeAlert(alert, residentsById)}.`)
+                })
               }}
             />
           </li>

@@ -47,12 +47,18 @@ justified by something the code actually does.
 - **KMS:** if a resource uses a customer-managed key, grant only `kms:Decrypt`
   / `kms:GenerateDataKey` as needed, on that key's ARN.
 - **Use conditions** to narrow further where useful (e.g.
-  `dynamodb:LeadingKeys`, `aws:SecureTransport`). A `Query` on an index that projects
-  personal data (the registry's `by-type` projects `display_name`, `home_id`,
-  `photo_key`) needs `ForAllValues:StringEquals` `dynamodb:Attributes` (only the
-  attributes read, plus keys) and `StringEquals` `dynamodb:Select` =
-  `SPECIFIC_ATTRIBUTES`, and the request must send `Select: SPECIFIC_ATTRIBUTES` (see
-  `api_devices` in `infra/api.tf`). Don't copy a peer role's wildcard resource either.
+  `dynamodb:LeadingKeys`, `aws:SecureTransport`). Don't copy a peer role's wildcard
+  resource either.
+- **DynamoDB attribute lists:** `ForAllValues:StringEquals` on `dynamodb:Attributes`
+  passes vacuously when a read sends no `ProjectionExpression` (the key is absent), so
+  on its own it doesn't stop a GetItem / BatchGetItem / Query reading the whole item.
+  Pair it with `Null` `dynamodb:Attributes` = `"false"` (and `dynamodb:Select` =
+  `SPECIFIC_ATTRIBUTES`, `IfExists` for the GetItem family) on every read statement
+  that is meant to hide fields such as `medical_notes` or a `sub`. This includes a
+  `Query` on an index that projects personal data (the registry's `by-type` projects
+  `display_name`, `home_id`, `photo_key`; see `api_devices` in `infra/api.tf`): list
+  only the attributes read plus keys, and send `Select: SPECIFIC_ATTRIBUTES` in the
+  request.
 - **Prefix-protecting Denies** in a bucket policy that rely on object tags (e.g. a
   `resident_id` tag used for erasure) also deny `s3:PutObjectTagging` and
   `s3:DeleteObjectTagging` to everyone but the writer.

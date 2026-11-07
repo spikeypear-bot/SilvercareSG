@@ -1,12 +1,23 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { ApiError } from '../../lib/api'
+import type { ApiResidentDetail, ApiThresholdChange } from '../../types/resident'
+
+const api = vi.hoisted(() => ({
+  getResident: vi.fn<(id: string) => Promise<ApiResidentDetail>>(),
+  getThresholdHistory: vi.fn<(id: string) => Promise<ApiThresholdChange[]>>(),
+}))
+vi.mock('../../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/api')>()
+  return { ...actual, getResident: api.getResident, getThresholdHistory: api.getThresholdHistory }
+})
 import { demoDataFor } from '../../test/dashboardMock'
 import { deferred } from '../../test/fixtures'
 import { demoDetail } from '../../test/residentMock'
 import type { DashboardData, ResidentAlert } from '../../types/dashboard'
 import type { ResidentDetail, VitalsThresholds } from '../../types/resident'
 import {
-  DEMO_DELAY_MS,
   loadResidentDetail,
+  toResidentDetail,
   useDashboardData,
   useResidentDetail,
   type DashboardLoader,
@@ -23,21 +34,45 @@ afterEach(() => {
 })
 
 describe('loadResidentDetail', () => {
-  it('resolves after the simulated delay with the resident, or null for an unknown ID', async () => {
-    vi.useFakeTimers()
-    let settled = false
-    const promise = loadResidentDetail('res-0003').then((d) => {
-      settled = true
-      return d
-    })
-    await vi.advanceTimersByTimeAsync(DEMO_DELAY_MS - 1)
-    expect(settled).toBe(false)
-    await vi.advanceTimersByTimeAsync(1)
-    expect((await promise)?.resident.name).toBe('Test Resident C')
+  const API_DETAIL: ApiResidentDetail = {
+    resident: {
+      resident_id: 'res-0003',
+      display_name: 'Test Resident C',
+      home_id: null,
+      status: 'ok',
+      status_text: 'All readings look normal',
+      wearable: null,
+      bedroom: null,
+      vitals: [],
+    },
+    wearable: null,
+    bedroom: null,
+    alerts: [],
+    thresholds: {
+      hr_bpm: { min: 50, max: 120 },
+      spo2_pct: { min: 92 },
+      skin_temp_c: { min: 30, max: 38 },
+      updated_at: null,
+      updated_by: null,
+    },
+    threshold_history: [],
+  }
 
-    const missing = loadResidentDetail('res-9999')
-    await vi.advanceTimersByTimeAsync(DEMO_DELAY_MS)
-    expect(await missing).toBeNull()
+  it('maps GET /residents/{id}, null for a 404, and rethrows other errors', async () => {
+    api.getThresholdHistory.mockResolvedValue([])
+    api.getResident.mockResolvedValueOnce(API_DETAIL)
+    const detail = await loadResidentDetail('res-0003')
+    expect(api.getResident).toHaveBeenCalledWith('res-0003')
+    expect(detail).toEqual(toResidentDetail(API_DETAIL))
+    expect(detail?.resident.name).toBe('Test Resident C')
+    expect(detail?.thresholds).not.toHaveProperty('updated_by')
+
+    api.getResident.mockRejectedValueOnce(new ApiError(404, 'not_found'))
+    expect(await loadResidentDetail('res-9999')).toBeNull()
+
+    const error = new ApiError(500, 'internal_error')
+    api.getResident.mockRejectedValueOnce(error)
+    await expect(loadResidentDetail('res-0003')).rejects.toBe(error)
   })
 })
 
@@ -132,7 +167,7 @@ describe('useResidentDetail actions (local state only)', () => {
   it('acknowledge changes only that alert and does not reload', async () => {
     const { result, data, loader } = await loaded()
     const target = firstWith(data, 'open')
-    act(() => result.current.acknowledgeAlert(target.alert_id))
+    act(() => void result.current.acknowledgeAlert(target.alert_id))
     expect(find(result, target.alert_id)).toEqual({
       ...target,
       status: 'acknowledged',
@@ -162,7 +197,7 @@ describe('useResidentDetail actions (local state only)', () => {
 
     const history = firstWith(data, 'resolved')
     act(() => result.current.resolveAlert(history.alert_id, 'Test Nurse D'))
-    act(() => result.current.acknowledgeAlert(history.alert_id))
+    act(() => void result.current.acknowledgeAlert(history.alert_id))
     expect(find(result, history.alert_id)).toBe(history)
     expect(result.current.data?.alerts).toHaveLength(data.alerts.length)
   })
@@ -172,7 +207,7 @@ describe('useResidentDetail actions (local state only)', () => {
     const cancelled = firstWith(data, 'cancelled')
     expect(cancelled).toBeDefined()
     act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse D'))
-    act(() => result.current.acknowledgeAlert(cancelled.alert_id))
+    act(() => void result.current.acknowledgeAlert(cancelled.alert_id))
     expect(find(result, cancelled.alert_id)).toBe(cancelled)
     expect(find(result, cancelled.alert_id)).not.toHaveProperty('resolved_by')
     expect(find(result, cancelled.alert_id)).toHaveProperty('status', 'cancelled')
@@ -186,7 +221,9 @@ describe('useResidentDetail actions (local state only)', () => {
       spo2_pct: { min: 90 },
       skin_temp_c: { min: 30.5, max: 37.0 },
     }
-    act(() => result.current.updateThresholds(values, 'Test Doctor B'))
+    await act(async () => {
+      await result.current.updateThresholds(values, 'Test Doctor B')
+    })
     const after = result.current.data as ResidentDetail
     expect(after.thresholds).toEqual({
       ...values,
@@ -208,7 +245,9 @@ describe('useResidentDetail actions (local state only)', () => {
     expect(data.thresholds).not.toHaveProperty('updated_by')
     expect(data.thresholds).not.toHaveProperty('updated_at')
     expect(data.threshold_history).toEqual([])
-    act(() => result.current.updateThresholds(data.thresholds, 'Test Doctor A'))
+    await act(async () => {
+      await result.current.updateThresholds(data.thresholds, 'Test Doctor A')
+    })
     expect((result.current.data as ResidentDetail).thresholds).toMatchObject({
       updated_by: 'Test Doctor A',
       updated_at: ACTION_TIME.toISOString(),
@@ -234,7 +273,9 @@ describe('useResidentDetail actions (local state only)', () => {
     const loader = vi.fn<ResidentDetailLoader>().mockResolvedValue(null)
     const { result } = renderHook(() => useResidentDetail('res-9999', loader))
     await waitFor(() => expect(result.current.notFound).toBe(true))
-    act(() => result.current.updateThresholds(demoDetail('res-0001', NOW).thresholds, 'Test Doctor B'))
+    await act(async () => {
+      await result.current.updateThresholds(demoDetail('res-0001', NOW).thresholds, 'Test Doctor B')
+    })
     expect(result.current).toMatchObject({ data: null, notFound: true })
   })
 })

@@ -48,24 +48,28 @@ export interface VitalsReading {
   hr_bpm: number | null
   spo2_pct: number | null
   skin_temp_c: number | null
-  activity_pct: number
+  activity_pct: number | null
 }
 
-/** Latest wearable `status` message plus derived online state. */
+/**
+ * Latest wearable `status` message plus derived online state. `ts`, `battery_pct`, and
+ * `worn` are null when the device has never reported (or sent an invalid value).
+ */
 export interface WearableState {
   device_id: string
-  /** ISO 8601 UTC of the latest status message */
-  ts: string
-  battery_pct: number
-  worn: boolean
+  /** ISO 8601 UTC of the latest status message; null if it has never reported. */
+  ts: string | null
+  battery_pct: number | null
+  worn: boolean | null
   charging: boolean
+  /** Provided by the backend (never computed by the UI). */
   online: boolean
 }
 
 export interface BedroomSensorState {
   device_id: string
-  /** ISO 8601 UTC of the latest status message */
-  ts: string
+  /** ISO 8601 UTC of the latest status message; null if it has never reported. */
+  ts: string | null
   online: boolean
 }
 
@@ -77,9 +81,14 @@ export interface Resident {
   status: ResidentStatus
   /** Plain sentence describing the status, provided with the data. */
   status_text: string
-  wearable: WearableState
-  bedroom: BedroomSensorState
-  /** Latest 5 vitals messages, newest first. */
+  /** null if the resident has no wearable assigned. */
+  wearable: WearableState | null
+  /** null if the resident has no bedroom unit assigned. */
+  bedroom: BedroomSensorState | null
+  /**
+   * Latest vitals messages, newest first. `GET /dashboard` gives at most one (the
+   * newest, pattern 5); the demo data and the resident page give up to 5.
+   */
   vitals: VitalsReading[]
 }
 
@@ -161,4 +170,45 @@ export interface DashboardData {
   residents: Resident[]
   /** Newest first */
   alerts: ResidentAlert[]
+}
+
+/**
+ * `GET /dashboard` response (staff only), exactly as the API returns it
+ * (lambdas/api-dashboard/). Mapped to `DashboardData` by `loadDashboardData`.
+ * Absent values are null, never missing keys.
+ */
+export interface ApiDashboardResident {
+  resident_id: string
+  display_name: string
+  home_id: string | null
+  status: ResidentStatus
+  status_text: string
+  wearable: WearableState | null
+  bedroom: BedroomSensorState | null
+  /** At most one entry: the newest. No `activity_pct`: the staff dashboards don't show it. */
+  vitals: Array<Omit<VitalsReading, 'activity_pct'>>
+}
+
+export interface ApiDashboardAlert {
+  alert_id: string
+  resident_id: string
+  device_id: string
+  alert_type: AlertType
+  severity: AlertSeverity
+  /** The open list holds only open and acknowledged alerts. */
+  status: 'open' | 'acknowledged'
+  event_ts: string
+  acknowledged_at: string | null
+  acknowledged_by_role: 'caregiver' | 'ops' | null
+  /** A caregiver's display name (device problems), or "Former caregiver". */
+  acknowledged_by: string | null
+  ack_note: string | null
+  escalated_at: string | null
+  escalates_at: string | null
+}
+
+export interface ApiDashboardResponse {
+  residents: ApiDashboardResident[]
+  /** Newest first */
+  alerts: ApiDashboardAlert[]
 }

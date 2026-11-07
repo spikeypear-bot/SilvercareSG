@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Pencil } from 'lucide-react'
 import { Button } from '../../components/Button'
+import { Notice } from '../../components/Notice'
 import { RelativeTime } from '../../components/RelativeTime'
 import { TextField } from '../../components/TextField'
 import type { ResidentThresholds, VitalsThresholds } from '../../types/resident'
@@ -19,7 +20,8 @@ interface ThresholdsSectionProps {
   thresholds: ResidentThresholds
   /** Doctors can edit; nurses see the values read-only. */
   canEdit: boolean
-  onSave: (values: VitalsThresholds) => void
+  /** Resolves to null once saved, or to a sentence saying why not (the form stays open). */
+  onSave: (values: VitalsThresholds) => Promise<string | null>
   announce: (message: string) => void
   now: Date
 }
@@ -59,10 +61,13 @@ export function ThresholdsSection({ thresholds, canEdit, onSave, announce, now }
         <ThresholdsForm
           initial={thresholds}
           onCancel={close}
-          onSave={(values) => {
-            onSave(values)
-            announce('Thresholds saved.')
-            close()
+          onSave={async (values) => {
+            const failure = await onSave(values)
+            if (failure === null) {
+              announce('Thresholds saved.')
+              close()
+            }
+            return failure
           }}
         />
       ) : (
@@ -117,10 +122,12 @@ function ThresholdsForm({
 }: {
   initial: VitalsThresholds
   onCancel: () => void
-  onSave: (values: VitalsThresholds) => void
+  onSave: (values: VitalsThresholds) => Promise<string | null>
 }) {
   const [form, setForm] = useState<ThresholdForm>(() => thresholdsToForm(initial))
   const [errors, setErrors] = useState<ThresholdErrors>({})
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const inputRefs = useRef<Partial<Record<ThresholdField, HTMLInputElement | null>>>({})
 
   // Opening the form moves focus to its first field.
@@ -128,11 +135,20 @@ function ThresholdsForm({
     inputRefs.current[THRESHOLD_FIELDS[0].field]?.focus()
   }, [])
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (saving) return
     const result = validateThresholds(form)
     if (result.ok) {
-      onSave(result.values)
+      setErrors({})
+      setSaveError(null)
+      setSaving(true)
+      const failure = await onSave(result.values)
+      // On success the section closes the form (this component unmounts).
+      if (failure !== null) {
+        setSaveError(failure)
+        setSaving(false)
+      }
       return
     }
     setErrors(result.errors)
@@ -162,9 +178,12 @@ function ThresholdsForm({
           />
         ))}
       </div>
+      {saveError && <Notice tone="error">{saveError}</Notice>}
       <div className="flex flex-wrap gap-3">
-        <Button type="submit">Save thresholds</Button>
-        <Button variant="secondary" onClick={onCancel}>
+        <Button type="submit" busy={saving}>
+          Save thresholds
+        </Button>
+        <Button variant="secondary" onClick={onCancel} disabled={saving}>
           Cancel
         </Button>
       </div>
