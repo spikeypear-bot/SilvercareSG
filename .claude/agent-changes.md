@@ -5,6 +5,14 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-07
 
+- **Problem:** frontend-tester saved raw zero-width and bidi characters into
+  `ackNote.test.ts` and `ResolveNoteForm.test.tsx` instead of `\u` escapes (oxlint
+  doesn't flag them). **Changed:** `.claude/agents/frontend-tester.md`: write them as
+  escapes and search test files for raw ones before reporting, as lambda-test does.
+- **Problem:** the resolve note hint said "kept in the resident's record" without the
+  retention; the privacy reviewer caught it. **Changed:**
+  `.claude/skills/frontend/SKILL.md` (Privacy): a free-text hint names who receives it
+  and how long it is kept, from docs/data-model.md.
 - **Problem:** 83 summaries tests errored in the dev container: they used moto's Glue,
   which needs `pyparsing`, and the image installs moto only for DynamoDB, S3, Cognito.
   **Changed:** `.claude/skills/lambda-test/SKILL.md`: use moto only for those services;

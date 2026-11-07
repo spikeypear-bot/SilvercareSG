@@ -1,5 +1,5 @@
-"""Pure rules for the acknowledge and cancel routes (docs/data-model.md, Status updates):
-no AWS calls.
+"""Pure rules for the acknowledge, cancel, and resolve routes (docs/data-model.md, Status
+updates; Track B route: resolve): no AWS calls.
 
 `alert-processor` trusts every status_update and fails silently on one it can't apply
 (it logs and drops it, or it ends in the DLQ), so the API checks everything first and
@@ -46,16 +46,25 @@ DEVICE_PROBLEM_TYPES = frozenset({"device_offline", "battery_low", "not_worn"})
 
 ACKNOWLEDGE = "acknowledge"
 CANCEL = "cancel"
-REQUESTED_STATUS = {ACKNOWLEDGE: "acknowledged", CANCEL: "cancelled"}
+RESOLVE = "resolve"
+REQUESTED_STATUS = {
+    ACKNOWLEDGE: "acknowledged",
+    CANCEL: "cancelled",
+    RESOLVE: "resolved",
+}
 # The statuses each action may start from (pattern 25's conditions).
 FROM_STATUSES = {
     ACKNOWLEDGE: frozenset({"open"}),
     CANCEL: frozenset({"open", "acknowledged"}),
+    RESOLVE: frozenset({"open", "acknowledged"}),
 }
 BODY_KEYS = {
     ACKNOWLEDGE: frozenset({"event_ts", "note"}),
     CANCEL: frozenset({"event_ts"}),
+    RESOLVE: frozenset({"event_ts", "note"}),
 }
+# A staff resolve's closing note is required (staff-resolve criterion 1).
+NOTE_REQUIRED = frozenset({RESOLVE})
 
 
 class Refused(Exception):
@@ -91,7 +100,7 @@ class Request:
     resident_id: str
     alert_id: str
     event_ts: str
-    # None: no note. Only a nurse's acknowledge may carry one.
+    # None: no note. A nurse's acknowledge may carry one; a resolve always does.
     note: str | None
 
 
@@ -152,7 +161,10 @@ def parse_request(action: str, path: Any, body_text: Any) -> Request:
         raise bad_request("event_ts") from None
 
     note = body.get("note")
-    if note is not None:
+    if note is None:
+        if action in NOTE_REQUIRED:
+            raise bad_request("note_required")
+    else:
         if type(note) is not str:
             raise bad_request("note")
         # As the portal's checkAckNote: CRLF to LF, then trim.
@@ -203,6 +215,31 @@ def check_cancel(alert_type: str) -> None:
         raise not_found("alert_type")
 
 
+def resolve_role(groups: frozenset[str]) -> str:
+    """by_role for a staff resolve: `nurse` if the caller is in `nurse` (also when in
+    both), else `doctor`. The caller's groups were already narrowed to these two."""
+    return "nurse" if "nurse" in groups else "doctor"
+
+
+def check_resolve(alert_type: str) -> None:
+    """Staff resolve health alerts (possible falls included) only: the watchdog resolves
+    device problems when they clear (pattern 16)."""
+    if alert_type in DEVICE_PROBLEM_TYPES:
+        raise conflict(
+            "type", "Device problems are resolved automatically when they clear."
+        )
+    if alert_type not in HEALTH_ALERT_TYPES:
+        raise not_found("alert_type")
+
+
+def note_allowed(action: str, by_role: str) -> bool:
+    """Who may send a note (message.py's `_check_note`): a nurse's acknowledge
+    (optional) and a nurse's or doctor's resolve (required, checked in parse_request)."""
+    if action == RESOLVE:
+        return by_role in ("nurse", "doctor")
+    return action == ACKNOWLEDGE and by_role == "nurse"
+
+
 def check_status(action: str, status: Any) -> None:
     if not isinstance(status, str) or status not in FROM_STATUSES[action]:
         raise conflict("status", "This alert has already been dealt with.")
@@ -220,8 +257,9 @@ def status_update(
     note: str | None,
     changed_at: str,
 ) -> dict[str, Any]:
-    """The queue message, exactly as docs/data-model.md's table: `note` only on a
-    nurse's acknowledge with a note; `by_name` only for a caregiver."""
+    """The queue message, exactly as docs/data-model.md's table: `note` on a nurse's
+    acknowledge with a note and on every staff resolve; `by_name` only for a
+    caregiver."""
     body: dict[str, Any] = {
         "kind": "status_update",
         "schema_version": SCHEMA_VERSION,
@@ -233,6 +271,6 @@ def status_update(
         "by_name": by_name if by_role == "caregiver" else None,
         "target": {"alert_id": alert_id, "event_ts": event_ts},
     }
-    if by_role == "nurse" and note is not None:
+    if note is not None and note_allowed(action, by_role):
         body["note"] = note
     return body

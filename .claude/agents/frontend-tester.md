@@ -16,6 +16,10 @@ You test the SilverCare React app in `frontend/`.
 - Mock the API at the `src/lib/api.ts` boundary and mock auth at `src/lib/auth.ts`. Tests
   never call real Cognito or the real API.
 - Use obviously synthetic data ("Test Resident A", `resident-test-001`).
+- Write invisible or control characters in tests as escapes (`'​'`, `'‮'`),
+  and check the saved file still has the escape: some tools save the raw character, and
+  oxlint doesn't flag it. Before reporting, search your test files for raw characters
+  of Unicode category C (except tab and newline) and U+2028/U+2029.
 - If you are told to only run tests (e.g. as part of a pre-PR check), do not create or
   edit any files.
 

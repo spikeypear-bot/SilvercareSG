@@ -12,7 +12,7 @@ interface AlertHistoryProps {
   /** Nurse only: acknowledge and resolve. Left out for doctors, who review. */
   actions?: {
     onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
-    onResolve: (alertId: string) => void
+    onResolve: (alertId: string, resolveNote: string) => Promise<boolean>
   }
   announce: (message: string) => void
 }
@@ -51,11 +51,14 @@ export function AlertHistory({ alerts, resident, now, actions, announce }: Alert
                             if (ok) announce(`Acknowledged: ${described}.`)
                           })
                         },
-                        onResolve: () => {
-                          actions.onResolve(alert.alert_id)
-                          announce(`Resolved: ${described}.`)
-                          // The buttons go away; move focus somewhere stable.
-                          headingRef.current?.focus()
+                        onResolve: (resolveNote) => {
+                          // Only once accepted (with API data, after the 202). Never the note.
+                          void actions.onResolve(alert.alert_id, resolveNote).then((ok) => {
+                            if (!ok) return
+                            announce(`Resolved: ${described}.`)
+                            // The buttons go away; move focus somewhere stable.
+                            headingRef.current?.focus()
+                          })
                         },
                       }
                     : undefined

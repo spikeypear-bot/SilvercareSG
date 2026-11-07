@@ -1,15 +1,24 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { ApiError } from '../../lib/api'
-import type { ApiResidentDetail, ApiThresholdChange } from '../../types/resident'
+import { ApiError, type AlertActionResponse } from '../../lib/api'
+import type { ApiResidentAlert, ApiResidentDetail, ApiThresholdChange } from '../../types/resident'
 
 const api = vi.hoisted(() => ({
   getResident: vi.fn<(id: string) => Promise<ApiResidentDetail>>(),
   getThresholdHistory: vi.fn<(id: string) => Promise<ApiThresholdChange[]>>(),
+  resolveAlertApi: vi.fn<typeof import('../../lib/api').resolveAlertApi>(),
 }))
 vi.mock('../../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api')>()
-  return { ...actual, getResident: api.getResident, getThresholdHistory: api.getThresholdHistory }
+  return {
+    ...actual,
+    getResident: api.getResident,
+    getThresholdHistory: api.getThresholdHistory,
+    resolveAlertApi: api.resolveAlertApi,
+  }
 })
+
+/** A synthetic closing note for staff resolves. */
+const RESOLVE_NOTE = 'Synthetic note: resident checked, false alarm.'
 import { demoDataFor } from '../../test/dashboardMock'
 import { deferred } from '../../test/fixtures'
 import { demoDetail } from '../../test/residentMock'
@@ -188,7 +197,7 @@ describe('useResidentDetail actions (local state only)', () => {
   it('resolve marks an open alert resolved, and does nothing to an already-resolved one', async () => {
     const { result, data } = await loaded()
     const open = firstWith(data, 'open')
-    act(() => result.current.resolveAlert(open.alert_id, 'Test Nurse D'))
+    act(() => void result.current.resolveAlert(open.alert_id, 'Test Nurse D', RESOLVE_NOTE))
     expect(find(result, open.alert_id)).toMatchObject({
       status: 'resolved',
       resolved_by: 'Test Nurse D',
@@ -196,7 +205,7 @@ describe('useResidentDetail actions (local state only)', () => {
     })
 
     const history = firstWith(data, 'resolved')
-    act(() => result.current.resolveAlert(history.alert_id, 'Test Nurse D'))
+    act(() => void result.current.resolveAlert(history.alert_id, 'Test Nurse D', RESOLVE_NOTE))
     act(() => void result.current.acknowledgeAlert(history.alert_id))
     expect(find(result, history.alert_id)).toBe(history)
     expect(result.current.data?.alerts).toHaveLength(data.alerts.length)
@@ -206,7 +215,7 @@ describe('useResidentDetail actions (local state only)', () => {
     const { result, data } = await loaded('res-0002')
     const cancelled = firstWith(data, 'cancelled')
     expect(cancelled).toBeDefined()
-    act(() => result.current.resolveAlert(cancelled.alert_id, 'Test Nurse D'))
+    act(() => void result.current.resolveAlert(cancelled.alert_id, 'Test Nurse D', RESOLVE_NOTE))
     act(() => void result.current.acknowledgeAlert(cancelled.alert_id))
     expect(find(result, cancelled.alert_id)).toBe(cancelled)
     expect(find(result, cancelled.alert_id)).not.toHaveProperty('resolved_by')
@@ -261,7 +270,7 @@ describe('useResidentDetail actions (local state only)', () => {
     const data = demoDetail('res-0003', NOW)
     act(() => {
       result.current.acknowledgeAlert(data.alerts[0].alert_id)
-      result.current.resolveAlert(data.alerts[0].alert_id, 'Test Nurse D')
+      void result.current.resolveAlert(data.alerts[0].alert_id, 'Test Nurse D', RESOLVE_NOTE)
       result.current.updateThresholds(data.thresholds, 'Test Doctor B')
     })
     expect(result.current).toMatchObject({ data: null, loading: true, notFound: false })
@@ -311,5 +320,123 @@ describe('useDashboardData after the useLoaded refactor', () => {
     await waitFor(() => expect(second).toHaveBeenCalledTimes(1))
     expect(first).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(result.current.loading).toBe(false))
+  })
+})
+
+describe('useResidentDetail resolveAlert with API data (the default loader)', () => {
+  const OPEN_ALERT: ApiResidentAlert = {
+    alert_id: 'alert-test-001',
+    resident_id: 'resident-test-003',
+    device_id: 'wearable-test-003',
+    alert_type: 'fall',
+    severity: 'critical',
+    status: 'open',
+    event_ts: '2026-11-07T02:00:00.000Z',
+    acknowledged_at: null,
+    acknowledged_by_role: null,
+    acknowledged_by: null,
+    ack_note: null,
+    escalated_at: null,
+    escalates_at: null,
+    resolved_at: null,
+    resolved_by: null,
+    cancelled_at: null,
+    cancelled_by_role: null,
+    cancelled_by: null,
+  }
+  const DETAIL: ApiResidentDetail = {
+    resident: {
+      resident_id: 'resident-test-003',
+      display_name: 'Test Resident C',
+      home_id: null,
+      status: 'attention',
+      status_text: 'Synthetic status.',
+      wearable: null,
+      bedroom: null,
+      vitals: [],
+    },
+    wearable: null,
+    bedroom: null,
+    alerts: [
+      OPEN_ALERT,
+      { ...OPEN_ALERT, alert_id: 'alert-test-002', alert_type: 'not_worn', severity: 'warning' },
+    ],
+    thresholds: {
+      hr_bpm: { min: 50, max: 120 },
+      spo2_pct: { min: 92 },
+      skin_temp_c: { min: 30, max: 38 },
+      updated_at: null,
+      updated_by: null,
+    },
+    threshold_history: [],
+  }
+
+  async function loadedLive() {
+    api.getResident.mockResolvedValue(DETAIL)
+    api.getThresholdHistory.mockResolvedValue([])
+    const hook = renderHook(() => useResidentDetail('resident-test-003'))
+    await waitFor(() => expect(hook.result.current.data).not.toBeNull())
+    return hook
+  }
+  type HookResult = { current: ResidentDetailState }
+  const find = (result: HookResult, id: string) =>
+    result.current.data?.alerts.find((a) => a.alert_id === id) as ResidentAlert
+
+  beforeEach(() => {
+    api.resolveAlertApi.mockReset()
+    api.resolveAlertApi.mockRejectedValue(new Error('resolveAlertApi not set up for this test'))
+  })
+
+  it('sends the note and shows the alert resolved only after the 202', async () => {
+    const { result } = await loadedLive()
+    const request = deferred<AlertActionResponse>()
+    api.resolveAlertApi.mockReturnValue(request.promise)
+    let outcome!: Promise<boolean>
+    act(() => {
+      outcome = result.current.resolveAlert('alert-test-001', 'Test Nurse D', RESOLVE_NOTE)
+    })
+    expect(api.resolveAlertApi).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        resident_id: 'resident-test-003',
+        alert_id: 'alert-test-001',
+        event_ts: '2026-11-07T02:00:00.000Z',
+      }),
+      RESOLVE_NOTE,
+    )
+    expect(find(result, 'alert-test-001').status).toBe('open')
+    await act(async () => request.resolve({ alert_id: 'alert-test-001', requested_status: 'resolved' }))
+    await expect(outcome).resolves.toBe(true)
+    expect(find(result, 'alert-test-001')).toMatchObject({ status: 'resolved', resolved_by: 'Test Nurse D' })
+  })
+
+  it('on an error the alert stays open and actionError is set', async () => {
+    const { result } = await loadedLive()
+    const before = find(result, 'alert-test-001')
+    api.resolveAlertApi.mockRejectedValue(new ApiError(400, 'note'))
+    let ok: boolean | undefined
+    await act(async () => {
+      ok = await result.current.resolveAlert('alert-test-001', 'Test Nurse D', RESOLVE_NOTE)
+    })
+    expect(ok).toBe(false)
+    expect(find(result, 'alert-test-001')).toBe(before)
+    expect(result.current.actionError).toBe('The note was not accepted. Check it and try again.')
+  })
+
+  it('a second call while pending returns false; a device problem is refused with no request', async () => {
+    const { result } = await loadedLive()
+    const request = deferred<AlertActionResponse>()
+    api.resolveAlertApi.mockReturnValue(request.promise)
+    act(() => void result.current.resolveAlert('alert-test-001', 'Test Nurse D', RESOLVE_NOTE))
+    let again: boolean | undefined
+    let device: boolean | undefined
+    await act(async () => {
+      again = await result.current.resolveAlert('alert-test-001', 'Test Nurse D', RESOLVE_NOTE)
+      device = await result.current.resolveAlert('alert-test-002', 'Test Nurse D', RESOLVE_NOTE)
+    })
+    expect(again).toBe(false)
+    expect(device).toBe(false)
+    expect(api.resolveAlertApi).toHaveBeenCalledTimes(1)
+    await act(async () => request.resolve({ alert_id: 'alert-test-001', requested_status: 'resolved' }))
+    expect(find(result, 'alert-test-002').status).toBe('open')
   })
 })

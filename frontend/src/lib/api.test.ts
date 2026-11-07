@@ -8,7 +8,7 @@ import type { ApiDevice } from '../types/devices'
 const auth = vi.hoisted(() => ({ getApiToken: vi.fn<() => Promise<string | null>>() }))
 vi.mock('./auth', () => ({ getApiToken: auth.getApiToken }))
 
-import { ApiError, apiGet, getDashboard, getDevices } from './api'
+import { ApiError, acknowledgeAlertApi, apiGet, cancelAlertApi, getDashboard, getDevices, resolveAlertApi } from './api'
 
 const TEST_TOKEN = 'test-id-token-abc123'
 const BASE = 'https://api.example.test'
@@ -423,5 +423,121 @@ describe('getDashboard', () => {
     expect(error).toMatchObject({ status: 0, code: 'not_configured' })
     expect(auth.getApiToken).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('resolveAlertApi', () => {
+  const ALERT = {
+    resident_id: 'resident-test-001',
+    alert_id: 'alert-test-001',
+    event_ts: '2026-11-07T02:00:00.000Z',
+  }
+  const NOTE = 'Synthetic note: resident checked, false alarm.'
+  const accepted = (overrides: Record<string, unknown> = {}) =>
+    jsonResponse({ alert_id: ALERT.alert_id, requested_status: 'resolved', ...overrides }, 202)
+
+  it('POSTs to /residents/{resident_id}/alerts/{alert_id}/resolve with the ID token', async () => {
+    fetchMock.mockResolvedValue(accepted())
+    await resolveAlertApi(ALERT, NOTE)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe(`${BASE}/residents/resident-test-001/alerts/alert-test-001/resolve`)
+    expect(init).toMatchObject({ method: 'POST', cache: 'no-store', credentials: 'omit' })
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBe(`Bearer ${TEST_TOKEN}`)
+    expect(headers['Content-Type']).toBe('application/json')
+  })
+
+  it('sends exactly {event_ts, note}: no actor, name, or other alert field', async () => {
+    fetchMock.mockResolvedValue(accepted())
+    const withExtras = { ...ALERT, alert_type: 'fall', status: 'open', resolved_by: 'Test Nurse A' }
+    await resolveAlertApi(withExtras, NOTE)
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as Record<string, unknown>
+    expect(body).toEqual({ event_ts: ALERT.event_ts, note: NOTE })
+    expect(Object.keys(body).sort()).toEqual(['event_ts', 'note'])
+  })
+
+  it('sends the note as given (multi-line kept)', async () => {
+    fetchMock.mockResolvedValue(accepted())
+    await resolveAlertApi(ALERT, 'Line one\nLine two')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      event_ts: ALERT.event_ts,
+      note: 'Line one\nLine two',
+    })
+  })
+
+  it('encodes the IDs in the path', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ alert_id: 'alert/test 2', requested_status: 'resolved' }, 202))
+    await resolveAlertApi({ ...ALERT, resident_id: 'resident test/1', alert_id: 'alert/test 2' }, NOTE)
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/residents/resident%20test%2F1/alerts/alert%2Ftest%202/resolve`)
+  })
+
+  it('resolves to the 202 body when it is for this alert and requested_status is "resolved"', async () => {
+    fetchMock.mockResolvedValue(accepted())
+    await expect(resolveAlertApi(ALERT, NOTE)).resolves.toEqual({
+      alert_id: ALERT.alert_id,
+      requested_status: 'resolved',
+    })
+  })
+
+  it.each([
+    ['acknowledged', { requested_status: 'acknowledged' }],
+    ['cancelled', { requested_status: 'cancelled' }],
+    ['missing', { requested_status: undefined }],
+    ['another alert', { alert_id: 'alert-test-999' }],
+  ])('invalid_response (202) when the body is for %s', async (_, overrides) => {
+    fetchMock.mockResolvedValue(accepted(overrides))
+    const error = await apiErrorOf(resolveAlertApi(ALERT, NOTE))
+    expect(error).toMatchObject({ status: 202, code: 'invalid_response' })
+  })
+
+  it('invalid_response (202) when the body is not an object', async () => {
+    fetchMock.mockResolvedValue(jsonResponse('accepted', 202))
+    expect(await apiErrorOf(resolveAlertApi(ALERT, NOTE))).toMatchObject({ status: 202, code: 'invalid_response' })
+  })
+
+  it.each([
+    [400, 'note_required'],
+    [400, 'note'],
+    [403, 'forbidden'],
+    [404, 'not_found'],
+    [409, 'conflict'],
+  ])('passes through a %i %s error', async (status, code) => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: { code, message: 'Synthetic message' } }, status))
+    expect(await apiErrorOf(resolveAlertApi(ALERT, NOTE))).toMatchObject({ status, code })
+  })
+
+  it('unauthenticated without calling fetch', async () => {
+    auth.getApiToken.mockResolvedValue(null)
+    expect(await apiErrorOf(resolveAlertApi(ALERT, NOTE))).toMatchObject({ status: 401, code: 'unauthenticated' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('acknowledgeAlertApi and cancelAlertApi check requested_status too', () => {
+  const ALERT = {
+    resident_id: 'resident-test-001',
+    alert_id: 'alert-test-001',
+    event_ts: '2026-11-07T02:00:00.000Z',
+  }
+  const body202 = (requested_status: string) =>
+    jsonResponse({ alert_id: ALERT.alert_id, requested_status }, 202)
+
+  it('acknowledge accepts "acknowledged" and refuses "resolved" or "cancelled"', async () => {
+    fetchMock.mockResolvedValueOnce(body202('acknowledged'))
+    await expect(acknowledgeAlertApi(ALERT, null)).resolves.toMatchObject({ requested_status: 'acknowledged' })
+    for (const wrong of ['resolved', 'cancelled']) {
+      fetchMock.mockResolvedValueOnce(body202(wrong))
+      expect(await apiErrorOf(acknowledgeAlertApi(ALERT, null))).toMatchObject({ status: 202, code: 'invalid_response' })
+    }
+  })
+
+  it('cancel accepts "cancelled" and refuses "resolved" or "acknowledged"', async () => {
+    fetchMock.mockResolvedValueOnce(body202('cancelled'))
+    await expect(cancelAlertApi(ALERT)).resolves.toMatchObject({ requested_status: 'cancelled' })
+    for (const wrong of ['resolved', 'acknowledged']) {
+      fetchMock.mockResolvedValueOnce(body202(wrong))
+      expect(await apiErrorOf(cancelAlertApi(ALERT))).toMatchObject({ status: 202, code: 'invalid_response' })
+    }
   })
 })

@@ -101,7 +101,7 @@ interface DetailContentProps {
   detail: ResidentDetail
   role: 'nurse' | 'doctor'
   onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
-  onResolve: (alertId: string, by: string) => void
+  onResolve: (alertId: string, by: string, resolveNote: string) => Promise<boolean>
   onSaveThresholds: (values: VitalsThresholds, by: string) => Promise<string | null>
 }
 
@@ -135,7 +135,7 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
           role === 'nurse'
             ? {
                 onAcknowledge,
-                onResolve: (id) => onResolve(id, staffName),
+                onResolve: (id, resolveNote) => onResolve(id, staffName, resolveNote),
               }
             : undefined
         }

@@ -3,8 +3,8 @@
  * `loadDeviceFleet` (`GET /devices`) and the staff view of `loadDashboardData`
  * (`GET /dashboard`) call the API through src/lib/api.ts. The caregiver view and
  * `loadResidentDetail` (`GET /residents/{id}` and `GET .../thresholds/history`) call the
- * API too, and `updateThresholds` sends `PUT .../thresholds` (pattern 26). Resolve is
- * still local only (docs/data-model.md pattern 16).
+ * API too, and `updateThresholds` sends `PUT .../thresholds` (pattern 26). Acknowledge,
+ * cancel, and resolve go to the API too (docs/data-model.md pattern 16).
  */
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type {
@@ -24,6 +24,7 @@ import {
   getResident,
   getThresholdHistory,
   putThresholds,
+  resolveAlertApi,
 } from '../../lib/api'
 import type { ApiDevice, FleetDevice } from '../../types/devices'
 import type {
@@ -299,15 +300,19 @@ interface AlertActionsState {
    */
   acknowledgeDeviceProblem: (alertId: string, by: string) => Promise<boolean>
   /**
-   * Marks an open or acknowledged **health** alert resolved (a device problem is left
-   * unchanged: only the watchdog resolves those, user's decisions 2026-11-05). `by` is the
-   * signed-in staff member's display name, used only to show the change on screen: the
-   * API call sends just the alert ID and action, and the server takes the actor from the
-   * JWT `sub`, stores the sub, and ignores any actor sent by the client. The API call
-   * (docs/data-model.md, Track B route: resolve) also sends the required note; the portal
-   * has no resolve note box yet.
+   * Resolves an open or acknowledged **health** alert (a device problem is left
+   * unchanged: only the watchdog resolves those, user's decisions 2026-11-05) with the
+   * required closing note (already normalised by `checkResolveNote`). `by` is the
+   * signed-in staff member's display name, used only to show the change on screen and
+   * never sent.
+   *
+   * With API data: `POST /residents/{resident_id}/alerts/{alert_id}/resolve` with
+   * `{"event_ts", "note"}` (docs/data-model.md, Track B route: resolve); the server takes
+   * the actor from the token and checks the `nurse` or `doctor` group, the type, and the
+   * status. Shown once accepted (202), as for acknowledge; on an error the alert stays as
+   * it was and `actionError` is set. With demo data: local only.
    */
-  resolveAlert: (alertId: string, by: string) => void
+  resolveAlert: (alertId: string, by: string, resolveNote: string) => Promise<boolean>
 }
 
 export interface DashboardDataState extends AlertActionsState {
@@ -456,9 +461,11 @@ export function thresholdsErrorText(err: unknown): string {
   return 'Could not save the thresholds. Check your connection and try again.'
 }
 
-/** What to tell the user when the API refuses an acknowledge or cancel. */
-export function alertActionErrorText(err: unknown, action: 'acknowledge' | 'cancel'): string {
+/** What to tell the user when the API refuses an acknowledge, cancel, or resolve. */
+export function alertActionErrorText(err: unknown, action: 'acknowledge' | 'cancel' | 'resolve'): string {
   const status = err instanceof ApiError ? err.status : 0
+  // A note the form accepted but the API refused (the rules should match, so rare).
+  if (status === 400 && action !== 'cancel') return 'The note was not accepted. Check it and try again.'
   if (status === 409) return 'This alert has already been dealt with. Reload the page to see its current state.'
   if (status === 404) return 'This alert could not be found. Reload the page to see the current alerts.'
   if (status === 403) return `You can't ${action} this alert.`
@@ -468,8 +475,7 @@ export function alertActionErrorText(err: unknown, action: 'acknowledge' | 'canc
 
 /**
  * Acknowledge, resolve, and cancel for any state that holds an `alerts` list. With
- * `live`, acknowledge and cancel go through the API first (resolve and the caregiver's
- * device-problem acknowledge are still local only).
+ * `live`, each goes through the API first and is shown only once accepted (202).
  */
 function useAlertActions<T extends { alerts: ResidentAlert[] }>(
   data: T | null,
@@ -509,7 +515,7 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
   const apply = useCallback(
     (
       alertId: string,
-      action: 'acknowledge' | 'cancel',
+      action: 'acknowledge' | 'cancel' | 'resolve',
       change: (alert: ResidentAlert) => ResidentAlert | null,
       request: (alert: ResidentAlert) => Promise<unknown>,
     ): Promise<boolean> => {
@@ -554,8 +560,9 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
     [apply],
   )
   const resolveAlert = useCallback(
-    (alertId: string, by: string) => updateAlert(alertId, (a) => resolved(a, by)),
-    [updateAlert],
+    (alertId: string, by: string, resolveNote: string) =>
+      apply(alertId, 'resolve', (a) => resolved(a, by), (a) => resolveAlertApi(a, resolveNote)),
+    [apply],
   )
 
   return {

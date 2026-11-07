@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axeViolations } from '../../test/axe'
 import { demoDataFor } from '../../test/dashboardMock'
@@ -69,8 +69,12 @@ describe('AlertRow', () => {
     await user.click(screen.getByRole('button', { name: 'Acknowledge: Low blood oxygen, Test Resident H' }))
     expect(onAcknowledge).toHaveBeenCalledTimes(1)
     expect(onAcknowledge).toHaveBeenCalledWith(undefined)
+    // Resolve only opens the closing-note form; submitting it (same name) with a note resolves.
     await user.click(screen.getByRole('button', { name: 'Resolve: Low blood oxygen, Test Resident H' }))
-    expect(onResolve).toHaveBeenCalledTimes(1)
+    expect(onResolve).not.toHaveBeenCalled()
+    await user.type(screen.getByRole('textbox', { name: 'Closing note (required)' }), 'Synthetic note: checked.')
+    await user.click(screen.getByRole('button', { name: 'Resolve: Low blood oxygen, Test Resident H' }))
+    expect(onResolve).toHaveBeenCalledExactlyOnceWith('Synthetic note: checked.')
   })
 
   it('shows nothing about acknowledgement when acknowledged_at is missing', () => {
@@ -954,6 +958,137 @@ describe('acknowledge note form (alert-actions-ui, criteria 1-7)', () => {
     await user.click(ackButton())
     expect(screen.getByText('Remove hidden or control characters from the note.')).toBeInTheDocument()
     // The rendered container, as the other axe tests do (a lone row has no page landmarks).
+    expect(await axeViolations(screen.getByRole('listitem').closest('ul') as HTMLElement)).toEqual([])
+  }, 30_000)
+})
+
+describe('resolve note form (staff resolve: closing note required)', () => {
+  const CONTEXT = 'Low blood oxygen, Test Resident H'
+  const ackButton = () => screen.getByRole('button', { name: `Acknowledge: ${CONTEXT}` })
+  const resolveButton = () => screen.getByRole('button', { name: `Resolve: ${CONTEXT}` })
+  const resolveField = () => screen.getByRole('textbox', { name: 'Closing note (required)' })
+  const ackField = () => screen.getByRole('textbox', { name: "Note for the resident's caregivers (optional)" })
+  const resolveForm = () => screen.queryByRole('form', { name: `Resolve: ${CONTEXT}` })
+  const ackForm = () => screen.queryByRole('form', { name: `Acknowledge: ${CONTEXT}` })
+
+  function setup(alert: ResidentAlert = baseAlert()) {
+    const user = userEvent.setup()
+    const onAcknowledge = vi.fn()
+    const onResolve = vi.fn()
+    renderRow({ alert, actions: { onAcknowledge, onResolve } })
+    return { user, onAcknowledge, onResolve }
+  }
+
+  it('Resolve opens the form with the field focused and does not resolve; the row Resolve is hidden, Acknowledge stays', async () => {
+    const { user, onResolve, onAcknowledge } = setup()
+    await user.click(resolveButton())
+    expect(onResolve).not.toHaveBeenCalled()
+    expect(resolveForm()).toBeInTheDocument()
+    await waitFor(() => expect(resolveField()).toHaveFocus())
+    // The opening button is replaced by the form's submit button (same accessible name).
+    expect(screen.getAllByRole('button', { name: `Resolve: ${CONTEXT}` })).toHaveLength(1)
+    expect(within(resolveForm() as HTMLElement).getByRole('button', { name: `Resolve: ${CONTEXT}` })).toHaveAttribute(
+      'type',
+      'submit',
+    )
+    expect(ackButton()).toBeInTheDocument()
+    expect(onAcknowledge).not.toHaveBeenCalled()
+  })
+
+  it('on an acknowledged alert, Resolve opens the form and there is no Acknowledge', async () => {
+    const { user } = setup(baseAlert({ status: 'acknowledged', acknowledged_at: NOW.toISOString() }))
+    await user.click(resolveButton())
+    expect(resolveForm()).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Acknowledge/ })).not.toBeInTheDocument()
+  })
+
+  it('submitting empty shows the error, keeps the form open, and does not resolve', async () => {
+    const { user, onResolve } = setup()
+    await user.click(resolveButton())
+    await user.click(resolveButton())
+    expect(onResolve).not.toHaveBeenCalled()
+    expect(screen.getByText('Add a note saying how this alert was dealt with.')).toBeInTheDocument()
+    expect(resolveField()).toHaveAttribute('aria-invalid', 'true')
+    expect(resolveForm()).toBeInTheDocument()
+    await waitFor(() => expect(resolveField()).toHaveFocus())
+  })
+
+  it('submitting a note calls onResolve once with it normalised, closes the form, and focuses the row Resolve', async () => {
+    const { user, onResolve } = setup()
+    await user.click(resolveButton())
+    fireEvent.change(resolveField(), { target: { value: '  Synthetic note: resident checked.\r\nFalse alarm.  ' } })
+    await user.click(resolveButton())
+    expect(onResolve).toHaveBeenCalledExactlyOnceWith('Synthetic note: resident checked.\nFalse alarm.')
+    expect(resolveForm()).not.toBeInTheDocument()
+    await waitFor(() => expect(resolveButton()).toHaveFocus())
+  })
+
+  it('Cancel closes the form without resolving and returns focus to Resolve', async () => {
+    const { user, onResolve } = setup()
+    await user.click(resolveButton())
+    await user.type(resolveField(), 'Synthetic draft')
+    await user.click(screen.getByRole('button', { name: `Cancel, don't resolve: ${CONTEXT}` }))
+    expect(onResolve).not.toHaveBeenCalled()
+    expect(resolveForm()).not.toBeInTheDocument()
+    await waitFor(() => expect(resolveButton()).toHaveFocus())
+    expect(screen.getByRole('listitem')).not.toHaveTextContent('Synthetic draft')
+  })
+
+  it('Cancel on the acknowledge form returns focus to Acknowledge (focus return is per form)', async () => {
+    const { user } = setup()
+    await user.click(ackButton())
+    await user.click(screen.getByRole('button', { name: `Cancel, don't acknowledge: ${CONTEXT}` }))
+    await waitFor(() => expect(ackButton()).toHaveFocus())
+  })
+
+  it('only one form at a time: Acknowledge while resolving switches to the acknowledge form, and back', async () => {
+    const { user, onAcknowledge, onResolve } = setup()
+    await user.click(resolveButton())
+    expect(resolveForm()).toBeInTheDocument()
+
+    await user.click(ackButton())
+    expect(resolveForm()).not.toBeInTheDocument()
+    expect(ackForm()).toBeInTheDocument()
+    expect(screen.getAllByRole('form')).toHaveLength(1)
+    await waitFor(() => expect(ackField()).toHaveFocus())
+    // The row Resolve is back while the acknowledge form is open.
+    expect(screen.getAllByRole('button', { name: `Resolve: ${CONTEXT}` })).toHaveLength(1)
+
+    await user.click(resolveButton())
+    expect(ackForm()).not.toBeInTheDocument()
+    expect(resolveForm()).toBeInTheDocument()
+    expect(screen.getAllByRole('form')).toHaveLength(1)
+    await waitFor(() => expect(resolveField()).toHaveFocus())
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    expect(onResolve).not.toHaveBeenCalled()
+  })
+
+  it('a draft is not kept when switching forms', async () => {
+    const { user } = setup()
+    await user.click(resolveButton())
+    await user.type(resolveField(), 'Synthetic draft')
+    await user.click(ackButton())
+    await user.click(resolveButton())
+    expect(resolveField()).toHaveValue('')
+  })
+
+  it('device problems and closed alerts have no Resolve, so no form', () => {
+    for (const alert of [
+      baseAlert({ alert_type: 'battery_low', severity: 'warning' }),
+      baseAlert({ status: 'resolved', resolved_at: NOW.toISOString() }),
+      baseAlert({ status: 'cancelled', cancelled_at: NOW.toISOString(), cancelled_by_role: 'resident' }),
+    ]) {
+      renderRow({ alert, actions: { onAcknowledge: vi.fn(), onResolve: vi.fn() } })
+      expect(screen.queryByRole('button', { name: /^Resolve/ })).not.toBeInTheDocument()
+      cleanup()
+    }
+  })
+
+  it('has no axe violations with the resolve form open and showing an error', async () => {
+    const { user } = setup()
+    await user.click(resolveButton())
+    await user.click(resolveButton())
+    expect(screen.getByText('Add a note saying how this alert was dealt with.')).toBeInTheDocument()
     expect(await axeViolations(screen.getByRole('listitem').closest('ul') as HTMLElement)).toEqual([])
   }, 30_000)
 })

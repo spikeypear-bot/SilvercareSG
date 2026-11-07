@@ -75,6 +75,24 @@ async function acknowledgeNow(context: string) {
   await act(async () => {})
 }
 const resolveButton = (context: string) => screen.getByRole('button', { name: `Resolve: ${context}` })
+const RESOLVE_NOTE = 'Synthetic note: checked, false alarm.'
+const resolveField = () => screen.getByRole('textbox', { name: 'Closing note (required)' })
+/**
+ * Resolve opens the closing-note form (the note is required); its submit button has the
+ * same accessible name, so: open, type a note, submit.
+ */
+async function resolve(user: ReturnType<typeof userEvent.setup>, context: string, note = RESOLVE_NOTE) {
+  await user.click(resolveButton(context))
+  await user.type(resolveField(), note)
+  await user.click(resolveButton(context))
+}
+/** As `resolve`, with fireEvent (for fake timers), then lets the action's promise settle. */
+async function resolveNow(context: string, note = RESOLVE_NOTE) {
+  fireEvent.click(resolveButton(context))
+  fireEvent.change(resolveField(), { target: { value: note } })
+  fireEvent.click(resolveButton(context))
+  await act(async () => {})
+}
 /**
  * The one alert row (open list or resolved list) for "<type>, <resident>", found by its
  * type line and resident name, not by a button: device-problem rows have no buttons.
@@ -485,7 +503,7 @@ describe('resolve', () => {
 
   it('removes the row and updates the heading count and the tiles', async () => {
     const { user } = await renderLoaded()
-    await user.click(resolveButton(C))
+    await resolve(user, C)
     expect(screen.queryByRole('button', { name: `Resolve: ${C}` })).not.toBeInTheDocument()
     expect(openRows()).toHaveLength(12)
     expect(inboxHeading()).toHaveTextContent('Open alerts (12)')
@@ -496,7 +514,7 @@ describe('resolve', () => {
   it('lists it under "Resolved since this page opened" with "Resolved by Test Nurse A"', async () => {
     const { user } = await renderLoaded()
     expect(screen.queryByText(/Resolved since this page opened/)).not.toBeInTheDocument()
-    await user.click(resolveButton(C))
+    await resolve(user, C)
     const summary = screen.getByText('Resolved since this page opened (1)')
     const details = summary.closest('details') as HTMLElement
     expect(details).not.toBeNull()
@@ -508,14 +526,14 @@ describe('resolve', () => {
 
   it('moves focus to the inbox heading', async () => {
     const { user } = await renderLoaded()
-    await user.click(resolveButton(C))
+    await resolve(user, C)
     await waitFor(() => expect(inboxHeading()).toHaveFocus())
     expect(inboxHeading()).toHaveAttribute('tabindex', '-1')
   })
 
   it('announces the resolution', async () => {
     const { user } = await renderLoaded()
-    await user.click(resolveButton(C))
+    await resolve(user, C)
     await waitFor(() => expect(announcer()).toHaveTextContent(`Resolved: ${C}.`))
   })
 
@@ -524,10 +542,13 @@ describe('resolve', () => {
     const data = oneAlert()
     const twin: ResidentAlert = { ...data.alerts[0], alert_id: 'alert-test-002' }
     const { user } = await renderLoaded({ ...data, alerts: [data.alerts[0], twin] })
-    await user.click(screen.getAllByRole('button', { name: `Resolve: ${C}` })[0])
+    const firstRow = openRows()[0]
+    await user.click(within(firstRow).getByRole('button', { name: `Resolve: ${C}` }))
+    await user.type(within(firstRow).getByRole('textbox', { name: 'Closing note (required)' }), RESOLVE_NOTE)
+    await user.click(within(firstRow).getByRole('button', { name: `Resolve: ${C}` }))
     await waitFor(() => expect(announcer()).toHaveTextContent(`Resolved: ${C}.`))
     const first = announcer().textContent
-    await user.click(resolveButton(C))
+    await resolve(user, C)
     await waitFor(() => expect(announcer().textContent).not.toBe(first))
     expect(announcer()).toHaveTextContent(`Resolved: ${C}.`)
     expect(screen.getByText('Resolved since this page opened (2)')).toBeInTheDocument()
@@ -536,7 +557,7 @@ describe('resolve', () => {
   it('can resolve an acknowledged alert', async () => {
     const { user } = await renderLoaded()
     const G = 'High heart rate, Test Resident G'
-    await user.click(resolveButton(G))
+    await resolve(user, G)
     expect(screen.queryByRole('button', { name: `Resolve: ${G}` })).not.toBeInTheDocument()
     const details = screen.getByText('Resolved since this page opened (1)').closest('details') as HTMLElement
     expect(details).toHaveTextContent(G)
@@ -545,8 +566,8 @@ describe('resolve', () => {
   it('acknowledge then resolve, newest resolution listed first', async () => {
     const { user } = await renderLoaded()
     await acknowledge(user, C)
-    await user.click(resolveButton(C))
-    await user.click(resolveButton('Low blood oxygen, Test Resident H'))
+    await resolve(user, C)
+    await resolve(user, 'Low blood oxygen, Test Resident H')
     const details = screen.getByText('Resolved since this page opened (2)').closest('details') as HTMLElement
     const items = within(details).getAllByRole('listitem')
     expect(items).toHaveLength(2)
@@ -557,11 +578,67 @@ describe('resolve', () => {
 
   it('resolving the last alert shows "No open alerts."', async () => {
     const { user } = await renderLoaded(oneAlert())
-    await user.click(resolveButton(C))
+    await resolve(user, C)
     expect(within(inbox()).getByText('No open alerts.')).toBeInTheDocument()
     expect(tileValue('Open alerts')).toBe('0')
     expect(screen.getByText('Resolved since this page opened (1)')).toBeInTheDocument()
     await waitFor(() => expect(inboxHeading()).toHaveFocus())
+  })
+
+  it('Resolve only opens the closing-note form: nothing changes or is announced until it is submitted', async () => {
+    const { user } = await renderLoaded()
+    await user.click(resolveButton(C))
+    expect(screen.getByRole('form', { name: `Resolve: ${C}` })).toBeInTheDocument()
+    await waitFor(() => expect(resolveField()).toHaveFocus())
+    expect(openRows()).toHaveLength(13)
+    expect(within(rowFor(C)).getByText('Open')).toBeInTheDocument()
+    expect(announcer()).toBeEmptyDOMElement()
+    expect(screen.queryByText(/Resolved since this page opened/)).not.toBeInTheDocument()
+  })
+
+  it('submitting without a note shows the error, resolves nothing, and announces nothing', async () => {
+    const { user } = await renderLoaded()
+    await user.click(resolveButton(C))
+    await user.type(resolveField(), '   ')
+    await user.click(resolveButton(C))
+    expect(screen.getByText('Add a note saying how this alert was dealt with.')).toBeInTheDocument()
+    expect(resolveField()).toHaveAttribute('aria-invalid', 'true')
+    expect(openRows()).toHaveLength(13)
+    expect(announcer()).toBeEmptyDOMElement()
+    await waitFor(() => expect(resolveField()).toHaveFocus())
+  })
+
+  it('cancelling the form leaves the alert open, announces nothing, and returns focus to Resolve', async () => {
+    const { user } = await renderLoaded()
+    await user.click(resolveButton(C))
+    await user.type(resolveField(), 'Synthetic draft')
+    await user.click(screen.getByRole('button', { name: `Cancel, don't resolve: ${C}` }))
+    expect(screen.queryByRole('form', { name: `Resolve: ${C}` })).not.toBeInTheDocument()
+    expect(within(rowFor(C)).getByText('Open')).toBeInTheDocument()
+    await waitFor(() => expect(resolveButton(C)).toHaveFocus())
+    expect(announcer()).toBeEmptyDOMElement()
+    expect(document.body).not.toHaveTextContent('Synthetic draft')
+  })
+
+  it('never announces the closing note, and does not show it in the resolved list', async () => {
+    const { user } = await renderLoaded()
+    await resolve(user, C, 'Synthetic note: ambulance called, resident taken to hospital.')
+    await waitFor(() => expect(announcer()).toHaveTextContent(`Resolved: ${C}.`))
+    expect(announcer()).not.toHaveTextContent('Synthetic note')
+    expect(document.body).not.toHaveTextContent('ambulance called')
+  })
+
+  it('opening Resolve on one alert and then another leaves one form open per row, each acting on its own alert', async () => {
+    const { user } = await renderLoaded()
+    const Q = 'Fall detected, Test Resident Q'
+    await user.click(resolveButton(C))
+    await user.click(resolveButton(Q))
+    expect(screen.getAllByRole('form')).toHaveLength(2)
+    await user.type(within(rowFor(Q)).getByRole('textbox', { name: 'Closing note (required)' }), RESOLVE_NOTE)
+    await user.click(within(rowFor(Q)).getByRole('button', { name: `Resolve: ${Q}` }))
+    await waitFor(() => expect(announcer()).toHaveTextContent(`Resolved: ${Q}.`))
+    expect(within(rowFor(C)).getByText('Open')).toBeInTheDocument()
+    expect(screen.getByRole('form', { name: `Resolve: ${C}` })).toBeInTheDocument()
   })
 })
 
@@ -803,7 +880,7 @@ describe('escalation countdown (fake clock)', () => {
   it('resolving before the deadline means no escalation announcement', async () => {
     await renderAtNow()
     tick(140_000)
-    fireEvent.click(resolveButton(H))
+    await resolveNow(H)
     const announced = announcer().textContent
     expect(announced).toContain(`Resolved: ${H}.`)
     tick(5 * 60_000)
@@ -1011,7 +1088,7 @@ describe('accessibility', { timeout: 30_000 }, () => {
 
   it('has no axe violations with a resolved alert listed', async () => {
     const { container, user } = await renderLoaded()
-    await user.click(resolveButton('Fall detected, Test Resident C'))
+    await resolve(user, 'Fall detected, Test Resident C')
     expect(await axeViolations(container)).toEqual([])
   })
 
