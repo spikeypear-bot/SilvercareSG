@@ -1,21 +1,22 @@
 /**
- * Data loaders for the dashboards and the resident page. Today they read synthetic demo
- * data with a simulated delay so loading and error states are real. Later, replace the
+ * Data loaders for the dashboards, the resident page, and the devices view.
+ * `loadDeviceFleet` calls the API (`GET /devices` through src/lib/api.ts). The others
+ * still read synthetic demo data with a simulated delay so loading and error states are
+ * real. Later, replace the
  * bodies of `loadDashboardData` and `loadResidentDetail` with calls through
  * src/lib/api.ts, the alert actions with the acknowledge / cancel / resolve calls
  * (docs/data-model.md pattern 16; docs/features/alert-actions-ui.md, API contract; nurses
  * acknowledge and resolve health alerts, caregivers acknowledge device problems), and `updateThresholds` with the thresholds call
- * (the proposed thresholds-edit pattern), and `loadDeviceFleet` with the devices call (patterns 4, 5, 8);
- * the hooks and the views stay the same.
+ * (the proposed thresholds-edit pattern); the hooks and the views stay the same.
  */
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { DashboardData, ResidentAlert } from '../../types/dashboard'
-import type { FleetDevice } from '../../types/devices'
+import { getDevices } from '../../lib/api'
+import type { ApiDevice, FleetDevice } from '../../types/devices'
 import type { ResidentDetail, VitalsThresholds } from '../../types/resident'
 import {
   FAMILY_LINKED_RESIDENT_IDS,
   createDemoData,
-  createDeviceFleet,
   createResidentDetail,
 } from './demoData'
 import { isDeviceProblem } from './stats'
@@ -49,10 +50,29 @@ export async function loadResidentDetail(residentId: string): Promise<ResidentDe
   return createResidentDetail(residentId, new Date())
 }
 
-/** Every device, assigned or not, with its newest status (staff only). */
+/**
+ * One `GET /devices` device as the devices view shows it. Copies each field by name, so
+ * a field the API adds later isn't passed through. `display_name` becomes `name` (the
+ * resident ID if the resident has no profile); a missing `home_id` becomes ''.
+ */
+export function toFleetDevice(device: ApiDevice): FleetDevice {
+  const a = device.assigned_to
+  return {
+    device_id: device.device_id,
+    device_type: device.device_type,
+    assigned_to: a && { resident_id: a.resident_id, name: a.display_name ?? a.resident_id, home_id: a.home_id ?? '' },
+    online: device.online,
+    last_seen: device.last_seen,
+    battery_pct: device.battery_pct,
+    charging: device.charging,
+    fw_version: device.fw_version,
+  }
+}
+
+/** Every device, assigned or not, with its newest status (staff only): `GET /devices`. */
 export async function loadDeviceFleet(): Promise<FleetDevice[]> {
-  await delay(DEMO_DELAY_MS)
-  return createDeviceFleet(new Date())
+  const devices = await getDevices()
+  return devices.map(toFleetDevice)
 }
 
 export type DashboardLoader = (view: DashboardView) => Promise<DashboardData>

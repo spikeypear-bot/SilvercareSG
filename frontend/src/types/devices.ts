@@ -29,3 +29,30 @@ export interface FleetDevice {
   /** null if the device has never reported. */
   fw_version: string | null
 }
+
+/**
+ * `GET /devices` response (staff only), exactly as the API returns it. Mapped to
+ * `FleetDevice` by `loadDeviceFleet`.
+ */
+export interface ApiDeviceAssignment {
+  resident_id: string
+  /** null only if the resident has no valid profile. */
+  display_name: string | null
+  /** null if the device item has no valid home_id. */
+  home_id: string | null
+}
+
+export interface ApiDevice {
+  device_id: string
+  device_type: DeviceType
+  online: boolean
+  last_seen: string | null
+  battery_pct: number | null
+  charging: boolean
+  fw_version: string | null
+  assigned_to: ApiDeviceAssignment | null
+}
+
+export interface DevicesResponse {
+  devices: ApiDevice[]
+}

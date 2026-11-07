@@ -149,9 +149,11 @@ resource "aws_cloudfront_response_headers_policy" "frontend_security" {
       override        = true
     }
 
-    # Add the API URL to connect-src once the API exists.
+    # connect-src: Cognito sign-in and this project's HTTP API only (api.tf). The API's
+    # CORS pins this distribution's domain in a local instead of referencing it, to
+    # avoid a dependency cycle.
     content_security_policy {
-      content_security_policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cognito-idp.ap-southeast-1.amazonaws.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+      content_security_policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cognito-idp.ap-southeast-1.amazonaws.com ${aws_apigatewayv2_api.api.api_endpoint}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
       override                = true
     }
   }

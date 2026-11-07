@@ -36,6 +36,10 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
 - A new service that stores or returns data: add its read actions to `DenyDataReads` in
   `infra/bootstrap/ci-plan-role.tf` (the owner applies it). The plan role has
   `ReadOnlyAccess`, and any PR from this repo can use it.
+- A guard someone must see before merging is a `precondition` (an error), never a
+  `check` block: a failed check is only a warning, warnings go to stdout, and
+  `plan.yml` and `deploy.yml` discard plan stdout, so it never reaches the PR comment.
+  A precondition on an `output` adds no dependency cycle (outputs are leaf nodes).
 - A `file()` on a missing path errors before any `precondition` runs. To fail with your
   own message, guard it: `fileexists(p) ? file(p) : "<placeholder>"`. Test such logic
   without AWS on `terraform_data` in a scratch dir.
