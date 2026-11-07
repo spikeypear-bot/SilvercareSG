@@ -170,7 +170,8 @@ ${t.other}`,
     }
     // lambda-tester can only write tests under lambdas/ and scripts/; on Terraform-only
     // changes it has nothing to test, so skip it rather than spend an agent on a no-op.
-    if (t.key === 'backend' && !build.files_changed.some(f => /(^|\/)(lambdas|scripts)\//.test(f))) {
+    // Builders may report Windows paths (C:\...\lambdas\x), so normalise slashes first.
+    if (t.key === 'backend' && !build.files_changed.some(f => /(^|\/)(lambdas|scripts)\//.test(f.replace(/\\/g, '/')))) {
       log('Backend changed no Lambdas or scripts: skipping lambda-tester (Terraform is checked by make tf-check and iac-reviewer)')
       return { track: t.key, build, test: null }
     }

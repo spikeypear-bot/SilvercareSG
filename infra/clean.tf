@@ -7,8 +7,11 @@
 # (spec, Users and access).
 #
 # Data: pseudonymous readings by device ID, no resident IDs. rejected keeps the raw line.
-# Retention: clean tables expire at 365 days (proposed, the figure proposed for raw, whose
-# own expiry isn't built yet); Athena results expire after 7 days. Per-device erasure isn't built: it must exist before real data.
+# Retention: clean tables expire at 365 days (proposed, matching raw telemetry/'s expiry in
+# history.tf); Athena results expire after 7 days. Per-device erasure isn't built: it must exist before real data.
+#
+# Each successful asynchronous run hands off to silvercare-summaries (on-success
+# destination, docs/features/curated-layer.md, criterion 1; summaries.tf).
 #
 # Cost: well under US$1/month. Athena US$5/TB with a 1 GB per query limit, S3 under 1 GB,
 # Glue and Lake Formation within free allowances, 1 more alarm (within the free 10). No
@@ -58,9 +61,11 @@ locals {
     athena_results = "silvercare-athena-results-${data.aws_caller_identity.current.account_id}"
   }
 
+  # summaries: docs/features/curated-layer.md, criterion 21 (its Lambda is in summaries.tf).
   athena_workgroups = {
-    clean    = { name = "silvercare-clean", prefix = "clean" }
-    analysis = { name = "silvercare-analysis", prefix = "analysis" }
+    clean     = { name = "silvercare-clean", prefix = "clean" }
+    analysis  = { name = "silvercare-analysis", prefix = "analysis" }
+    summaries = { name = "silvercare-summaries", prefix = "summaries" }
   }
 
   # Keys are a hash of the stable user ID, because resource addresses appear in the
@@ -252,12 +257,13 @@ data "aws_iam_policy_document" "lake_location_assume" {
 
 resource "aws_iam_role" "lake_location" {
   name               = "silvercare-lake-location"
-  description        = "Lake Formation access to the raw (read) and clean (read, write, delete) locations."
+  description        = "Lake Formation access to the raw and summaries (read) and clean (read, write, delete) locations."
   assume_role_policy = data.aws_iam_policy_document.lake_location_assume.json
 }
 
 # Read-only on raw is a decision for the owner: don't widen it, even if a check fails
-# (criterion 19). alerts/ isn't reachable.
+# (criterion 19). Read-only on summaries/ too (curated-layer criterion 20): the
+# summaries Lambda writes them itself. alerts/ isn't reachable.
 data "aws_iam_policy_document" "lake_location" {
   statement {
     sid       = "ReadRawObjects"
@@ -276,6 +282,26 @@ data "aws_iam_policy_document" "lake_location" {
       test     = "StringLike"
       variable = "s3:prefix"
       values   = ["${local.raw_prefix}/*"]
+    }
+  }
+
+  statement {
+    sid       = "ReadSummaryObjects"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.history.arn}/${local.summaries_prefix}/*"]
+  }
+
+  statement {
+    sid       = "ListSummaryPrefix"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.history.arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["${local.summaries_prefix}/*"]
     }
   }
 
@@ -554,8 +580,10 @@ data "archive_file" "clean" {
 # What the function does with AWS: starts queries in its own workgroup and reads their
 # state and results; Athena then uses this role for Glue and S3. Reads raw telemetry,
 # adds partitions, writes and replaces objects under tables/, and writes results under
-# its own prefix. No write or delete on history, no alerts/, no DynamoDB, nothing invoked
-# or published. The module adds the log group permissions.
+# its own prefix. No write or delete on history, no alerts/, no DynamoDB, nothing
+# published. It invokes silvercare-summaries only, as its on-success destination (AWS
+# requires the source function's role to have lambda:InvokeFunction on it). The module
+# adds the log group permissions.
 data "aws_iam_policy_document" "clean" {
   statement {
     sid    = "OwnAthenaWorkgroup"
@@ -709,6 +737,14 @@ data "aws_iam_policy_document" "clean" {
       ]
     }
   }
+
+  # The on-success destination (curated-layer criterion 1). That function only.
+  statement {
+    sid       = "InvokeSummaries"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [module.summaries.function_arn]
+  }
 }
 
 module "clean" {
@@ -738,11 +774,24 @@ module "clean" {
 }
 
 # 2 retries (criterion 5). An hour's event age keeps all three attempts inside the alarm's
-# window and well before the next day's run.
+# window and well before the next day's run. After a successful asynchronous run, Lambda
+# invokes silvercare-summaries with the invocation record, whose responsePayload is
+# clean's {"date": ...} (curated-layer criterion 1). Synchronous runs (a manual
+# `aws lambda invoke`) don't: run summaries for that date by hand too. A failed hand-off
+# alarms as silvercare-clean-destination-failures (summaries.tf).
 resource "aws_lambda_function_event_invoke_config" "clean" {
   function_name                = module.clean.function_name
   maximum_retry_attempts       = 2
   maximum_event_age_in_seconds = 3600
+
+  destination_config {
+    on_success {
+      destination = module.summaries.function_arn
+    }
+  }
+
+  # AWS checks the role may invoke the destination when the config is saved.
+  depends_on = [module.clean]
 }
 
 # ---------------------------------------------------------------------------------------

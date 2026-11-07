@@ -7,7 +7,9 @@
 #
 # The queues and the bucket hold every raw message (health readings, falls, raw
 # acceleration data), invalid ones too, linked to device IDs. Retention: queue 4 days,
-# DLQ 14 days, bucket no expiry until Open decision #4 (retention) is made.
+# DLQ 14 days; telemetry/ expires at 365 days (Retention in docs/data-model.md), added
+# with the daily summaries (docs/features/curated-layer.md, criterion 23); alerts/ and
+# summaries/ have no expiry (the resident's lifetime + 6 years).
 #
 # Cost: pay per use only (IoT rule actions, SQS requests, S3 PUTs and storage, Lambda),
 # about US$1/month with the simulator running 24/7, US$0 when it is stopped. No fixed fees.
@@ -148,9 +150,25 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "history" {
   }
 }
 
-# One rule only. No expiry: how long history is kept is Open decision #4 (retention).
+# Raw telemetry/ expires 365 days after each file was written (Open decision #4, figure
+# proposed), added once daily summaries exist (curated-layer criterion 23). alerts/ and
+# summaries/ are derived records kept for the resident's lifetime + 6 years: no expiry.
+# S3 counts from object creation, so nothing reaches 365 days before the project ends.
 resource "aws_s3_bucket_lifecycle_configuration" "history" {
   bucket = aws_s3_bucket.history.id
+
+  rule {
+    id     = "expire-telemetry-after-365-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "telemetry/"
+    }
+
+    expiration {
+      days = 365
+    }
+  }
 
   rule {
     id     = "abort-incomplete-multipart-uploads"
@@ -166,8 +184,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "history" {
 
 # Deny statements: s3:* and principal * are intentional here. Denying every action from
 # every caller without TLS is narrower access, not broader. Access itself is granted by
-# IAM policies only (the history and alert-processor Lambdas' roles, the developer
-# policy).
+# IAM policies only (the history, alert-processor, and summaries Lambdas' roles, the
+# developer policy).
 data "aws_iam_policy_document" "history_bucket" {
   statement {
     sid     = "DenyInsecureTransport"
@@ -208,6 +226,35 @@ data "aws_iam_policy_document" "history_bucket" {
       test     = "StringNotEquals"
       variable = "aws:PrincipalArn"
       values   = [module.alert_processor.role_arn]
+    }
+  }
+
+  # summaries/ is written and replaced by the summaries Lambda only
+  # (docs/features/curated-layer.md, criterion 17), whatever another principal's IAM
+  # policy allows. This blocks admins too: deleting one resident's summaries (erasure)
+  # needs this statement changed first, or a tool running as that role.
+  statement {
+    sid    = "DenySummaryWritesFromOthers"
+    effect = "Deny"
+    # Tagging too: the resident_id tag is how one resident's summaries are found for
+    # erasure, so no one else may change or remove it.
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:PutObjectTagging",
+      "s3:DeleteObjectTagging",
+    ]
+    resources = ["${aws_s3_bucket.history.arn}/${local.summaries_prefix}/*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [module.summaries.role_arn]
     }
   }
 }

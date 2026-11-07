@@ -92,6 +92,15 @@ review it with the shared user before any real resident data arrives.
 5. If any query doesn't succeed, the job logs its query ID and final state and raises,
    so the invocation fails. EventBridge's async retry (2 retries) then applies.
 
+5a. *(Added by `docs/features/curated-layer.md`, 2026-11-07.)* Every successful
+    **asynchronous** run (the schedule and its retries) invokes `silvercare-summaries`
+    through an on-success destination on the clean invoke config, passing clean's
+    `{"date": ...}` result. The clean role may invoke that function only. Synchronous
+    runs, such as a manual `aws lambda invoke`, don't: after a manual re-run, also run
+    `silvercare-summaries` with the same date. Alarm
+    `silvercare-clean-destination-failures` emails `silvercare-ops` if the hand-off
+    fails.
+
 ### Raw table
 
 6. The Glue database `silvercare_lake` has `raw_telemetry` with a single `line string`

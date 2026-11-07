@@ -5,6 +5,24 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-07
 
+- **Problem:** 83 summaries tests errored in the dev container: they used moto's Glue,
+  which needs `pyparsing`, and the image installs moto only for DynamoDB, S3, Cognito.
+  **Changed:** `.claude/skills/lambda-test/SKILL.md`: use moto only for those services;
+  fake the rest (Athena, Glue) with a small recording client.
+- **Problem:** build-feature skipped lambda-tester for curated-layer: its "did the
+  backend change a Lambda?" check matched only `/` paths, and the builder reported
+  Windows `\` paths. **Changed:** `.claude/workflows/build-feature.js`: normalise
+  backslashes before the check.
+- **Problem:** the summaries role could Query the registry `by-type` index with no
+  conditions (the index projects names and photo keys), copied a peer's Glue `table/*`
+  wildcard, and its `summaries/` Deny left tagging open; the reviewers caught all three.
+  **Changed:** `.claude/skills/iam-policy/SKILL.md`: index Queries on personal data
+  need `dynamodb:Attributes` + `dynamodb:Select` conditions; don't copy peer wildcards;
+  tag-reliant prefix Denies also deny tagging.
+- **Problem:** `node --check` on a workflow always fails (top-level `return`), so the
+  improve-agents verify step couldn't pass. **Changed:**
+  `.claude/skills/improve-agents/SKILL.md`: wrap the script before checking.
+
 - **Problem:** the API's CORS-origin guard was a `check` block, whose warning never
   reaches the PR comment (plan stdout is discarded); the iac-reviewer caught it.
   **Changed:** `.claude/skills/tf-change/SKILL.md`: guards that must be seen before
