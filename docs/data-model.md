@@ -247,7 +247,8 @@ and no group get `403`. It returns exactly `{"residents": [...], "alerts": [...]
   the resident page are **not** polled: patterns 10-14 are sized per page view, and
   their routes are throttled for that (`GET /me/residents` 0.2/s for all caregivers
   together; about 5 RCU per linked resident, mostly on the latest table that ingest's
-  write rule reads). They refetch on focus and after an action only. Polling either
+  write rule reads). They refetch on focus and after an action only (the resident
+  page's Nightly summary, pattern 31, still loads once per page view). Polling either
   needs a decision on capacity first. No refresh runs while a note or thresholds form
   is open. After an acknowledge, cancel, or resolve (`202`), the view refetches; the
   change stays on screen until a load returns the new status (at most 2 minutes), since
