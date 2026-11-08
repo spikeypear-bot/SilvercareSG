@@ -29,8 +29,13 @@ structure, not code that exists yet. Update this file as decisions land.
   no always-on containers, and no services with a fixed hourly cost unless explicitly agreed.
 - **Environments:** one environment only (AWS account `753674274065`). There is no
   staging, so every merge to `main` changes the live system.
+- **The one EC2 exception (agreed 2026-11-09, until 2026-11-30):** one `t4g.micro`
+  instance runs the simulator 24/7 (`infra/simulator.tf`, `docs/features/simulator-ec2.md`,
+  ~US$12/month). Nothing else uses EC2.
 - **Infrastructure as code:** Terraform. All AWS resources are defined in Terraform; do
   not create or change resources by hand in the console or with ad-hoc CLI calls.
+  Exception: the device-key parameters `/silvercare/device-keys/<id>` are data written by
+  `scripts/upload-device-keys.py`, since Terraform would store the keys in state.
 - **Device ingestion:** AWS IoT Core over MQTT. Devices publish to topics, IoT Rules route
   messages to Lambda (and/or directly to storage). The metrics contract (topics, payloads,
   rates) is in `docs/metrics.md` (approved 2026-10-25); how the rules route messages is
@@ -168,6 +173,7 @@ make device-keys            # create missing device keys + CSRs (I run it, never
 make smoke-test DEVICE=<id> ENDPOINT=<host>   # test one device against AWS IoT (me only)
 make simulate ENDPOINT=<host>                 # run the 40 simulated devices live (me only)
 make simulate-dry-run       # print simulated messages, no keys or network
+make upload-device-keys     # device keys → Parameter Store for the EC2 simulator (me only, host)
 ```
 
 Python dev dependencies live in `requirements-dev.txt` (pinned); tool versions are
@@ -204,7 +210,7 @@ under Singapore's PDPA. Treat it accordingly:
   2026-11-08); Claude builds, tests, and reviews itself.
 - `.claude/hooks/guard.sh` blocks, the `aws` CLI, Terraform commands
   that change infrastructure or state, anything touching `~/.aws`, and anything touching
-  device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test|simulate`,
+  device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test|simulate|upload-device-keys`,
   and the simulator without `--dry-run`).
   `.claude/hooks/format.sh` formats edited files.
 - `.claude/settings.json` hides AWS credentials from Claude (`AWS_SHARED_CREDENTIALS_FILE`

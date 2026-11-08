@@ -40,8 +40,9 @@ fi
 
 if printf '%s' "$cmd" | grep -Eq 'devices/keys' ||
    printf '%s' "$cmd" | grep -Eq "${s}secrets(/|${end})" ||
-   printf '%s' "$cmd" | grep -Eq "${s}g?make${args}[[:space:]]+(device-keys|device-certs|smoke-test|simulate)${end}"; then
-  block "Claude must not read or create device private keys or anything in secrets/. The user runs the device-keys, device-certs, smoke-test, and simulate targets (simulate-dry-run is fine)."
+   printf '%s' "$cmd" | grep -Eq "${s}g?make${args}[[:space:]]+(device-keys|device-certs|smoke-test|simulate|upload-device-keys)${end}" ||
+   printf '%s' "$cmd" | grep -Eq "${s}python[0-9.]*${args}[[:space:]]+[^[:space:]]*upload-device-keys\.py"; then
+  block "Claude must not read or create device private keys or anything in secrets/. The user runs the device-keys, device-certs, smoke-test, simulate, and upload-device-keys targets (simulate-dry-run is fine)."
 fi
 
 # A live simulator run connects with the device keys. --endpoint is the live-only flag

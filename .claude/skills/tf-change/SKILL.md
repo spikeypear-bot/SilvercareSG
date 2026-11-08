@@ -10,7 +10,8 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
 ## Rules
 - Root config lives in `infra/` (CI runs from there). Reusable modules go in
   `infra/modules/` (see the `tf-module` skill). `infra/bootstrap/` is applied by hand only.
-- Serverless only. No EC2, NAT Gateway, provisioned RDS, or other fixed-cost resources.
+- Serverless only. No EC2, NAT Gateway, provisioned RDS, or other fixed-cost resources,
+  except the simulator instance agreed in `CLAUDE.md` (`infra/simulator.tf`).
 - The account is on AWS's free plan, which blocks some services until it is upgraded
   (e.g. Data Firehose, Kinesis, End User Messaging SMS). Before proposing a service not
   already in `infra/`, check it under "Free Tier" in
@@ -43,6 +44,10 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
 - A `file()` on a missing path errors before any `precondition` runs. To fail with your
   own message, guard it: `fileexists(p) ? file(p) : "<placeholder>"`. Test such logic
   without AWS on `terraform_data` in a scratch dir.
+- `make tf-check` never renders a `templatefile()` (EC2 user data, config files), so a
+  broken command in one passes every check and only fails on the instance. Add a pytest
+  that renders it with fake values and checks the commands it builds argument by
+  argument (`shlex.split`) and `bash -n`, like `simulator/tests/test_ec2_user_data.py`.
 
 ## Steps
 1. Read existing `.tf` files and match their layout and naming.

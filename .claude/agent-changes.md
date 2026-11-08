@@ -5,6 +5,10 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-09
 
+- **Problem:** the EC2 simulator's boot script had `--endpoint <host>--keys-dir` (a
+  dropped space); `make tf-check` doesn't render templates, so only a manual render
+  caught it. **Changed:** `.claude/skills/tf-change/SKILL.md` (Rules): test every
+  `templatefile()` by rendering it with fake values, checking commands and `bash -n`.
 - **Problem:** the device-alert-limits deploy failed: listing each shadow reply topic
   took both IoT device policies past AWS IoT's 2048-character limit, which no local
   check catches. **Changed:** `.claude/skills/iam-policy/SKILL.md` (IoT device policies):
