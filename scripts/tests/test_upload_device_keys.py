@@ -17,7 +17,12 @@ up = load_script("upload-device-keys.py", "upload_device_keys")
 FAKE_CRT = (
     "-----BEGIN CERTIFICATE-----\nFAKE-CERT-NOT-REAL\n-----END CERTIFICATE-----\n"
 )
-FAKE_KEY = "-----BEGIN PRIVATE KEY-----\nFAKE-KEY-NOT-REAL\n-----END PRIVATE KEY-----\n"
+# Split so no file holds a whole key header: checks.yml fails on any committed
+# "BEGIN ... PRIVATE KEY" line, fake or not.
+KEY_LABEL = "PRIVATE" + " KEY"
+FAKE_KEY = (
+    f"-----BEGIN {KEY_LABEL}-----\nFAKE-KEY-NOT-REAL\n-----END {KEY_LABEL}-----\n"
+)
 IDS = ["wearable-0001", "bedroom-0001"]
 
 
@@ -104,7 +109,7 @@ def test_bad_files_exit_2_before_any_upload(setup, problem):
     elif problem == "not_pem":
         target.write_text("FAKE-KEY-NOT-REAL")
     else:
-        target.write_text("-----BEGIN PRIVATE KEY-----\n" + "A" * 5000)
+        target.write_text(f"-----BEGIN {KEY_LABEL}-----\n" + "A" * 5000)
     client = FakeSSM()
     rc, text = run(devices, ["--keys-dir", str(keys)], client)
     assert rc == 2

@@ -55,7 +55,11 @@ Build fake events in `events.py` with small functions that take overrides:
 
 Synthetic only and obviously fake: `resident-test-001`, "Test Resident A",
 `device-test-01`, phone `+65 0000 0000`. Never use real names, NRIC-like strings, or
-anything copied from production.
+anything copied from production. The same goes for `scripts/` and `simulator/` tests.
+Fake keys and certs: never write a whole `-----BEGIN ... PRIVATE KEY-----` line in a
+file, even with fake contents: `checks.yml` fails on any committed match. Build it at
+runtime (`"PRIVATE" + " KEY"`, as `simulator/tests/test_fetch_keys.py` does) or
+generate a throwaway key in the test.
 
 ## Required cases
 

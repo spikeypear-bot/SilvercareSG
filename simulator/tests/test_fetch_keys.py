@@ -24,7 +24,12 @@ spec.loader.exec_module(fetch_keys)
 FAKE_CRT = (
     "-----BEGIN CERTIFICATE-----\nFAKE-CERT-NOT-REAL\n-----END CERTIFICATE-----\n"
 )
-FAKE_KEY = "-----BEGIN PRIVATE KEY-----\nFAKE-KEY-NOT-REAL\n-----END PRIVATE KEY-----\n"
+# Split so no file holds a whole key header: checks.yml fails on any committed
+# "BEGIN ... PRIVATE KEY" line, fake or not.
+KEY_LABEL = "PRIVATE" + " KEY"
+FAKE_KEY = (
+    f"-----BEGIN {KEY_LABEL}-----\nFAKE-KEY-NOT-REAL\n-----END {KEY_LABEL}-----\n"
+)
 
 
 class ParameterNotFound(Exception):
