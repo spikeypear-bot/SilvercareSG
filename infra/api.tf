@@ -21,6 +21,10 @@
 # - GET /residents/{resident_id}/nightly (doctor; pattern 31), Lambda
 #   silvercare-api-nightly (lambdas/api-nightly/): stored nights from silvercare-results
 #   (docs/features/nightly-results.md).
+# - GET /nightly/overview (doctor; patterns 8, 32), Lambda
+#   silvercare-api-nightly-overview (a second entry point in lambdas/api-nightly/):
+#   last night's flagged residents for the doctor dashboard
+#   (docs/features/nightly-overview.md).
 # - GET /ops/device-problems: the ops view (docs/data-model.md, the ops paragraph;
 #   pattern 9 filtered to device problems), Lambda silvercare-api-ops
 #   (lambdas/api-ops/).
@@ -45,6 +49,7 @@ locals {
   api_residents_function_name     = "silvercare-api-residents"
   api_thresholds_function_name    = "silvercare-api-thresholds"
   api_nightly_function_name       = "silvercare-api-nightly"
+  api_overview_function_name      = "silvercare-api-nightly-overview"
   api_ops_function_name           = "silvercare-api-ops"
   thresholds_routes = {
     put = {
@@ -210,6 +215,16 @@ resource "aws_apigatewayv2_stage" "default" {
   # client would drain its burst capacity and every doctor's section would fail.
   route_settings {
     route_key              = aws_apigatewayv2_route.get_nightly.route_key
+    throttling_rate_limit  = 0.1
+    throttling_burst_limit = 2
+  }
+
+  # Nightly overview (docs/features/nightly-overview.md, criterion 11): one call reads
+  # about 20 Results items (about 10 RCU, eventually consistent) on the same 1 RCU, plus
+  # a keys-only by-type Query. Held to the nightly route's rate; the dashboard reuses
+  # the answer for 10 minutes.
+  route_settings {
+    route_key              = aws_apigatewayv2_route.nightly_overview.route_key
     throttling_rate_limit  = 0.1
     throttling_burst_limit = 2
   }
@@ -1319,4 +1334,108 @@ resource "aws_lambda_permission" "api_nightly" {
   function_name = module.api_nightly.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/GET/residents/*/nightly"
+}
+
+# ---------------------------------------------------------------------------------------
+# GET /nightly/overview
+# ---------------------------------------------------------------------------------------
+
+# The same zip as silvercare-api-nightly (data.archive_file.api_nightly), entry point
+# handler.overview_handler, with its own role and log group.
+#
+# What the function does with AWS (docs/features/nightly-overview.md, criterion 16):
+# - registry by-type (pattern 8): an eventually consistent, paginated Query of
+#   entity_type = RESIDENT projecting pk only, with Select = SPECIFIC_ATTRIBUTES, so it
+#   can never read display_name, home_id, or photo_key (the index projects them). Null
+#   dynamodb:Attributes = false denies a request without a projection, which would
+#   otherwise pass ForAllValues vacuously. sk is allowed because it is in a later page's
+#   ExclusiveStartKey (as the dashboard's and devices' by-type statements); a resident
+#   item's sk is the fixed PROFILE.
+# - Results table (pattern 32): BatchGetItem of last night's RESIDENT#<id> /
+#   NIGHT#<date> items. No attribute condition (the spec grants BatchGetItem only); the
+#   handler projects pk and the flag counts and thresholds of summary.
+# No writes, no other table. The module adds the log group permissions.
+data "aws_iam_policy_document" "api_nightly_overview" {
+  statement {
+    sid       = "RegistryByTypeIndex"
+    effect    = "Allow"
+    actions   = ["dynamodb:Query"]
+    resources = ["${module.registry_table.arn}/index/by-type"]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["pk", "sk", "entity_type"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "dynamodb:Select"
+      values   = ["SPECIFIC_ATTRIBUTES"]
+    }
+  }
+
+  statement {
+    sid       = "ResultsLastNight"
+    effect    = "Allow"
+    actions   = ["dynamodb:BatchGetItem"]
+    resources = [module.results_table.arn]
+  }
+}
+
+module "api_nightly_overview" {
+  source = "./modules/python-lambda"
+
+  function_name = local.api_overview_function_name
+  description   = "GET /nightly/overview: last night's flagged residents, for doctors."
+  handler       = "handler.overview_handler"
+  zip_path      = data.archive_file.api_nightly.output_path
+  zip_hash      = data.archive_file.api_nightly.output_base64sha256
+  layers        = [local.powertools_layer_arn]
+  memory_size   = 128
+  # One keys-only Query and one BatchGetItem (about 20 keys), retried at most 5 times.
+  timeout = 10
+
+  environment = {
+    REGISTRY_TABLE          = module.registry_table.name
+    RESULTS_TABLE           = module.results_table.name
+    POWERTOOLS_SERVICE_NAME = local.api_overview_function_name
+  }
+
+  policy_json        = data.aws_iam_policy_document.api_nightly_overview.json
+  log_retention_days = 30
+
+  # Invoked synchronously by API Gateway: no async retries, so no on-failure destination.
+  # No alarm of its own, as the other API Lambdas (criterion 15).
+}
+
+resource "aws_apigatewayv2_integration" "api_nightly_overview" {
+  api_id                 = aws_apigatewayv2_api.api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.api_nightly_overview.function_arn
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 12000
+}
+
+resource "aws_apigatewayv2_route" "nightly_overview" {
+  api_id             = aws_apigatewayv2_api.api.id
+  route_key          = "GET /nightly/overview"
+  target             = "integrations/${aws_apigatewayv2_integration.api_nightly_overview.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+# Only this API's GET /nightly/overview route (any stage) may invoke the function.
+resource "aws_lambda_permission" "api_nightly_overview" {
+  statement_id  = "AllowApiGatewayGetNightlyOverview"
+  action        = "lambda:InvokeFunction"
+  function_name = module.api_nightly_overview.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/GET/nightly/overview"
 }

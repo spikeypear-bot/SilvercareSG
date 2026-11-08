@@ -133,7 +133,7 @@ acknowledge was already built in `lambdas/api-alert-actions/`.
 | 5 | backend: `watchdog`; nurse and doctor dashboards, devices view (staff and ops; `status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: `vitals` and `status`, see Dashboard) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
-| 8 | Staff only: nurse and doctor dashboards, devices view (names for assigned devices) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
+| 8 | Staff only: nurse and doctor dashboards, devices view (names for assigned devices); doctor dashboard "Last night" (`GET /nightly/overview`, docs/features/nightly-overview.md: eventually consistent, paginated, `Select = SPECIFIC_ATTRIBUTES`, projecting `pk` only; drops `display_name`, `home_id`, `photo_key`) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard; per doctor dashboard open for `GET /nightly/overview` (reused 10 minutes, route throttled to 0.1/s, burst 2) |
 | 9 | Staff only: nurse and doctor dashboards; backend: `watchdog` | All open alerts (and acknowledged ones, which keep `open_pk`), newest first | alerts `open` | Query `open_pk = OPEN`, descending. The index projects what the dashboards' alert rows need (`severity`, `acknowledged_at`, `ack_note`, `acknowledged_by_role` and `acknowledged_by` for who acknowledged a device problem, `escalated_at`, and `notified_at` for the computed `escalates_at`; see [Index](#index-1)), so the API needs no base-table read per alert. Watchdog: eventually consistent, paginated, and its role may read only `pk`, `sk`, `open_pk`, `alert_type`, and `device_id` through the index (IAM `dynamodb:Attributes`, so never `ack_note`); it uses only the three device-problem types and `possible_fall`, to keep one open alert per device and type and to find the ones to resolve | every 30 s per open dashboard; every 5 min |
 | 10 | Resident page: staff, or caregiver after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
 | 11 | Resident page: staff, or caregiver after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (per device: wearable `vitals`, `vitals_alert`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
@@ -158,6 +158,7 @@ acknowledge was already built in `lambdas/api-alert-actions/`.
 | 29 | backend: `summaries` (docs/features/curated-layer.md, criteria 6-8) | Every assigned device's `assigned_at` (which `by-type` doesn't project), and each assigned resident's thresholds | registry | BatchGetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` (projecting `pk`, `resident_id`, `device_type`, `assigned_at`), then `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` (projecting `pk`, `hr_bpm`, `spo2_pct`, `skin_temp_c`); eventually consistent, up to 100 keys per call, `UnprocessedKeys` retried with back-off. IAM limits the role to `DEVICE#*` and `THRESHOLDS#*` partitions (`dynamodb:LeadingKeys`) | once a day (after the clean job) |
 | 30 | backend: `results` (docs/features/nightly-results.md, criteria 2, 6) | Write one resident's night | results | PutItem `pk = RESIDENT#<resident_id>`, `sk = NIGHT#<date>`, unconditional (a re-run overwrites the same key) | about 20 a day, after `summaries` (about 2 WCU each, within burst capacity) |
 | 31 | Doctor only: resident page, "Nightly summary" (docs/features/nightly-results.md, criteria 16-18) | This resident's stored nights, newest first | results | Query `pk = RESIDENT#<resident_id>`, `begins_with(sk, "NIGHT#")`, descending, eventually consistent, paginated, projecting `pk`, `sk`, `summary`. Returns per night `date` (from `sk`) and every field of `summary`; drops `resident_id`, `schema_version`, `loaded_at`, `expires_at`, and nights older than 30 days before today's Singapore date | per page view (route throttled to 0.1/s, burst 2) |
+| 32 | Doctor only: doctor dashboard, "Last night" (`GET /nightly/overview`, docs/features/nightly-overview.md, criteria 4-10) | Every resident's item for yesterday's Singapore date | results | After pattern 8 (`pk` only): BatchGetItem `pk = RESIDENT#<resident_id>`, `sk = NIGHT#<date>` for every resident, up to 100 keys per call, eventually consistent, `UnprocessedKeys` retried with exponential back-off (5 attempts, then `500`), projecting `pk`, `summary.falls`, `summary.vitals_alert_episodes`, `summary.hr_bpm_above`, `summary.hr_bpm_below`, `summary.spo2_pct_below`, `summary.skin_temp_c_above`, `summary.skin_temp_c_below`, `summary.thresholds`. Returns per flagged resident `resident_id`, the seven counts, `out_of_limit`, and `thresholds`, plus `clear_count` and `no_summary_count`; drops every other summary field, `resident_id`, `date`, `schema_version`, `loaded_at`, `expires_at`, and residents with nothing flagged | per doctor dashboard open (reused 10 minutes, route throttled to 0.1/s, burst 2); about 20 items, about 10 RCU per call |
 
 No pattern uses `Scan`.
 
@@ -519,7 +520,7 @@ its fields, and its tests check that.
 
 | Index | Hash | Range | Projection | Serves |
 |---|---|---|---|---|
-| `by-type` | `entity_type` | `pk` | INCLUDE `display_name`, `home_id`, `photo_key`, `device_type`, `resident_id` | 4 (also `summaries`), 8, 27, photo cleanup |
+| `by-type` | `entity_type` | `pk` | INCLUDE `display_name`, `home_id`, `photo_key`, `device_type`, `resident_id` | 4 (also `summaries`), 8 (also `GET /nightly/overview`, `pk` only), 27, photo cleanup |
 | `by-resident` | `gsi1_pk` | `gsi1_sk` | INCLUDE `device_type`, `relationship` | 10, 15 |
 
 ## Photos
@@ -1187,6 +1188,13 @@ copy for the portal and the one exception to "live state only".
 - **Reader:** `GET /residents/{resident_id}/nightly` (`silvercare-api-nightly`, pattern
   31), doctors only. Its role may only `dynamodb:Query` this table (`RESIDENT#*`
   partitions). A resident with no items (or an unknown resident) returns no nights.
+- **Reader:** `GET /nightly/overview` (`silvercare-api-nightly-overview`, pattern 32),
+  doctors only: last night's item for every resident (IDs from pattern 8, `pk` only),
+  projecting `pk` and the seven flag counts and `thresholds` of `summary`. Its role may
+  only `dynamodb:BatchGetItem` this table, and `dynamodb:Query` the registry `by-type`
+  index for `pk` and `entity_type` (`Select = SPECIFIC_ATTRIBUTES`). A resident with no
+  item counts towards `no_summary_count`; an item that can't be read counts the same way
+  (logged as a count only).
 - **TTL:** `expires_at`. DynamoDB deletes expired items typically within two days, so
   the API also hides nights older than 30 days before today's Singapore date.
 - **Point-in-time recovery:** on, as every table, so a deleted or expired item stays

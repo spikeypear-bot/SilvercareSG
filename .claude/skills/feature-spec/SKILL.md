@@ -73,7 +73,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
       are described).
 - [ ] Alerting inputs: validation ranges don't reject the emergency itself. Ranges
       copied from routine readings can (heart rate 0 = no pulse, cardiac arrest); for
-      each alert, check the worst real reading is still accepted.
+      each alert, check the worst real reading is still accepted. Likewise, a list that
+      surfaces residents needing attention says what happens to a stored item it can't
+      fully read: one bad field (e.g. a label) mustn't hide a fall or alert in the rest.
 - [ ] Personal data touched is listed, with its retention, and how one person's data would
       be erased, checked against how it's really stored (e.g. files batching many devices).
 - [ ] Out of scope is filled in.
