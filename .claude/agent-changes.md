@@ -5,6 +5,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-09
 
+- **Problem:** the EC2 simulator had no internet: the default VPC's network ACL has no
+  inbound allow rule, and the spec only assumed the default VPC works. **Changed:**
+  `.claude/skills/tf-change/SKILL.md` (Rules): check the default VPC's NACL, not just
+  that it exists.
+
 - **Problem:** CI's "No private keys in the repo" check failed on two new tests whose
   fake PEM fixtures held a literal private-key header. **Changed:**
   `.claude/skills/lambda-test/SKILL.md` (Data): never write a whole private-key header
