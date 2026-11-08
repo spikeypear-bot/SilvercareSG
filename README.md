@@ -127,6 +127,11 @@ in the S3 history bucket, which is written in batches of up to 5 minutes. Leave 
 
 ### Simulator
 
+> **Until 2026-11-30 the simulator already runs 24/7 on EC2, operated by one person (see
+> [docs/simulator-ec2.md](docs/simulator-ec2.md)). You don't need to run it, and don't
+> run `make simulate` against AWS: it would knock the EC2 simulator's devices offline.
+> `make simulate-dry-run` is fine. Ask the owner for demo scenarios.**
+
 `simulator/` plays all 40 devices with normal data: vitals every minute, status every
 5 minutes, and bed and motion events on a daily routine, each resident with their own
 baseline from `scripts/seed-data.json` (`docs/features/simulator-core.md`).

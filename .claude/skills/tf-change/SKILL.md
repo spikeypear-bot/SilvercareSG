@@ -50,6 +50,9 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
   broken command in one passes every check and only fails on the instance. Add a pytest
   that renders it with fake values and checks the commands it builds argument by
   argument (`shlex.split`) and `bash -n`, like `simulator/tests/test_ec2_user_data.py`.
+  Check what the commands run under too: a service `User=` with a `nologin` shell gets
+  `SHELL=/sbin/nologin` from systemd, so anything that runs its command via `$SHELL`
+  (tmux, `su -c`) exits at once unless the unit sets `Environment=SHELL=/bin/sh`.
 
 ## Steps
 1. Read existing `.tf` files and match their layout and naming.

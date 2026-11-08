@@ -25,6 +25,9 @@ StartLimitIntervalSec=0
 [Service]
 Type=forking
 User=simulator
+# tmux runs its command through $SHELL, which systemd sets to the user's /sbin/nologin:
+# without this the pane runs nologin and exits at once.
+Environment=SHELL=/bin/sh
 WorkingDirectory=/opt/silvercare
 # /run/silvercare-keys: tmpfs, 0700, owned by simulator, deleted when the service stops.
 RuntimeDirectory=silvercare-keys

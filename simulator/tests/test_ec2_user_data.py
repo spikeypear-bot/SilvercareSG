@@ -48,6 +48,13 @@ def test_simulator_command_arguments():
     ]
 
 
+def test_tmux_gets_a_real_shell():
+    # The simulator user's login shell is nologin; tmux runs its command via $SHELL.
+    text = rendered()
+    assert "--shell /sbin/nologin" in text
+    assert unit_value(text, "Environment") == "SHELL=/bin/sh"
+
+
 def test_key_fetch_writes_where_the_simulator_reads():
     text = rendered()
     pre = shlex.split(unit_value(text, "ExecStartPre"))

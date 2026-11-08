@@ -5,6 +5,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-09
 
+- **Problem:** the EC2 simulator restarted every 60 s without running: tmux ran its
+  command through the `simulator` user's `/sbin/nologin` shell. The template test checked
+  arguments, not the environment. **Changed:** `.claude/skills/tf-change/SKILL.md`
+  (Rules, templatefile): check the user and shell the commands run under.
+
 - **Problem:** the EC2 simulator had no internet: the default VPC's network ACL has no
   inbound allow rule, and the spec only assumed the default VPC works. **Changed:**
   `.claude/skills/tf-change/SKILL.md` (Rules): check the default VPC's NACL, not just

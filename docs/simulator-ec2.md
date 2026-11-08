@@ -1,25 +1,34 @@
-# Running the EC2 simulator
+# The EC2 simulator
 
-How to start, demo, update, and remove the always-on simulator
-(`docs/features/simulator-ec2.md`). Runs 24/7 until 2026-11-30, about US$12/month.
+**The 40 simulated devices run 24/7 on an EC2 instance until 2026-11-30**
+(`docs/features/simulator-ec2.md`, about US$14/month). The live system always has
+device data. **Teammates don't need to run the simulator.** One person (the owner,
+`spikeypear-bot` on GitHub) runs and looks after it; ask them for demo scenarios or if
+something looks wrong.
 
-You need: AWS credentials for the shared developer user (the policy in
-`docs/iam/developer-policy.json` applied), the AWS CLI with the
-[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html),
-and `pip install -r scripts/requirements.txt` on the host.
+## For teammates
 
-## First start (in this order)
+- **Don't run `make simulate` against AWS.** AWS IoT allows one connection per device
+  ID, so a second simulator kicks the EC2 one's devices off and the two keep
+  disconnecting each other. `make simulate-dry-run` is fine (no AWS).
+- **Is it running?** Open the SilverCare site's Devices tab: devices showing recent data
+  means yes. If it stops for 15+ minutes, devices show offline and ops and the
+  residents' caregivers get offline emails: tell the owner.
+- **Want a fall, heart-rate spike, etc. for a demo?** Ask the owner: they type it into
+  the running simulator. Every scenario sends real alerts and emails.
 
-1. **Account owner:** apply `infra/bootstrap/` (adds `DenyProjectParameterReads`, so PR
-   plans can't read the keys) and the updated developer policy. Do this **before** step 4.
-2. Merge the PR. The deploy creates the instance; it installs everything and starts
-   the service, which retries every 60 s until the keys exist.
-3. Seed the live registry: `python scripts/seed.py`. Skipping this makes
-   `wearable-0004` and `wearable-0011` raise warnings that are emailed to the nurses.
-4. Upload the keys: `make upload-device-keys`. Expect `<device_id> uploaded` × 40.
-   Within a minute the simulator connects all 40 devices.
+## For the owner
 
-## Find the instance and connect
+You need: AWS credentials (`silvercare-kakis`) and the AWS CLI with the
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+On Ubuntu:
+
+```sh
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
+sudo dpkg -i /tmp/session-manager-plugin.deb
+```
+
+### Connect
 
 ```sh
 aws ec2 describe-instances --region ap-southeast-1 \
@@ -28,45 +37,74 @@ aws ec2 describe-instances --region ap-southeast-1 \
 aws ssm start-session --region ap-southeast-1 --target <instance-id>
 ```
 
-Inside the session:
+Leaving the session (`exit`) never stops the simulator: systemd runs it.
+
+### Is it running?
+
+```sh
+sudo -u simulator tmux ls                         # "sim: 1 windows ..." = running
+systemctl status silvercare-simulator --no-pager  # "active (running)", since-time steady
+sudo journalctl -u silvercare-simulator -n 30 --no-pager   # key fetch, restarts (IDs only)
+```
+
+`activating (auto-restart)` or a rising restart counter means it's crashing: read the
+journal.
+
+### Watch it and run demo scenarios
 
 ```sh
 sudo -u simulator tmux attach -t sim
 ```
 
-You see the per-minute line (`connected 40/40 | sent ...`). Type a scenario, e.g.
-`help`, or `fall wearable-0003` (names in `docs/features/simulator-alert-scenarios.md`).
-Every scenario sends real alerts and emails.
+One line a minute (`connected 40/40 | sent ...`). Type `help`, or a scenario such as
+`fall wearable-0003` (list in the README, "Alert scenarios").
 
-- **Detach: Ctrl+B, then D.** The simulator keeps running.
-- **Ctrl+C stops the simulator.** systemd starts it again after 60 s (no emails: offline
-  alerts need 15 minutes).
+- **Leave: Ctrl+B, then D.** It keeps running.
+- **Ctrl+C stops the simulator.** systemd starts it again after 60 s (no emails; offline
+  needs 15 minutes).
 
-## Update the code
+### Update the code
+
+The instance runs `main` as of the last pull, not what CI deployed:
 
 ```sh
 sudo -u simulator git -C /opt/silvercare pull
 sudo systemctl restart silvercare-simulator
 ```
 
-The instance runs whatever `main` was at the last pull, not what CI deployed.
-
-## Check it
+### Pause it (e.g. to run `make simulate` from a laptop)
 
 ```sh
-systemctl status silvercare-simulator
-journalctl -u silvercare-simulator -n 50   # key fetch and restarts (device IDs only)
+sudo systemctl stop silvercare-simulator    # start again: sudo systemctl start ...
 ```
 
-## Demo from your laptop instead
+More than 15 minutes stopped: one ops summary email plus emails to each resident's
+caregivers.
 
-AWS IoT allows one connection per device ID. Before `make simulate` on a laptop:
-`sudo systemctl stop silvercare-simulator`, and start it again afterwards. Stopped for
-more than 15 minutes, all 40 devices go offline: one ops summary email, plus emails to
-each resident's caregivers.
+### Keys
+
+The 40 device keys are SSM parameters `/silvercare/device-keys/<id>`, uploaded from
+`secrets/device-keys/` with `make upload-device-keys` (host). Re-run it after replacing a
+key, then `sudo systemctl restart silvercare-simulator`.
+
+### Rebuilt instance (first start)
+
+Only if the instance is ever replaced: it sets itself up on first boot (packages, repo,
+service). Then `python scripts/seed.py` (or two wearables email the nurses) and
+`make upload-device-keys`; within a minute it connects.
+
+### Known problems (fixed)
+
+- **No internet** (`TargetNotConnected`, `dnf` timeouts): the default VPC's network ACL
+  had no inbound allow rule; `aws_network_acl_rule.simulator_replies` adds one (#44).
+- **Restarts every 60 s, `tmux ls` says no sessions**: tmux used the `simulator` user's
+  `nologin` shell. The unit now sets `Environment=SHELL=/bin/sh`; the first instance was
+  patched by hand the same way (2026-11-09).
+- **Setup failed on first boot**: re-run it once with
+  `sudo bash /var/lib/cloud/instance/scripts/part-001`.
 
 ## Remove on 2026-11-30
 
 1. PR deleting `infra/simulator.tf` and `infra/simulator/`. Merging terminates the
-   instance: after 15 minutes, the offline emails above.
-2. `make upload-device-keys ARGS=--delete` deletes the 40 parameters.
+   instance; after 15 minutes, the offline emails above.
+2. `make upload-device-keys ARGS=--delete` deletes the 40 key parameters.
