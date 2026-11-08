@@ -2,7 +2,9 @@
 
 Parsing of `--scenario` flags and typed commands, the checks on the target wearable,
 and the scenario values (vitals overrides, the fall's acceleration window). Pure: no
-clock, no network, no files. The engine owns every scenario's state and schedule.
+clock, no network, no files. The engine owns every scenario's state and schedule; a
+scenario's vitals_alert comes from its readings against the wearable's device limits
+(engine, docs/features/device-alert-limits.md criterion 22), not from a script.
 
 Every scenario draws its values from its own random.Random, never from the device's
 normal stream, so a run without scenarios is unchanged and the normal fields of a
@@ -36,6 +38,7 @@ VITALS_DURATION_MS = 3 * routine.MINUTE_MS
 FALL_MAX_DOWN_MS = 10 * routine.MINUTE_MS
 FALL_MESSAGE_DELAY_MS = 20 * routine.SECOND_MS
 FALL_STILL_S = 20
+# A reading past a device limit this long sends a vitals_alert (engine, criterion 22).
 ALERT_DELAY_MS = 10 * routine.SECOND_MS
 ALERT_HELD_S = 10
 ALERT_REPEAT_MS = 5 * routine.MINUTE_MS
@@ -43,7 +46,8 @@ ALERT_REPEAT_MS = 5 * routine.MINUTE_MS
 # least 5 s after the fall message it cancels.
 CANCEL_SPACING_MS = 5 * routine.SECOND_MS
 
-# Values past every seeded personal limit and the device limits (spec, Alerts).
+# Values past every seeded personal limit and any valid device limit (spec, Alerts):
+# heart rate max is at most 130 and SpO2 min at least 88.
 HR_SPIKE_RANGE = (150, 155)
 SPO2_DROP_RANGE = (82, 84)
 FALL_CONFIDENCE_RANGE = (0.85, 0.95)
@@ -52,13 +56,6 @@ FALL_ACTIVITY_RANGE = (0, 3)
 # The fall's acceleration window: 1 s before to 1 s after the impact at 25 Hz.
 FALL_SAMPLES_BEFORE = 25  # the impact is the next sample (offset 0 ms)
 FALL_SAMPLES_AFTER = 24
-
-# (metric, limit, direction) of the scenario's vitals_alert.
-ALERT_RULE = {
-    HR_SPIKE: ("hr_bpm", 130, "above"),
-    SPO2_DROP: ("spo2_pct", 88, "below"),
-    NO_PULSE: ("hr_bpm", 45, "below"),
-}
 
 SKIP_NOT_WORN = "not worn"
 SKIP_BUSY = "busy"

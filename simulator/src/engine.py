@@ -1,5 +1,11 @@
 """The device model and event schedule (criteria 7 to 15).
 
+Each wearable has its current device alert limits (docs/features/device-alert-limits.md):
+the seed file's at the start, then whatever a live run's shadow applies (set_limits).
+Normal readings stay inside them (criterion 21), and vitals_alert comes from the
+current readings against them (criterion 22): a reading past a limit for 10 s sends
+one, then one every 5 minutes while it lasts, one timer per metric.
+
 Pure and deterministic: no clock, no network, no files. Time is "elapsed" integer
 milliseconds since the start of the run. The engine knows the real UTC time at
 elapsed 0 (for `ts`) and the routine time of day at elapsed 0 (for the routine), so
@@ -17,7 +23,7 @@ from dataclasses import dataclass, field
 import payloads
 import routine
 import scenarios
-from residents import Resident
+from residents import DeviceLimits, Resident, reading_limits
 
 VITALS_PERIOD_MS = routine.MINUTE_MS
 STATUS_PERIOD_MS = 5 * routine.MINUTE_MS
@@ -39,6 +45,8 @@ MESSAGE_TYPES = (
     "alert_cancel",
 )
 _SCENARIO_KINDS = frozenset({"scenario", "cancel", "end", "vitals_alert", "fall"})
+# vitals_alert metrics, in the order they are sent when due at the same moment.
+ALERT_METRICS = ("hr_bpm", "spo2_pct")
 # At the same elapsed time: scenario ends first, then flag scenario starts, then
 # everything else (heap order is (time, seq)).
 _END_SEQ_START = -(2 * 10**9)
@@ -113,6 +121,14 @@ class _Scenario:
 
 
 @dataclass
+class _Episode:
+    """A metric's reading past a limit: its alert timer (criterion 22)."""
+
+    eid: int
+    next_ms: int  # when its next vitals_alert is due
+
+
+@dataclass
 class _WearableScenarios:
     started: int = 0  # scenarios started on this wearable (seeds their streams)
     active: _Scenario | None = None
@@ -159,6 +175,10 @@ class Engine:
         self._scenarios: dict[str, _WearableScenarios] = {}
         self._notices: list[str] = []
         self.started: set[str] = set()
+        # Each wearable's current device alert limits, and its open alert episodes.
+        self._limits: dict[str, DeviceLimits] = {}
+        self._episodes: dict[tuple[str, str], _Episode] = {}
+        self._eid = 0
 
         # Offsets for every resident (not only selected ones), so the same seed gives
         # the same offsets whichever devices run.
@@ -196,6 +216,8 @@ class Engine:
                 wearable_rng=wearable_rng,
             )
             self._states[resident.resident_id] = state
+            if wearable:
+                self._limits[wearable] = resident.device_limits
             for device_id in (wearable, bedroom):
                 if device_id:
                     self._owner[device_id] = state
@@ -341,12 +363,16 @@ class Engine:
         assert state.wearable_rng is not None
         # Always drawn from the normal stream, so the other fields stay normal.
         values = payloads.vitals_values(
-            state.wearable_rng, state.resident.baseline, state.resident.limits, phase
+            state.wearable_rng,
+            state.resident.baseline,
+            reading_limits(self._limits[device_id], state.resident.limits),
+            phase,
         )
         active = self._active(device_id, now_ms)
         if active is not None:
             if active.name in (scenarios.HR_SPIKE, scenarios.SPO2_DROP):
                 active.value = scenarios.spike_value(active.name, active.rng)
+                self._check_crossings(device_id, now_ms)
             values = scenarios.override_vitals(
                 active.name, values, active.rng, active.value, active.lying
             )
@@ -483,14 +509,11 @@ class Engine:
             end_ms = now_ms + scenarios.VITALS_DURATION_MS
             active = _Scenario(self._sid, name, device_id, now_ms, end_ms, rng)
             active.value = scenarios.spike_value(name, rng)
-            self._push(
-                now_ms + scenarios.ALERT_DELAY_MS,
-                "vitals_alert",
-                device_id,
-                (active.sid,),
-            )
-            self._push_end(end_ms, device_id, active.sid)
         sc.active = active
+        # Its readings may now be past a limit: that starts the 10 s alert timer.
+        self._check_crossings(device_id, now_ms)
+        if active.end_ms is not None:
+            self._push_end(active.end_ms, device_id, active.sid)
         self._notices.append(f"{label} started")
         return []
 
@@ -522,14 +545,16 @@ class Engine:
         out = [self._msg(now_ms, device_id, "alert_cancel", payloads.alert_cancel)]
         sc = self._scenarios[device_id]
         if sc.active is not None and sc.active.name == scenarios.FALL:
-            self._end(sc)
+            self._end(sc, now_ms)
         self._notices.append(f"scenario {scenarios.IM_OK} {device_id} ended")
         return out
 
-    def _end(self, sc: _WearableScenarios) -> None:
+    def _end(self, sc: _WearableScenarios, now_ms: int) -> None:
         assert sc.active is not None
-        self._notices.append(f"scenario {sc.active.name} {sc.active.device_id} ended")
+        device_id = sc.active.device_id
+        self._notices.append(f"scenario {sc.active.name} {device_id} ended")
         sc.active = None
+        self._check_crossings(device_id, now_ms)  # back inside: the episode ends
 
     def _current(self, event: _Event) -> tuple[_WearableScenarios, _Scenario] | None:
         """The wearable's scenario if it is still the one the event belongs to."""
@@ -538,32 +563,99 @@ class Engine:
             return None
         return sc, sc.active
 
-    def _vitals_alert(self, now_ms: int, active: _Scenario) -> list[Message]:
-        if active.end_ms is not None and (
-            now_ms + scenarios.ALERT_REPEAT_MS < active.end_ms
-        ):
-            # Again every 5 minutes while the condition lasts.
-            self._push(
-                now_ms + scenarios.ALERT_REPEAT_MS,
-                "vitals_alert",
-                active.device_id,
-                (active.sid,),
+    # ---- device alert limits and vitals_alert (criteria 20 to 22) ----
+
+    def limits(self, device_id: str) -> DeviceLimits:
+        """A wearable's current device alert limits."""
+        return self._limits[device_id]
+
+    def set_limits(self, device_id: str, limits: DeviceLimits, now_ms: int) -> bool:
+        """Apply new device limits at now_ms (from the shadow). They apply at once to
+        readings and open episodes. Returns whether they differ from the current."""
+        changed = self._limits[device_id] != limits
+        self._limits[device_id] = limits
+        self._check_crossings(device_id, now_ms)
+        return changed
+
+    def _reading(self, device_id: str, metric: str, now_ms: int) -> int | None:
+        """The wearable's current reading of metric if a scenario has moved it, else
+        None (a normal reading, inside the limits by criterion 21). No pulse is 0."""
+        active = self._active(device_id, now_ms)
+        if active is None:
+            return None
+        if active.name == scenarios.NO_PULSE:
+            return 0 if metric == "hr_bpm" else None
+        if active.name == scenarios.HR_SPIKE and metric == "hr_bpm":
+            return active.value
+        if active.name == scenarios.SPO2_DROP and metric == "spo2_pct":
+            return active.value
+        return None
+
+    def _crossed(
+        self, device_id: str, metric: str, now_ms: int
+    ) -> tuple[int, int, str] | None:
+        """(value, limit crossed, direction) if the reading is past a limit."""
+        value = self._reading(device_id, metric, now_ms)
+        if value is None:
+            return None
+        limits = self._limits[device_id]
+        if metric == "hr_bpm":
+            if value < limits.hr_min:
+                return value, limits.hr_min, "below"
+            if value > limits.hr_max:
+                return value, limits.hr_max, "above"
+            return None
+        if value < limits.spo2_min:
+            return value, limits.spo2_min, "below"
+        return None
+
+    def _check_crossings(self, device_id: str, now_ms: int) -> None:
+        """Start a 10 s timer for each metric newly past a limit; end the episode of
+        each metric back inside."""
+        for metric in ALERT_METRICS:
+            key = (device_id, metric)
+            crossed = self._crossed(device_id, metric, now_ms) is not None
+            if crossed and key not in self._episodes:
+                self._eid += 1
+                due = now_ms + scenarios.ALERT_DELAY_MS
+                self._episodes[key] = _Episode(self._eid, due)
+                self._push(due, "vitals_alert", device_id, (metric, self._eid))
+            elif not crossed and key in self._episodes:
+                del self._episodes[key]
+
+    def _vitals_alerts(self, event: _Event) -> list[Message]:
+        """Every vitals_alert of the wearable due now, hr_bpm first; each then
+        repeats every 5 minutes while its episode lasts."""
+        now, device_id = event.elapsed_ms, event.key
+        metric, eid = event.data
+        episode = self._episodes.get((device_id, metric))
+        if episode is None or episode.eid != eid or episode.next_ms != now:
+            return []  # the episode ended, or this was sent with a tied metric
+        out: list[Message] = []
+        worn = self._worn(device_id, now)
+        for name in ALERT_METRICS:
+            due = self._episodes.get((device_id, name))
+            if due is None or due.next_ms != now:
+                continue
+            due.next_ms = now + scenarios.ALERT_REPEAT_MS
+            self._push(due.next_ms, "vitals_alert", device_id, (name, due.eid))
+            crossed = self._crossed(device_id, name, now)
+            if not worn or crossed is None:
+                continue  # sent only while worn
+            value, limit, direction = crossed
+            out.append(
+                self._msg(
+                    now,
+                    device_id,
+                    "vitals_alert",
+                    lambda ts, mid, m=name, v=value, lim=limit, d=direction: (
+                        payloads.vitals_alert(
+                            ts, mid, m, v, lim, d, scenarios.ALERT_HELD_S
+                        )
+                    ),
+                )
             )
-        if not self._worn(active.device_id, now_ms):
-            return []  # sent only while worn
-        metric, limit, direction = scenarios.ALERT_RULE[active.name]
-        value = 0 if active.name == scenarios.NO_PULSE else active.value
-        assert value is not None
-        return [
-            self._msg(
-                now_ms,
-                active.device_id,
-                "vitals_alert",
-                lambda ts, mid: payloads.vitals_alert(
-                    ts, mid, metric, value, limit, direction, scenarios.ALERT_HELD_S
-                ),
-            )
-        ]
+        return out
 
     def _fall(self, now_ms: int, active: _Scenario) -> list[Message]:
         assert active.lying is not None
@@ -584,15 +676,15 @@ class Engine:
             return self.start_scenario(event.data[0], event.key, now)
         if event.kind == "cancel":
             return self._send_cancel(event.key, now)
+        if event.kind == "vitals_alert":
+            return self._vitals_alerts(event)
         current = self._current(event)
         if current is None:
             return []  # the scenario has ended since
         sc, active = current
         if event.kind == "end":
-            self._end(sc)
+            self._end(sc, now)
             return []
-        if event.kind == "vitals_alert":
-            return self._vitals_alert(now, active)
         if event.kind == "fall":
             return self._fall(now, active)
         raise AssertionError(f"unknown event kind {event.kind}")  # pragma: no cover

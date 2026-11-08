@@ -22,11 +22,15 @@ Steps (the api-route skill):
      display_name, never `photo_key` (IAM allows only these attributes on by-type,
      infra/api.tf).
 5. The response is built field by field (fleet.py), never from raw items.
+5a. Each wearable's `alert_limits` (docs/features/device-alert-limits.md, criteria
+   13-15): GetThingShadow for every wearable in the response, in parallel, 2 s timeout,
+   one attempt. A failed read gives `unknown` and never fails the request. Staff get
+   status, desired, and reported; ops the status only.
 6. Errors are {"error": {"code", "message"}} with no internal details.
 
 Logs: outcome, counts, the caller kind (`staff` or `ops`), API Gateway's request ID,
-the caller's `sub` and, on a 403, `cognito:groups`. Never the
-request, the response, other claims, names, or readings.
+the caller's `sub`, on a 403, `cognito:groups`, and the count of failed shadow reads.
+Never the request, the response, other claims, names, readings, or limits.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from functools import cache
 from typing import Any
@@ -58,6 +63,10 @@ GROUP_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
 # joined to the stage's access log.
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9=+/_-]{1,64}\Z")
 
+SHADOW_TIMEOUT_S = 2
+# One worker per wearable (about 20) so every read runs at once.
+MAX_SHADOW_WORKERS = 32
+
 HEADERS = {"Content-Type": "application/json", "Cache-Control": "no-store"}
 
 _deserializer = TypeDeserializer()
@@ -74,6 +83,22 @@ def dynamodb_client() -> Any:
         "dynamodb",
         config=Config(retries={"mode": "adaptive"}),
         endpoint_url=os.environ.get("DYNAMODB_ENDPOINT"),
+    )
+
+
+@cache
+def iot_data_client() -> Any:
+    """The account's IoT data endpoint (iot:Data-ATS), set by Terraform. One attempt
+    with a 2 s timeout: a miss shows as `unknown`."""
+    return boto3.client(
+        "iot-data",
+        endpoint_url=f"https://{os.environ['IOT_DATA_ENDPOINT']}",
+        config=Config(
+            connect_timeout=SHADOW_TIMEOUT_S,
+            read_timeout=SHADOW_TIMEOUT_S,
+            retries={"total_max_attempts": 1},
+            max_pool_connections=MAX_SHADOW_WORKERS,
+        ),
     )
 
 
@@ -229,6 +254,27 @@ def read_residents() -> list[dict[str, Any]]:
     )
 
 
+def read_shadow(device_id: str) -> tuple[Any, bool]:
+    """(shadow document or None, whether the read failed). No shadow (404) is not a
+    failure."""
+    try:
+        result = iot_data_client().get_thing_shadow(thingName=device_id)
+        return json.loads(result["payload"].read()), False
+    except Exception as exc:  # noqa: BLE001 - a failed read is `unknown`, never a 500
+        return None, _error_code(exc) != "ResourceNotFoundException"
+
+
+def read_shadows(device_ids: list[str]) -> tuple[dict[str, Any], int]:
+    """({device_id: document or None}, failed reads), all read in parallel."""
+    if not device_ids:
+        return {}, 0
+    workers = min(len(device_ids), MAX_SHADOW_WORKERS)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(read_shadow, device_ids))
+    shadows = {d: doc for d, (doc, _) in zip(device_ids, results, strict=True)}
+    return shadows, sum(failed for _, failed in results)
+
+
 # ---- handler ----
 
 
@@ -267,6 +313,11 @@ def handle(event: Any, now: datetime) -> dict[str, Any]:
         result = fleet.build_fleet(
             read_devices(include_home=False), read_statuses(), [], now
         )
+    wearable_ids = [
+        d["device_id"] for d in result.devices if d["device_type"] == fleet.WEARABLE
+    ]
+    shadows, shadow_failures = read_shadows(wearable_ids)
+    fleet.add_alert_limits(result.devices, shadows, staff=caller == "staff")
     logger.info(
         LOG_MESSAGE,
         extra={
@@ -275,6 +326,7 @@ def handle(event: Any, now: datetime) -> dict[str, Any]:
             "sub": sub,
             "devices": len(result.devices),
             "skipped": result.skipped,
+            "shadow_read_failures": shadow_failures,
         },
     )
     return response(200, {"devices": result.devices})

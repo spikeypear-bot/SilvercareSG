@@ -5,7 +5,9 @@ Fake AWS credentials and env vars are set before anything imports boto3, so no t
 can reach real AWS. `aws` starts moto and creates silvercare-registry and
 silvercare-latest with the keys and index projections of infra/dynamodb.tf, and
 replaces the handler's DynamoDB client with a recorder that logs every call, can make
-one operation fail, and can force small Query pages.
+one operation fail, and can force small Query pages. It also creates the things in
+moto's IoT registry (no shadows) and replaces the handler's IoT data client with a
+recorder over moto that can make one device's shadow read fail.
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ os.environ["AWS_CONFIG_FILE"] = "/dev/null"
 os.environ.setdefault("REGISTRY_TABLE", "silvercare-registry")
 os.environ.setdefault("LATEST_TABLE", "silvercare-latest")
 os.environ.setdefault("POWERTOOLS_SERVICE_NAME", "silvercare-api-devices-test")
+# moto serves iot-data only on its public host names, never the account's endpoint.
+os.environ.setdefault("IOT_DATA_ENDPOINT", "data-ats.iot.ap-southeast-1.amazonaws.com")
 
 import boto3
 import pytest
@@ -164,11 +168,52 @@ class Recorder:
         return wrapper
 
 
+class IotRecorder:
+    """Wraps a moto iot-data client. Records (name, thingName) of every call; a
+    device in `fail` raises that exception instead (calls run in threads)."""
+
+    def __init__(self, client) -> None:
+        self._client = client
+        self.calls: list[tuple[str, str]] = []
+        self.fail: dict[str, Exception] = {}
+
+    def __getattr__(self, name):
+        method = getattr(self._client, name)
+
+        def wrapper(**kwargs):
+            device_id = kwargs.get("thingName")
+            self.calls.append((name, device_id))
+            if device_id in self.fail:
+                raise self.fail[device_id]
+            return method(**kwargs)
+
+        return wrapper
+
+
+THINGS = ("wearable-0001", "wearable-0002", "bedroom-0001")
+
+
+def iot_data_client():
+    return boto3.client(
+        "iot-data",
+        region_name=REGION,
+        endpoint_url=f"https://{os.environ['IOT_DATA_ENDPOINT']}",
+    )
+
+
+def put_shadow(device_id: str, state: dict) -> None:
+    """Writes a shadow document's state straight into moto."""
+    iot_data_client().update_thing_shadow(
+        thingName=device_id, payload=json.dumps({"state": state}).encode("utf-8")
+    )
+
+
 @dataclass
 class Aws:
     ddb: Any
     client: Recorder
     calls: list = field(default_factory=list)
+    iot: IotRecorder | None = None
     client_requests: list = field(default_factory=list)
 
     def ops(self) -> list[str]:
@@ -200,13 +245,19 @@ def aws(monkeypatch):
         create_latest_table(ddb)
         calls: list = []
         recorder = Recorder(boto3.client("dynamodb", region_name=REGION), calls)
-        state = Aws(ddb=ddb, client=recorder, calls=calls)
+        iot = boto3.client("iot", region_name=REGION)
+        for thing in THINGS:
+            iot.create_thing(thingName=thing)
+        state = Aws(
+            ddb=ddb, client=recorder, calls=calls, iot=IotRecorder(iot_data_client())
+        )
 
         def client():
             state.client_requests.append(1)
             return recorder
 
         monkeypatch.setattr(handler, "dynamodb_client", client)
+        monkeypatch.setattr(handler, "iot_data_client", lambda: state.iot)
         yield state
     _clear_client()
 

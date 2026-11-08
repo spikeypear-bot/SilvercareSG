@@ -42,20 +42,20 @@ FALL_WINDOW_SAMPLES = 50
 FW_VERSION_MAX_LEN = 32
 
 # vitals_alert (docs/metrics.md; docs/features/vitals-alerts.md, criterion 13): the
-# device's fixed limits and the valid value range per metric. hr_bpm 0 means "no pulse
+# valid value range per metric. `limit` may be any integer in that range (each
+# wearable's limits come from its device shadow, docs/features/device-alert-limits.md,
+# criterion 2). hr_bpm 0 means "no pulse
 # detected while worn" and is only valid with direction below.
 VITALS_ALERT_DIRECTIONS = frozenset({"above", "below"})
 VITALS_ALERT_METRICS: dict[str, dict[str, Any]] = {
     "hr_bpm": {
         "values": (20, 250),
         "extra_values": frozenset({0}),
-        "limits": frozenset({45, 130}),
         "directions": VITALS_ALERT_DIRECTIONS,
     },
     "spo2_pct": {
         "values": (50, 100),
         "extra_values": frozenset(),
-        "limits": frozenset({88}),
         "directions": frozenset({"below"}),
     },
 }
@@ -234,7 +234,7 @@ def _check_vitals_alert(payload: dict) -> str | None:
     low, high = rules["values"]
     if not (low <= value <= high or value in rules["extra_values"]):
         return "out_of_range:value"
-    if payload["limit"] not in rules["limits"]:
+    if not low <= payload["limit"] <= high:
         return "invalid:limit"
     if payload["direction"] not in rules["directions"]:
         return "invalid:direction"

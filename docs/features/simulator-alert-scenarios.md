@@ -84,6 +84,11 @@ pass the same contract validator as normal data. Times below are from the scenar
 start `t0`. Readings for the affected metric bypass the resident's normal clamp; every
 other field stays normal for the resident and phase.
 
+Since `device-alert-limits` (criteria 22-23), a `vitals_alert` is no longer scheduled
+by the scenario: the wearable sends it when its reading stays past its current device
+limit for 10 s. The scenario values cross any valid limit, so the messages and times
+below are unchanged; `limit` is the device's limit (45 / 130 / 88 for the seed data).
+
 5. **`hr-spike`** (3 minutes):
    - every `vitals` due in `[t0, t0 + 3 min)` has `hr_bpm` 150–155 (never `null`);
    - one `vitals_alert` at `t0 + 10 s`: `metric` `hr_bpm`, `value` = the current

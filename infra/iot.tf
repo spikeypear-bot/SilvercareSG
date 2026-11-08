@@ -18,6 +18,13 @@ module "iot_devices" {
 }
 
 # The account's ATS data endpoint that devices connect to (MQTT over TLS, port 8883).
+# Also the HTTPS endpoint the Lambdas use for device shadows (IOT_DATA_ENDPOINT).
 data "aws_iot_endpoint" "data" {
   endpoint_type = "iot:Data-ATS"
+}
+
+# Every wearable thing: the only shadows the Lambdas may read or write
+# (docs/features/device-alert-limits.md, criteria 5c, 12, 15). Never bedroom sensors.
+locals {
+  wearable_things_arn = "arn:aws:iot:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:thing/wearable-*"
 }

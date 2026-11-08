@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import device_limits
+
 WEARABLE = "wearable"
 BEDROOM = "bedroom"
 
@@ -31,6 +33,7 @@ FW_VERSION_MAX_LEN = 32  # docs/metrics.md, status
 DISPLAY_NAME_MAX_LEN = 100
 
 # The keys of one device and of its assigned_to, exactly (data model, Devices view).
+# alert_limits is filled in by add_alert_limits (docs/features/device-alert-limits.md).
 DEVICE_KEYS = (
     "device_id",
     "device_type",
@@ -40,6 +43,7 @@ DEVICE_KEYS = (
     "charging",
     "fw_version",
     "assigned_to",
+    "alert_limits",
 )
 ASSIGNED_TO_KEYS = ("resident_id", "display_name", "home_id")
 
@@ -177,6 +181,7 @@ def device_view(
         "charging": bool(status and status.charging and device.device_type == WEARABLE),
         "fw_version": status.fw_version if status else None,
         "assigned_to": assigned_to,
+        "alert_limits": None,
     }
 
 
@@ -223,3 +228,46 @@ def build_fleet(
         for device_id in sorted(devices)
     ]
     return Fleet(views, skipped)
+
+
+# ---- alert limits (docs/features/device-alert-limits.md, criteria 13-14) ----
+
+IN_SYNC = "in_sync"
+PENDING = "pending"
+UNKNOWN = "unknown"
+
+
+def _shadow_limits(document: Any, section: str) -> dict[str, Any] | None:
+    """`state.<section>.limits` if valid, else None."""
+    state = document.get("state") if isinstance(document, Mapping) else None
+    part = state.get(section) if isinstance(state, Mapping) else None
+    limits = part.get("limits") if isinstance(part, Mapping) else None
+    return limits if device_limits.is_valid(limits) else None
+
+
+def alert_limits_view(document: Any, *, staff: bool) -> dict[str, Any]:
+    """A wearable's alert_limits from its shadow document (None: no shadow or the
+    read failed). Ops get the status only, never the numbers."""
+    desired = _shadow_limits(document, "desired")
+    reported = _shadow_limits(document, "reported")
+    if desired is None:
+        status = UNKNOWN
+    elif desired == reported:
+        status = IN_SYNC
+    else:
+        status = PENDING
+    if not staff:
+        return {"status": status}
+    return {"status": status, "desired": desired, "reported": reported}
+
+
+def add_alert_limits(
+    devices: Iterable[dict[str, Any]], shadows: Mapping[str, Any], *, staff: bool
+) -> None:
+    """Sets alert_limits on every wearable from `shadows` (device_id -> document or
+    None); bedroom sensors keep None."""
+    for device in devices:
+        if device["device_type"] == WEARABLE:
+            device["alert_limits"] = alert_limits_view(
+                shadows.get(device["device_id"]), staff=staff
+            )

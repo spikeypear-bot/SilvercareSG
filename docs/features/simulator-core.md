@@ -206,8 +206,12 @@ None.
 
 None intended. Normal data stays inside every resident's thresholds and sends no `fall`,
 so no alert should be raised. Values are clamped to each resident's thresholds narrowed
-by the margins in criterion 5 (e.g. `res-0011`'s heart rate never goes below 48), so
-normal data also stays clear of the device `vitals_alert` limits.
+by the margins in criterion 5, so normal data also stays clear of the device
+`vitals_alert` limits. Since `device-alert-limits`, heart rate and SpO2 are clamped to
+the wearable's current device limits (from its shadow in a live run, from the seed
+otherwise) narrowed by the same margins, so `res-0011`'s heart rate never goes below
+53, and a live run subscribes to each device's shadow
+(`docs/features/device-alert-limits.md`, criteria 19-21).
 
 **Precondition for a live run:** the cloud checks `vitals` against each resident's
 `THRESHOLDS` item in the registry, not against `scripts/seed-data.json`, and uses its

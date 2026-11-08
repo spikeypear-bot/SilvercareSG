@@ -104,8 +104,17 @@ resource "aws_iot_thing_group_membership" "device" {
 #  - connect only with client ID = its own thing name, and only with a certificate
 #    attached to that thing
 #  - publish only to its own topics, and only its type's message types
-# No subscribe, receive, shadow, or wildcard actions (ota-updates adds the Jobs topics).
+#  - its own classic shadow only (docs/features/device-alert-limits.md, criterion 5):
+#    publish to shadow/get and shadow/update; subscribe and receive on get/accepted,
+#    get/rejected, update/accepted, update/rejected, and update/delta
+# No delete, named-shadow, or wildcard actions (ota-updates adds the Jobs topics).
 # $${...} escapes HCL interpolation, so the policy contains the literal ${...} variable.
+locals {
+  own_shadow             = "$aws/things/$${iot:Connection.Thing.ThingName}/shadow"
+  shadow_request_topics  = ["get", "update"]
+  shadow_response_topics = ["get/accepted", "get/rejected", "update/accepted", "update/rejected", "update/delta"]
+}
+
 data "aws_iam_policy_document" "device" {
   for_each = local.device_types
 
@@ -128,6 +137,33 @@ data "aws_iam_policy_document" "device" {
     actions = ["iot:Publish"]
     resources = [
       for m in each.value.messages : "${local.arn_prefix}:topic/silvercare/v1/$${iot:Connection.Thing.ThingName}/${m}"
+    ]
+  }
+
+  statement {
+    sid     = "PublishOwnShadow"
+    effect  = "Allow"
+    actions = ["iot:Publish"]
+    resources = [
+      for t in local.shadow_request_topics : "${local.arn_prefix}:topic/${local.own_shadow}/${t}"
+    ]
+  }
+
+  statement {
+    sid     = "SubscribeOwnShadow"
+    effect  = "Allow"
+    actions = ["iot:Subscribe"]
+    resources = [
+      for t in local.shadow_response_topics : "${local.arn_prefix}:topicfilter/${local.own_shadow}/${t}"
+    ]
+  }
+
+  statement {
+    sid     = "ReceiveOwnShadow"
+    effect  = "Allow"
+    actions = ["iot:Receive"]
+    resources = [
+      for t in local.shadow_response_topics : "${local.arn_prefix}:topic/${local.own_shadow}/${t}"
     ]
   }
 }

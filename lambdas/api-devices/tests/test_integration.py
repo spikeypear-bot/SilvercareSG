@@ -13,6 +13,7 @@ import uuid
 import boto3
 import pytest
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from conftest import create_latest_table, create_registry_table
 from events import (
     BEDROOM,
@@ -32,6 +33,16 @@ pytestmark = pytest.mark.integration
 ENDPOINT = os.environ.get("DYNAMODB_ENDPOINT")
 
 
+class NoShadows:
+    """Stands in for IoT data: DynamoDB Local has no IoT, and tests never reach AWS."""
+
+    def get_thing_shadow(self, **kwargs):
+        raise ClientError(
+            {"Error": {"Code": "ResourceNotFoundException", "Message": "none"}},
+            "GetThingShadow",
+        )
+
+
 @pytest.fixture
 def local_tables(monkeypatch):
     if not ENDPOINT:
@@ -43,6 +54,7 @@ def local_tables(monkeypatch):
     latest = f"silvercare-latest-test-{suffix}"
     monkeypatch.setenv("REGISTRY_TABLE", registry)
     monkeypatch.setenv("LATEST_TABLE", latest)
+    monkeypatch.setattr(handler, "iot_data_client", NoShadows)
     client = boto3.client(
         "dynamodb",
         endpoint_url=ENDPOINT,
@@ -75,6 +87,7 @@ def test_happy_path_against_dynamodb_local(local_tables):
     assert wearable["battery_pct"] == 63
     assert wearable["fw_version"] == "9.8.7-test"
     assert wearable["assigned_to"]["display_name"] == NAME_A
+    assert wearable["alert_limits"]["status"] == "unknown"
     for value in (NAME_B, PHOTO_A, MESSAGE_ID, "worn", "received_at", "photo_key"):
         assert value not in resp["body"]
 

@@ -29,7 +29,8 @@ home is a registry change, not a device change.
 Worn on the wrist. Measures heart rate, SpO2, skin temperature, and 3-axis acceleration.
 Runs fall detection on the device and sends a `fall` event when it detects one; raw
 acceleration is not streamed. Also sends a `vitals_alert` at once when heart rate or
-SpO2 stays past a fixed critical limit for 10 seconds (the device safety net). Has an
+SpO2 stays past its critical limit for 10 seconds (the device safety net; limits from
+its device shadow, see [Device shadow](#device-shadow)). Has an
 "I'm OK" button: pressing it sends an `alert_cancel`, which cancels the wearable's open
 alerts.
 
@@ -63,7 +64,9 @@ silvercare/v1/{device_id}/{message}
   policy only allows a device to publish under its own thing name, so the topic is
   trusted.
 - `v1` is the topic version. It changes only if the topic layout itself changes.
-- Devices publish only. They subscribe to nothing in v1 (no commands or config push).
+- Devices publish only on these topics. The only topics they subscribe to are their own
+  [device shadow](#device-shadow) topics (since 2026-11-08,
+  docs/features/device-alert-limits.md); no commands.
 
 ### MQTT settings
 
@@ -113,7 +116,7 @@ below.
 | Device | Message | Kind | Rate |
 |---|---|---|---|
 | wearable | `vitals` | reading | every 60 s while worn |
-| wearable | `vitals_alert` | event | when heart rate or SpO2 stays past a fixed critical limit for 10 s, then every 5 min while it lasts (only while worn) |
+| wearable | `vitals_alert` | event | when heart rate or SpO2 stays past its critical limit (device shadow) for 10 s, then every 5 min while it lasts (only while worn) |
 | wearable | `fall` | event | when a fall is detected |
 | wearable | `alert_cancel` | event | once per "I'm OK" press (rare; presses at least 5 s apart) |
 | wearable | `status` | heartbeat | every 5 min, and immediately when `worn` or `charging` changes |
@@ -161,10 +164,13 @@ errors and rejected; values inside it but abnormal are what alerts check.
 Added to v1 on 2026-11-02 (docs/features/vitals-alerts.md); `schema_version` stays `1`,
 because adding a message type is an addition. An instant safety net alongside the
 cloud's per-resident check of `vitals`, for emergencies where waiting up to 60 s for
-the next `vitals` message is too slow. The limits are fixed and the same for every
-resident, because a device doesn't know who wears it:
+the next `vitals` message is too slow. Since 2026-11-08
+(docs/features/device-alert-limits.md) each wearable's limits come from its
+[device shadow](#device-shadow): the stricter of the resident's thresholds and the
+fixed limits below, which are the loosest a device may use (and its limits when
+unassigned or before it has a shadow):
 
-| Metric | Sends when |
+| Metric | Sends when (loosest limits) |
 |---|---|
 | heart rate | below 45 or above 130 bpm, or no pulse (0 bpm) |
 | SpO2 | below 88 % |
@@ -183,7 +189,7 @@ resident, because a device doesn't know who wears it:
 |---|---|---|---|---|
 | `metric` | string | — | `hr_bpm` or `spo2_pct` | Which reading crossed its limit. |
 | `value` | integer | bpm or % | `hr_bpm` 0 or 20–250, `spo2_pct` 50–100 | The reading that triggered it. `hr_bpm` 0 = no pulse detected while worn. |
-| `limit` | integer | bpm or % | `hr_bpm` 45 or 130, `spo2_pct` 88 | The fixed device limit crossed. |
+| `limit` | integer | bpm or % | an integer in the metric's value range: `hr_bpm` 20–250, `spo2_pct` 50–100 | The device limit crossed. |
 | `direction` | string | — | `above` or `below`; `spo2_pct` only `below`; `value` 0 only `below` | Which side of the limit. |
 | `held_s` | integer | s | 10–600 | Seconds the reading stayed past the limit. |
 
@@ -218,6 +224,43 @@ No pulse:
 The `alert` IoT rule routes it, with `fall`, to `critical-alert`, which raises a
 critical alert at once (`hr_bpm` + `above` → `hr_high`, `hr_bpm` + `below` → `hr_low`,
 `spo2_pct` + `below` → `spo2_low`).
+
+### Device shadow
+
+Added 2026-11-08 (docs/features/device-alert-limits.md). Each device has one classic
+(unnamed) AWS IoT device shadow; the device policy lets a device reach only its own.
+Both device types may use these topics (`<device_id>` is the thing name):
+
+| Topic | Device | Use |
+|---|---|---|
+| `$aws/things/<device_id>/shadow/get` | publishes (empty message) | ask for the shadow |
+| `$aws/things/<device_id>/shadow/get/accepted` | subscribes | the shadow document |
+| `$aws/things/<device_id>/shadow/get/rejected` | subscribes | no shadow yet (404) or an error |
+| `$aws/things/<device_id>/shadow/update` | publishes | report what it uses |
+| `$aws/things/<device_id>/shadow/update/accepted` | subscribes | update accepted |
+| `$aws/things/<device_id>/shadow/update/rejected` | subscribes | update rejected |
+| `$aws/things/<device_id>/shadow/update/delta` | subscribes | desired differs from reported (`state` holds the difference) |
+
+No `delete`, no named shadows. QoS 1, as the other topics.
+
+**Document (wearable):** `state.desired.limits` is written by the cloud
+(`api-thresholds` on a thresholds save, `shadow-sync` every hour);
+`state.reported.limits` is written by the wearable with the limits it applied. Nothing
+else is in the document.
+
+```json
+{"state": {"desired": {"limits": {"hr_bpm": {"min": 45, "max": 110}, "spo2_pct": {"min": 88}}},
+           "reported": {"limits": {"hr_bpm": {"min": 45, "max": 130}, "spo2_pct": {"min": 88}}}}}
+```
+
+`limits`: `{"hr_bpm": {"min": <int>, "max": <int>}, "spo2_pct": {"min": <int>}}`. Valid
+limits (checked by every component that receives them): integers, `hr_bpm.min` 45–250,
+`hr_bpm.max` 20–130, `hr_bpm.min < hr_bpm.max`, `spo2_pct.min` 88–100, no other keys.
+A wearable sends `vitals_alert` when heart rate is below `hr_bpm.min` or above
+`hr_bpm.max`, or SpO2 below `spo2_pct.min`, as above.
+
+**Bedroom sensors** have access to their shadow topics but no fields yet: nothing
+writes their shadow.
 
 ### `wearable` → `fall`
 
@@ -432,6 +475,7 @@ the contract does not have, change the contract first.
 
 - SOS / help button on the wearable. (The "I'm OK" button, which only cancels the
   wearable's open alerts with `alert_cancel`, is in v1.)
-- Commands or configuration pushed to devices.
+- Commands pushed to devices. (Configuration: only the wearable's alert limits, through its
+  [device shadow](#device-shadow), since 2026-11-08.)
 - Raw accelerometer streaming and cloud-side fall detection.
 - GPS or in-home room-level location (location is the home the device is registered to).

@@ -6,6 +6,7 @@ import { RelativeTime } from '../../components/RelativeTime'
 import { TextField } from '../../components/TextField'
 import { useHoldRefresh } from '../../lib/refreshHold'
 import type { ResidentThresholds, VitalsThresholds } from '../../types/resident'
+import { wearableLimits, wearableLimitsSentence } from '../devices/alertLimits'
 import { DetailSection } from './DetailSection'
 import {
   THRESHOLD_FIELDS,
@@ -83,6 +84,7 @@ export function ThresholdsSection({ thresholds, canEdit, onSave, announce, now }
               value={`${thresholds.skin_temp_c.min.toFixed(1)} to ${thresholds.skin_temp_c.max.toFixed(1)} °C`}
             />
           </dl>
+          <p className="text-base text-slate-700">{wearableLimitsSentence(wearableLimits(thresholds))}</p>
           <p className="text-sm text-slate-600">
             {thresholds.updated_by && thresholds.updated_at ? (
               <>
@@ -132,6 +134,9 @@ function ThresholdsForm({
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const inputRefs = useRef<Partial<Record<ThresholdField, HTMLInputElement | null>>>({})
+  // The note follows the form while its values are valid, else shows the saved values.
+  const preview = validateThresholds(form)
+  const noteLimits = wearableLimits(preview.ok ? preview.values : initial)
 
   // Opening the form moves focus to its first field.
   useEffect(() => {
@@ -181,6 +186,9 @@ function ThresholdsForm({
           />
         ))}
       </div>
+      <p className="text-base text-slate-700">
+        {`${wearableLimitsSentence(noteLimits)} The wearable gets the change when you save, or when it next connects if it's offline.`}
+      </p>
       {saveError && <Notice tone="error">{saveError}</Notice>}
       <div className="flex flex-wrap gap-3">
         <Button type="submit" busy={saving}>

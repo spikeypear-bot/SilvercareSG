@@ -11,7 +11,9 @@ Raise alerts for abnormal vitals, from two sources that share one path:
 - **Cloud check (warning):** `telemetry` compares every wearable `vitals` message with
   the resident's thresholds and raises an alert after **2 abnormal readings in a row**.
 - **Device safety net (critical):** the wearable's instant `vitals_alert` message (fixed
-  limits, held 10 s; planned in `docs/metrics.md`) joins the v1 contract and goes
+  limits, held 10 s; planned in `docs/metrics.md`; since `device-alert-limits` the
+  fixed limits are the loosest a device may use, and each wearable gets the stricter of
+  them and its resident's thresholds from its shadow) joins the v1 contract and goes
   through the fast `alert` rule to `critical-alert` (today's `fall-alert`, renamed),
   which raises a critical alert at once. "No pulse" (heart rate 0 while worn, e.g.
   cardiac arrest) is one of these.

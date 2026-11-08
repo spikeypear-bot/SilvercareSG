@@ -192,22 +192,54 @@ def test_value_range_boundaries(metric_event, value, ok):
 @pytest.mark.parametrize(
     ("metric_event", "limit", "ok"),
     [
+        # Any integer in the metric's value range (device-alert-limits.md, criterion 2).
         (hr, 45, True),
         (hr, 130, True),
-        (hr, 50, False),
-        (hr, 120, False),
+        (hr, 50, True),
+        (hr, 110, True),
+        (hr, 120, True),
+        (hr, 20, True),
+        (hr, 250, True),
+        (hr, 19, False),
+        (hr, 251, False),
         (hr, 0, False),
+        (hr, -1, False),
         (spo2, 88, True),
-        (spo2, 92, False),
+        (spo2, 92, True),
+        (spo2, 50, True),
+        (spo2, 100, True),
+        (spo2, 49, False),
+        (spo2, 101, False),
         (spo2, 45, False),
     ],
 )
-def test_only_the_fixed_device_limits_are_accepted(metric_event, limit, ok):
+def test_limit_in_the_metric_value_range_is_accepted(metric_event, limit, ok):
     result = reason(metric_event(limit=limit))
 
     assert (result is None) is ok, result
     if not ok:
         assert result == "invalid:limit"
+
+
+@pytest.mark.parametrize("limit", [110.0, 110.5, "110", True, None])
+def test_non_integer_limit_is_rejected(limit):
+    assert reason(hr(limit=limit)) == "wrong_type:limit"
+
+
+def test_hr_limit_110_above_is_accepted():
+    assert reason(hr(value=140, limit=110, direction="above")) is None
+
+
+def test_spo2_limit_92_below_is_accepted():
+    assert reason(spo2(value=90, limit=92, direction="below")) is None
+
+
+def test_no_pulse_below_a_tightened_limit_stays_valid():
+    assert reason(no_pulse(limit=55)) is None
+
+
+def test_no_pulse_above_stays_rejected_with_a_tightened_limit():
+    assert reason(no_pulse(limit=110, direction="above")) == "invalid:direction"
 
 
 # ---- held_s ----
