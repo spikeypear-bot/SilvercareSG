@@ -35,7 +35,10 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
       not a comment or memory, and anything about AWS behaviour in AWS's docs, and
       about a third-party tool (what it stores on the user's machine, which edition
       has which feature) in that tool's docs. Every "see Open questions" pointer has a
-      matching item.
+      matching item. Data made for another component (generated history, imports,
+      fixtures loaded live) is checked against every filter that component's code
+      applies (e.g. `assigned_at`, partitions it requires, de-duplication), and against
+      what can't be undone once loaded (outputs with no expiry or delete access).
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
       **specific resident** is decided. A new group (e.g. `ops`) also lists which
       existing access patterns in `docs/data-model.md` it gets and which it's refused,

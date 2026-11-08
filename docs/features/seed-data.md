@@ -85,6 +85,13 @@ The developer IAM user already has every permission the script needs
 6. One **device assignment** item per device: `pk = DEVICE#<device_id>`,
    `sk = ASSIGNMENT`, `entity_type = DEVICE`, `device_type`, `resident_id`, `home_id`,
    `assigned_at`, `gsi1_pk = RESIDENT#<resident_id>`, `gsi1_sk = DEVICE#<device_id>`.
+   `assigned_at` is the fixed `2026-01-31T16:00:00Z` (2026-02-01 00:00 Singapore time),
+   not the time of the run, on every run (decision 2026-11-08). The daily summaries
+   count a reading only from its device's `assigned_at`
+   (`lambdas/summaries/src/sql.py`), so history generated for earlier months by
+   `simulator/src/backfill.py` (docs/features/simulator-backfill.md, from 2026-02-26)
+   is counted. An earlier `assigned_at` is otherwise harmless: the API only drops
+   `latest` entries older than it.
 7. **User ↔ resident links**: `pk = USER#<cognito sub>`, `sk = RESIDENT#<resident_id>`,
    `relationship` `caregiver`, `linked_at`, `linked_by = "seed"`,
    `gsi1_pk = RESIDENT#<resident_id>`, `gsi1_sk = USER#<cognito sub>`:

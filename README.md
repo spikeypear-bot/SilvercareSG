@@ -181,6 +181,73 @@ keep live demos to a few scenarios. Don't run
 `make smoke-test` on a device while the simulator runs: AWS allows one connection per
 device, so the two would keep disconnecting each other.
 
+#### History backfill (months of data for analytics)
+
+`simulator/src/backfill.py` runs the simulator over past days in seconds and writes the
+result as local files in the history bucket's raw layout, with 12 falls (3 of them
+cancelled with "I'm OK") by default (`docs/features/simulator-backfill.md`). It connects
+to nothing:
+
+```sh
+make backfill ARGS="--from 2026-03-01 --to 2026-10-31 --out backfill-data"
+```
+
+Options: `--falls N` (0–100), `--random-seed N` (same seed, identical files). It also
+writes 2 lead-in days before `--from`, which the daily summaries need. `backfill-data/`
+is git-ignored. No alerts or emails are produced; the falls show up only in the clean
+tables and the daily summaries.
+
+**Loading it into AWS** needs write access to the history bucket, which the shared
+developer user doesn't have, so the account owner runs these steps from the host, in
+order. Summaries are kept forever and only the summaries job can replace them, so don't
+skip steps 1 and 2.
+
+1. **Re-seed:** run `.venv/bin/python scripts/seed.py`. The seed gives the test devices
+   a fixed `assigned_at` of 1 Feb 2026. The daily summaries ignore readings from before
+   it, so without this step every generated day is summarised as empty.
+2. **Check for overlap with live data** (replace `<acct>`). This compares every
+   generated UTC day with the days that already hold data and prints the days that
+   clash:
+
+   ```sh
+   B=s3://silvercare-history-<acct>/telemetry
+   ls -d backfill-data/telemetry/*/date=* | grep -o 'date=[0-9-]*' | sort -u > /tmp/gen-dates
+   aws s3 ls --recursive $B/ | grep -o 'date=[0-9-]*' | sort -u > /tmp/live-dates
+   comm -12 /tmp/gen-dates /tmp/live-dates
+   ```
+
+   If it prints anything, don't upload: re-generate into an empty folder with `--to`
+   set at least one day before the first printed date. Overlapping days would hold both
+   and count twice.
+3. **Upload**, marked as generated:
+
+   ```sh
+   aws s3 sync backfill-data/telemetry $B/ --metadata source=simulator-backfill
+   ```
+
+   Upload again only with the same `make backfill` arguments, which replaces the same
+   files. If you change the arguments, delete the earlier generated dates first, or
+   both copies count.
+4. **Run the clean job, then the summaries,** once per day, oldest first:
+
+   ```sh
+   run() { [ "$(AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name "$1" --cli-read-timeout 330 --cli-binary-format raw-in-base64-out --payload "{\"date\":\"$2\"}" --query FunctionError --output text /dev/null)" = None ] || { echo "$1 failed on $2"; return 1; } }
+   for d in $(sed 's/date=//' /tmp/gen-dates); do run silvercare-clean "$d" || break; done
+   for d in $(sed 's/date=//' /tmp/gen-dates | tail -n +4); do run silvercare-summaries "$d" || break; done
+   ```
+
+   - The clean job runs for every generated UTC day.
+   - The summaries skip the first 3 UTC days, which are the lead-in before `--from`. So
+     they run for each Singapore day from `--from` to `--to`, with the dates read from
+     the generated folders.
+   - `run` waits up to 330 s per job (the jobs' timeout is 300 s) and never retries,
+     because a retry could run a job twice.
+   - A failed job stops the loop with `<function> failed on <date>`. Fix the cause,
+     then restart the loop from that date.
+   - The calls are synchronous, so they don't fill the doctors' nightly Results table
+     with months of nights.
+   - Each loop runs about 250 jobs one after another, so expect it to take a while.
+
 ## Alerts
 
 A wearable `fall` or `vitals_alert` (a critical reading on the device, including no
