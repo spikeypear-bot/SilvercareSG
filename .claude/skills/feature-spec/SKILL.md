@@ -1,6 +1,6 @@
 ---
 name: feature-spec
-description: Help the user write or review a feature spec in docs/features/<name>.md, the input the build-feature workflow builds from. Use when the user wants to plan, spec, or describe a new feature, or asks whether a spec is ready to build.
+description: Help the user write or review a feature spec in docs/features/<name>.md, the input Claude builds the feature from. Use when the user wants to plan, spec, or describe a new feature, or asks whether a spec is ready to build.
 argument-hint: [feature-name]
 ---
 
@@ -8,9 +8,9 @@ argument-hint: [feature-name]
 
 Feature: $ARGUMENTS
 
-The `build-feature` workflow sends this spec to agents that can't ask questions. If
-something is missing from the spec, they'll either leave it out or guess, so the spec
-has to answer every question up front.
+Claude builds the feature from this spec, often in a later session without this
+conversation. If something is missing from the spec, it gets left out or guessed, so the
+spec has to answer every question up front.
 
 The user owns the product decisions. Your job is to ask questions, structure the
 answers, and point out gaps. Don't fill gaps with your own product decisions.
@@ -74,6 +74,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.
 - [ ] Data reads and writes map to access patterns in `docs/data-model.md` (or new ones
       are described).
+- [ ] A change to a message's validation rules names every copy of the rule: ingest's
+      `validation.py`, clean's `sql.py`, and clean's self-check cases
+      (`lambdas/clean/src/cases.json`), which the deploy runs against real Athena.
 - [ ] Alerting inputs: validation ranges don't reject the emergency itself. Ranges
       copied from routine readings can (heart rate 0 = no pulse, cardiac arrest); for
       each alert, check the worst real reading is still accepted. Likewise, a list that

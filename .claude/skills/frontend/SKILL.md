@@ -87,6 +87,6 @@ accessibility matters.
 
 From `frontend/`: `npm run lint`, `npm run test` (Vitest + React Testing Library), and
 `npm run build` must all pass before finishing. Run them one after another, and never
-while another test run is going (e.g. a `frontend-tester` agent's): overlapping runs
+while another test run is going: overlapping runs
 skip files or fail workers, and the counts can't be trusted. Summarise the screens and
 API calls changed.

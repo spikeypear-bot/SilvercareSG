@@ -5,6 +5,16 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **User's request:** remove the agent workflows and agents. **Changed:** deleted
+  `.claude/workflows/` (`build-feature`, `pre-pr-check`) and `.claude/agents/` (2
+  builders, 2 testers, 2 reviewers); `CLAUDE.md` working rules and Claude setup, and the
+  `improve-agents`, `recap`, `feature-spec` (+ template), `lambda-python`, and `frontend`
+  skills now describe Claude building, testing, and reviewing itself. Entries below
+  name files that no longer exist.
+- **Problem:** the device-alert-limits spec changed `vitals_alert.limit` validation in
+  ingest and clean's SQL but not clean's self-check cases, which would have failed the
+  deploy's self-check. **Changed:** `.claude/skills/feature-spec/SKILL.md` checklist: a
+  validation-rule change names every copy, including `lambdas/clean/src/cases.json`.
 - **Problem:** during the alerts-map build, backend-builder ran `git stash` / `git stash
   pop` for a baseline test run, which reverted the frontend agents' files on disk for a
   few minutes while they worked in parallel. **Changed:**
