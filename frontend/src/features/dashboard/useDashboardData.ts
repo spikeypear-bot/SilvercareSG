@@ -6,7 +6,18 @@
  * API too, and `updateThresholds` sends `PUT .../thresholds` (pattern 26). Acknowledge,
  * cancel, and resolve go to the API too (docs/data-model.md pattern 16).
  */
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type Dispatch,
+  type SetStateAction,
+} from 'react'
+import { useRefreshHeld } from '../../lib/refreshHold'
+import type { DeviceProblem } from '../../types/ops'
 import type {
   ApiDashboardAlert,
   ApiDashboardResident,
@@ -19,6 +30,7 @@ import {
   acknowledgeAlertApi,
   cancelAlertApi,
   getDashboard,
+  getDeviceProblems,
   getDevices,
   getMyResidents,
   getResident,
@@ -37,9 +49,24 @@ import type {
   ThresholdChangeEntry,
   VitalsThresholds,
 } from '../../types/resident'
-import { isDeviceProblem } from './stats'
+import { isDeviceProblem, isOnOpenList } from './stats'
 
 export type DashboardView = 'staff' | 'family'
+
+/**
+ * How often the staff dashboards, the devices view, and the ops dashboard poll
+ * (docs/data-model.md: patterns 5, 8, and 9 every 30 s per open dashboard). Polling
+ * pauses while the tab is hidden and while a form is open (`lib/refreshHold.ts`).
+ */
+export const POLL_MS = 30_000
+/** A tab coming back into view or focus refetches, unless the last load is newer than this. */
+export const FOCUS_REFETCH_MIN_GAP_MS = 5_000
+/**
+ * How long an action's on-screen change is kept while the server still returns the old
+ * status. Actions are applied asynchronously after the 202 (pattern 25), usually within
+ * seconds; after this the server's state wins (e.g. alert-processor refused it).
+ */
+export const OVERRIDE_TTL_MS = 2 * 60_000
 
 /** The demo modules' simulated delay (demoData.ts; the loaders now call the API). */
 export const DEMO_DELAY_MS = 400
@@ -324,6 +351,10 @@ export interface DashboardDataState extends AlertActionsState {
   error: boolean
   /** Loads again after an error. */
   retry: () => void
+  /** The last background refresh failed: the data shown is from an earlier load. */
+  refreshFailed: boolean
+  /** Whether this view polls (only then does a failed refresh retry by itself). */
+  polling: boolean
 }
 
 export interface ResidentDetailState extends AlertActionsState {
@@ -333,6 +364,8 @@ export interface ResidentDetailState extends AlertActionsState {
   dismissActionError: () => void
   loading: boolean
   error: boolean
+  /** The last background refresh failed: the data shown is from an earlier load. */
+  refreshFailed: boolean
   /** Loaded, but there is no resident with that ID. */
   notFound: boolean
   retry: () => void
@@ -353,23 +386,61 @@ export interface ResidentDetailState extends AlertActionsState {
   updateThresholds: (values: VitalsThresholds, by: string) => Promise<string | null>
 }
 
-/** Loads `key` with `loader`, and again when `key` changes or after `retry`. */
-function useLoaded<K, T>(key: K, loader: (key: K) => Promise<T>) {
+function subscribeVisibility(listener: () => void) {
+  document.addEventListener('visibilitychange', listener)
+  return () => document.removeEventListener('visibilitychange', listener)
+}
+
+function isPageVisible() {
+  return document.visibilityState !== 'hidden'
+}
+
+interface LoadOptions<T> {
+  /** Refetch every this many ms while the tab is visible and no form is open; 0 never. */
+  pollMs?: number
+  /** Called with every result (first load and refreshes) just before it is shown. */
+  onLoaded?: (result: T) => void
+}
+
+/**
+ * Loads `key` with `loader`, and again when `key` changes or after `retry`. Once loaded,
+ * `refresh` reloads in the background (no loading state; a failure keeps the data and
+ * sets `refreshFailed`). It also runs every `pollMs` while the tab is visible, when the
+ * tab comes back into view or focus, and never while a form holds refreshes: a refresh
+ * asked for with `queue` during a hold or another load runs once that ends.
+ */
+function useLoaded<K, T>(key: K, loader: (key: K) => Promise<T>, { pollMs = 0, onLoaded }: LoadOptions<T> = {}) {
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
+  const [refreshFailed, setRefreshFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [loadedKey, setLoadedKey] = useState(key)
   const loaderRef = useRef(loader)
+  const onLoadedRef = useRef(onLoaded)
+  const keyRef = useRef(key)
+  const hasDataRef = useRef(false)
+  const lastLoadAt = useRef(0)
+  const inFlight = useRef(false)
+  const queued = useRef(false)
+  const held = useRefreshHeld()
+  const heldRef = useRef(held)
+  const visible = useSyncExternalStore(subscribeVisibility, isPageVisible, isPageVisible)
+  const hasData = data !== null
   useEffect(() => {
     loaderRef.current = loader
-  }, [loader])
+    onLoadedRef.current = onLoaded
+    keyRef.current = key
+    hasDataRef.current = hasData
+    heldRef.current = held
+  })
 
   // A new key (e.g. another resident) shows the loading state, not the old data.
   if (key !== loadedKey) {
     setLoadedKey(key)
     setData(null)
     setError(false)
+    setRefreshFailed(false)
     setLoading(true)
   }
 
@@ -379,6 +450,8 @@ function useLoaded<K, T>(key: K, loader: (key: K) => Promise<T>) {
       .current(key)
       .then((result) => {
         if (cancelled) return
+        onLoadedRef.current?.(result)
+        lastLoadAt.current = Date.now()
         setData(result)
         setLoading(false)
       })
@@ -392,13 +465,153 @@ function useLoaded<K, T>(key: K, loader: (key: K) => Promise<T>) {
     }
   }, [key, attempt])
 
+  const refreshRef = useRef<(queue?: boolean) => void>(() => {})
+  const refresh = useCallback((queue = false) => {
+    // Before the first load, or after it failed, `retry` loads instead.
+    if (!hasDataRef.current) return
+    if (inFlight.current || heldRef.current) {
+      if (queue) queued.current = true
+      return
+    }
+    inFlight.current = true
+    const forKey = keyRef.current
+    loaderRef
+      .current(forKey)
+      .then(
+        (result) => {
+          if (keyRef.current !== forKey) return
+          onLoadedRef.current?.(result)
+          lastLoadAt.current = Date.now()
+          setData(result)
+          setRefreshFailed(false)
+        },
+        () => {
+          if (keyRef.current === forKey) setRefreshFailed(true)
+        },
+      )
+      .finally(() => {
+        inFlight.current = false
+        if (queued.current && !heldRef.current) {
+          queued.current = false
+          refreshRef.current()
+        }
+      })
+  }, [])
+  useEffect(() => {
+    refreshRef.current = refresh
+  }, [refresh])
+
+  // Poll while visible, loaded, and not held.
+  useEffect(() => {
+    if (!pollMs || !hasData || held || !visible) return
+    const id = setInterval(() => refreshRef.current(), pollMs)
+    return () => clearInterval(id)
+  }, [pollMs, hasData, held, visible])
+
+  // When a hold ends: what was queued, or a poll that came due meanwhile.
+  useEffect(() => {
+    if (held) return
+    const due = pollMs > 0 && Date.now() - lastLoadAt.current >= pollMs
+    if (queued.current || due) {
+      queued.current = false
+      refreshRef.current()
+    }
+  }, [held, pollMs])
+
+  // Back to this tab or window: refetch, unless the data is only seconds old.
+  useEffect(() => {
+    function onReturn() {
+      if (document.visibilityState === 'hidden') return
+      if (Date.now() - lastLoadAt.current >= FOCUS_REFETCH_MIN_GAP_MS) refreshRef.current()
+    }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onReturn)
+    return () => {
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onReturn)
+    }
+  }, [])
+
   const retry = useCallback(() => {
     setError(false)
+    setRefreshFailed(false)
     setLoading(true)
     setAttempt((a) => a + 1)
   }, [])
 
-  return { data, setData, loading, error, retry }
+  return { data, setData, loading, error, retry, refresh, refreshFailed }
+}
+
+/**
+ * An action's change, shown while the server still returns one of `bases`: the statuses
+ * the alert had before this session's actions on it (e.g. `open` and `acknowledged` for
+ * an acknowledge then a resolve, both still being applied).
+ */
+interface AlertOverride<A> {
+  bases: ReadonlySet<string | null>
+  alert: A
+  at: number
+}
+
+type Overrides<A> = ReadonlyMap<string, AlertOverride<A>>
+
+/**
+ * Drops the overrides the server has caught up with (its status is none of the ones the
+ * actions started from), and those older than `OVERRIDE_TTL_MS`. An override for an
+ * alert the server no longer returns is kept only if the action closed it (resolve,
+ * cancel), so this session's resolved alerts stay listed as before; an acknowledged
+ * one that left the open list was closed by someone else.
+ */
+export function pruneOverrides<A extends { alert_id: string; status: string | null }>(
+  overrides: Overrides<A>,
+  server: readonly A[],
+  now: number,
+): Overrides<A> {
+  if (overrides.size === 0) return overrides
+  const byId = new Map(server.map((a) => [a.alert_id, a]))
+  const next = new Map<string, AlertOverride<A>>()
+  for (const [id, o] of overrides) {
+    const current = byId.get(id)
+    const keep = current
+      ? o.bases.has(current.status) && now - o.at < OVERRIDE_TTL_MS
+      : !isOnOpenList(o.alert)
+    if (keep) next.set(id, o)
+  }
+  return next.size === overrides.size ? overrides : next
+}
+
+/** The server's alerts with this session's pending changes on top. */
+export function applyOverrides<A extends { alert_id: string; status: string | null }>(
+  server: A[],
+  overrides: Overrides<A>,
+): A[] {
+  if (overrides.size === 0) return server
+  const ids = new Set(server.map((a) => a.alert_id))
+  const merged = server.map((a) => {
+    const o = overrides.get(a.alert_id)
+    return o && o.bases.has(a.status) ? o.alert : a
+  })
+  for (const [id, o] of overrides) if (!ids.has(id)) merged.push(o.alert)
+  return merged
+}
+
+function useAlertOverrides<A extends { alert_id: string; status: string | null }>() {
+  const [overrides, setOverrides] = useState<Overrides<A>>(() => new Map())
+  // Alerts this user changed in this session: the bell doesn't report their own actions.
+  const own = useRef(new Set<string>())
+  const setOverride = useCallback((before: A, after: A) => {
+    own.current.add(before.alert_id)
+    setOverrides((prev) => {
+      const bases = new Set(prev.get(before.alert_id)?.bases)
+      bases.add(before.status)
+      return new Map(prev).set(before.alert_id, { bases, alert: after, at: Date.now() })
+    })
+  }, [])
+  const prune = useCallback((server: readonly A[]) => {
+    setOverrides((prev) => pruneOverrides(prev, server, Date.now()))
+  }, [])
+  const isOwnAction = useCallback((alertId: string) => own.current.has(alertId), [])
+  return { overrides, setOverride, prune, isOwnAction }
 }
 
 function acknowledged(alert: ResidentAlert, ackNote: string | undefined): ResidentAlert | null {
@@ -475,42 +688,33 @@ export function alertActionErrorText(err: unknown, action: 'acknowledge' | 'canc
 
 /**
  * Acknowledge, resolve, and cancel for any state that holds an `alerts` list. With
- * `live`, each goes through the API first and is shown only once accepted (202).
+ * `live`, each goes through the API first and is shown only once accepted (202), then
+ * the view refetches (`refresh`). The change is kept on screen as an override until a
+ * load returns the new status: the API applies it asynchronously, so a refetch right
+ * after the 202 can still return the old one.
  */
-function useAlertActions<T extends { alerts: ResidentAlert[] }>(
-  data: T | null,
-  setData: Dispatch<SetStateAction<T | null>>,
+function useAlertActions(
+  alerts: readonly ResidentAlert[] | null,
+  setOverride: (before: ResidentAlert, after: ResidentAlert) => void,
+  refresh: (queue?: boolean) => void,
   live = false,
 ): AlertActionsState & {
   actionError: string | null
   dismissActionError: () => void
   setActionError: Dispatch<SetStateAction<string | null>>
 } {
-  const dataRef = useRef(data)
+  const alertsRef = useRef(alerts)
   useEffect(() => {
-    dataRef.current = data
-  }, [data])
+    alertsRef.current = alerts
+  }, [alerts])
   // Alerts with a request in flight: a second click doesn't send a second request.
   const pending = useRef(new Set<string>())
   const [actionError, setActionError] = useState<string | null>(null)
   const dismissActionError = useCallback(() => setActionError(null), [])
 
-  const updateAlert = useCallback(
-    (alertId: string, change: (alert: ResidentAlert) => ResidentAlert | null) => {
-      setData(
-        (current) =>
-          current && {
-            ...current,
-            alerts: current.alerts.map((a) => (a.alert_id === alertId ? (change(a) ?? a) : a)),
-          },
-      )
-    },
-    [setData],
-  )
-
   /**
    * Applies `change` to the alert: at once without `live`; with `live`, only after
-   * `request` succeeds. Resolves to whether it was applied.
+   * `request` succeeds, then refetches. Resolves to whether it was applied.
    */
   const apply = useCallback(
     (
@@ -519,10 +723,11 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
       change: (alert: ResidentAlert) => ResidentAlert | null,
       request: (alert: ResidentAlert) => Promise<unknown>,
     ): Promise<boolean> => {
-      const alert = dataRef.current?.alerts.find((a) => a.alert_id === alertId)
-      if (!alert || change(alert) === null) return Promise.resolve(false)
+      const alert = alertsRef.current?.find((a) => a.alert_id === alertId)
+      const changed = alert && change(alert)
+      if (!alert || !changed) return Promise.resolve(false)
       if (!live) {
-        updateAlert(alertId, change)
+        setOverride(alert, changed)
         return Promise.resolve(true)
       }
       if (pending.current.has(alertId)) return Promise.resolve(false)
@@ -531,7 +736,8 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
       return request(alert)
         .then(
           () => {
-            updateAlert(alertId, change)
+            setOverride(alert, changed)
+            refresh(true)
             return true
           },
           (err: unknown) => {
@@ -541,7 +747,7 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
         )
         .finally(() => pending.current.delete(alertId))
     },
-    [live, updateAlert],
+    [live, setOverride, refresh],
   )
 
   const acknowledgeAlert = useCallback(
@@ -576,27 +782,65 @@ function useAlertActions<T extends { alerts: ResidentAlert[] }>(
   }
 }
 
+/** `data` with `overrides` applied to its alerts (the same object when there are none). */
+function useWithOverrides<T extends { alerts: ResidentAlert[] }>(
+  data: T | null,
+  overrides: Overrides<ResidentAlert>,
+): T | null {
+  return useMemo(
+    () => (data && overrides.size > 0 ? { ...data, alerts: applyOverrides(data.alerts, overrides) } : data),
+    [data, overrides],
+  )
+}
+
+/**
+ * The nurse and doctor dashboards poll every 30 s (data-model patterns 5, 8, 9). The
+ * caregiver view refetches only on focus and after an action: `GET /me/residents` is
+ * throttled to one call per 5 s for all caregivers together (infra/api.tf) and reads
+ * about 5 RCU per linked resident, mostly from the latest table ingest also reads, and
+ * the data model sizes it per page view (patterns 10-14).
+ */
 export function useDashboardData(
   view: DashboardView,
   loader: DashboardLoader = loadDashboardData,
-): DashboardDataState {
-  const { data, setData, loading, error, retry } = useLoaded(view, loader)
+): DashboardDataState & { isOwnAction: (alertId: string) => boolean } {
+  const { overrides, setOverride, prune, isOwnAction } = useAlertOverrides<ResidentAlert>()
+  const pollMs = view === 'staff' ? POLL_MS : 0
+  const onLoaded = useCallback((d: DashboardData) => prune(d.alerts), [prune])
+  const { data: server, loading, error, retry, refresh, refreshFailed } = useLoaded(view, loader, { pollMs, onLoaded })
+  const data = useWithOverrides(server, overrides)
   // Actions go to the API only when the alerts came from it (the default loader); a
   // test's own loader serves demo alerts whose IDs the API would refuse.
   const live = loader === loadDashboardData
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- not part of this state
-  const { setActionError, ...actions } = useAlertActions(data, setData, live)
-  return { data, loading, error, retry, ...actions }
+  const { setActionError, ...actions } = useAlertActions(data?.alerts ?? null, setOverride, refresh, live)
+  return { data, loading, error, retry, refreshFailed, polling: pollMs > 0, isOwnAction, ...actions }
 }
 
+/**
+ * The resident page isn't polled (patterns 10-12 are per page view, and its route is
+ * throttled for that, infra/api.tf): it refetches on focus and after an action, never
+ * while a threshold or note form is open.
+ */
 export function useResidentDetail(
   residentId: string,
   loader: ResidentDetailLoader = loadResidentDetail,
-): ResidentDetailState {
-  const { data, setData, loading, error, retry } = useLoaded(residentId, loader)
+): ResidentDetailState & { isOwnAction: (alertId: string) => boolean } {
+  const { overrides, setOverride, prune, isOwnAction } = useAlertOverrides<ResidentAlert>()
+  const onLoaded = useCallback((d: ResidentDetail | null) => prune(d?.alerts ?? []), [prune])
+  const {
+    data: server,
+    setData,
+    loading,
+    error,
+    retry,
+    refresh,
+    refreshFailed,
+  } = useLoaded(residentId, loader, { onLoaded })
+  const data = useWithOverrides(server, overrides)
   // As useDashboardData: the API only for data from the API loader.
   const live = loader === loadResidentDetail
-  const { setActionError, ...actions } = useAlertActions(data, setData, live)
+  const { setActionError, ...actions } = useAlertActions(data?.alerts ?? null, setOverride, refresh, live)
   const saving = useRef(false)
 
   const updateThresholds = useCallback(
@@ -642,7 +886,7 @@ export function useResidentDetail(
   )
 
   const notFound = !loading && !error && data === null
-  return { data, loading, error, notFound, retry, updateThresholds, ...actions }
+  return { data, loading, error, notFound, retry, refreshFailed, isOwnAction, updateThresholds, ...actions }
 }
 
 export interface DeviceFleetState {
@@ -650,10 +894,72 @@ export interface DeviceFleetState {
   loading: boolean
   error: boolean
   retry: () => void
+  refreshFailed: boolean
 }
 
-/** The devices view: read-only, no device actions. */
+/** The devices view (staff and ops): read-only, no device actions; polls every 30 s. */
 export function useDeviceFleet(loader: DeviceFleetLoader = loadDeviceFleet): DeviceFleetState {
-  const { data, loading, error, retry } = useLoaded('fleet', loader)
-  return { data, loading, error, retry }
+  const { data, loading, error, retry, refreshFailed } = useLoaded('fleet', loader, { pollMs: POLL_MS })
+  return { data, loading, error, retry, refreshFailed }
+}
+
+export type DeviceProblemsLoader = () => Promise<DeviceProblem[]>
+
+export interface DeviceProblemsState {
+  data: DeviceProblem[] | null
+  loading: boolean
+  error: boolean
+  retry: () => void
+  refreshFailed: boolean
+  /** The problem with an acknowledge in flight, or null. */
+  pending: string | null
+  /** The last acknowledge failed. */
+  actionError: boolean
+  /** Acknowledges an open device problem as ops; resolves to whether the API accepted it. */
+  acknowledge: (problem: DeviceProblem) => Promise<boolean>
+  isOwnAction: (alertId: string) => boolean
+}
+
+/**
+ * The ops dashboard: `GET /ops/device-problems`, polled every 30 s (the route allows one
+ * load per 20 s, infra/api.tf). Acknowledge is shown once accepted (202), kept until the
+ * server returns it, and followed by a refetch.
+ */
+export function useDeviceProblems(loader: DeviceProblemsLoader = getDeviceProblems): DeviceProblemsState {
+  const { overrides, setOverride, prune, isOwnAction } = useAlertOverrides<DeviceProblem>()
+  const { data: server, loading, error, retry, refresh, refreshFailed } = useLoaded('ops', loader, {
+    pollMs: POLL_MS,
+    onLoaded: prune,
+  })
+  const data = useMemo(() => server && applyOverrides(server, overrides), [server, overrides])
+  const [pending, setPending] = useState<string | null>(null)
+  const [actionError, setActionError] = useState(false)
+
+  const acknowledge = useCallback(
+    async (problem: DeviceProblem): Promise<boolean> => {
+      if (problem.status !== 'open') return false
+      setPending(problem.alert_id)
+      setActionError(false)
+      try {
+        await acknowledgeAlertApi(problem, null)
+        setOverride(problem, {
+          ...problem,
+          status: 'acknowledged',
+          acknowledged_at: new Date().toISOString(),
+          acknowledged_by_role: 'ops',
+          acknowledged_by: 'the ops team',
+        })
+        refresh(true)
+        return true
+      } catch {
+        setActionError(true)
+        return false
+      } finally {
+        setPending(null)
+      }
+    },
+    [setOverride, refresh],
+  )
+
+  return { data, loading, error, retry, refreshFailed, pending, actionError, acknowledge, isOwnAction }
 }

@@ -3,8 +3,9 @@
 # server), a Cognito JWT authorizer on every route, and one Lambda per route.
 #
 # Routes:
-# - GET /devices: staff devices view (docs/data-model.md, Devices view; patterns 4, 5,
-#   8), Lambda silvercare-api-devices (lambdas/api-devices/).
+# - GET /devices: devices view for staff and ops (docs/data-model.md, Devices view;
+#   patterns 4, 5, 8; ops without pattern 8), Lambda silvercare-api-devices
+#   (lambdas/api-devices/).
 # - GET /dashboard: nurse and doctor dashboards (docs/data-model.md, Dashboard;
 #   patterns 9, 8, 5, 4), Lambda silvercare-api-dashboard (lambdas/api-dashboard/).
 # - POST /residents/{resident_id}/alerts/{alert_id}/acknowledge, .../cancel, and
@@ -20,6 +21,9 @@
 # - GET /residents/{resident_id}/nightly (doctor; pattern 31), Lambda
 #   silvercare-api-nightly (lambdas/api-nightly/): stored nights from silvercare-results
 #   (docs/features/nightly-results.md).
+# - GET /ops/device-problems: the ops view (docs/data-model.md, the ops paragraph;
+#   pattern 9 filtered to device problems), Lambda silvercare-api-ops
+#   (lambdas/api-ops/).
 #
 # The authorizer checks the token's signature, expiry, issuer, and audience; each
 # handler checks the caller's Cognito group (and, for resident routes, the caregiver
@@ -41,6 +45,7 @@ locals {
   api_residents_function_name     = "silvercare-api-residents"
   api_thresholds_function_name    = "silvercare-api-thresholds"
   api_nightly_function_name       = "silvercare-api-nightly"
+  api_ops_function_name           = "silvercare-api-ops"
   thresholds_routes = {
     put = {
       route_key = "PUT /residents/{resident_id}/thresholds"
@@ -170,6 +175,18 @@ resource "aws_apigatewayv2_stage" "default" {
     throttling_burst_limit = 2
   }
 
+  # The ops view: one `open` index Query plus a BatchGetItem of every open device
+  # problem's base item (0.5 RCU each) on the alerts base table's 3 RCU, which
+  # alert-processor reads strongly consistent on the alert path. 40 offline devices
+  # would be 20 RCU per load, so a stuck client is held to one load per 20 s
+  # (about 1 RCU/s). The ops dashboard polls every 30 s while its tab is visible, so a
+  # second ops user's polls can be throttled (429): the page keeps its last data.
+  route_settings {
+    route_key              = aws_apigatewayv2_route.get_ops_device_problems.route_key
+    throttling_rate_limit  = 0.05
+    throttling_burst_limit = 2
+  }
+
   dynamic "route_settings" {
     for_each = local.residents_routes
     content {
@@ -280,7 +297,7 @@ module "api_devices" {
   source = "./modules/python-lambda"
 
   function_name = local.api_devices_function_name
-  description   = "GET /devices: every device with its newest status and assigned resident, for staff."
+  description   = "GET /devices: every device with its newest status and assigned resident, for staff and ops."
   handler       = "handler.lambda_handler"
   zip_path      = data.archive_file.api_devices.output_path
   zip_hash      = data.archive_file.api_devices.output_base64sha256
@@ -513,6 +530,149 @@ resource "aws_lambda_permission" "api_dashboard" {
   function_name = module.api_dashboard.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/GET/dashboard"
+}
+
+# ---------------------------------------------------------------------------------------
+# GET /ops/device-problems
+# ---------------------------------------------------------------------------------------
+
+data "archive_file" "api_ops" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambdas/api-ops/src"
+  output_path = "${path.module}/.terraform/build/api-ops.zip"
+  excludes    = ["__pycache__", "**/__pycache__/**", "**/*.pyc"]
+}
+
+# What the function does with AWS: one eventually consistent, paginated Query of the
+# alerts `open` index with a FilterExpression to the three device-problem types
+# (pattern 9), one BatchGetItem of those alerts' base items for `details` (the index
+# doesn't project it), and Cognito name lookups. No writes; no registry or latest
+# access at all (ops get no resident profiles or readings).
+# - AlertsOpenIndex: the alert-row attributes minus ack_note, escalated_at, and
+#   notified_at, with Select = SPECIFIC_ATTRIBUTES.
+# - AlertItems: RESIDENT# partitions, only pk, sk, alert_type, details, resolved_at,
+#   resolved_by_role. IAM can't restrict a read by alert_type, so the role could read
+#   a health alert's details if the handler asked for its key: the handler only asks
+#   for keys of items it has already checked are device problems, and
+#   lambdas/api-ops/tests/test_filtering.py checks that.
+# Both have Null dynamodb:Attributes = false, as api-residents: a request without a
+# projection would otherwise pass ForAllValues vacuously and read whole items.
+# - Cognito AdminGetUser: as api-dashboard (the handler keeps `name`).
+data "aws_iam_policy_document" "api_ops" {
+  statement {
+    sid       = "AlertsOpenIndex"
+    effect    = "Allow"
+    actions   = ["dynamodb:Query"]
+    resources = ["${module.alerts_table.arn}/index/open"]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values = [
+        "pk", "sk", "open_pk", "alert_type", "device_id", "status", "event_ts", "severity",
+        "acknowledged_at", "acknowledged_by_role", "acknowledged_by",
+      ]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "dynamodb:Select"
+      values   = ["SPECIFIC_ATTRIBUTES"]
+    }
+  }
+
+  statement {
+    sid       = "AlertItems"
+    effect    = "Allow"
+    actions   = ["dynamodb:BatchGetItem"]
+    resources = [module.alerts_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["RESIDENT#*"]
+    }
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["pk", "sk", "alert_type", "details", "resolved_at", "resolved_by_role"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "dynamodb:Select"
+      values   = ["SPECIFIC_ATTRIBUTES"]
+    }
+  }
+
+  statement {
+    sid       = "CognitoNames"
+    effect    = "Allow"
+    actions   = ["cognito-idp:AdminGetUser"]
+    resources = [aws_cognito_user_pool.users.arn]
+  }
+}
+
+module "api_ops" {
+  source = "./modules/python-lambda"
+
+  function_name = local.api_ops_function_name
+  description   = "GET /ops/device-problems: open device problems for every resident, for ops."
+  handler       = "handler.lambda_handler"
+  zip_path      = data.archive_file.api_ops.output_path
+  zip_hash      = data.archive_file.api_ops.output_base64sha256
+  layers        = [local.powertools_layer_arn]
+  memory_size   = 128
+  timeout       = 10
+
+  environment = {
+    ALERTS_TABLE            = module.alerts_table.name
+    USER_POOL_ID            = aws_cognito_user_pool.users.id
+    POWERTOOLS_SERVICE_NAME = local.api_ops_function_name
+  }
+
+  policy_json        = data.aws_iam_policy_document.api_ops.json
+  log_retention_days = 30
+
+  # Invoked synchronously by API Gateway: no async retries, so no on-failure destination.
+}
+
+resource "aws_apigatewayv2_integration" "api_ops" {
+  api_id                 = aws_apigatewayv2_api.api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = module.api_ops.function_arn
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 12000
+}
+
+resource "aws_apigatewayv2_route" "get_ops_device_problems" {
+  api_id             = aws_apigatewayv2_api.api.id
+  route_key          = "GET /ops/device-problems"
+  target             = "integrations/${aws_apigatewayv2_integration.api_ops.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+# Only this API's GET /ops/device-problems route (any stage) may invoke the function.
+resource "aws_lambda_permission" "api_ops" {
+  statement_id  = "AllowApiGatewayGetOpsDeviceProblems"
+  action        = "lambda:InvokeFunction"
+  function_name = module.api_ops.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/GET/ops/device-problems"
 }
 
 # ---------------------------------------------------------------------------------------

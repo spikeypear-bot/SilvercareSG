@@ -9,7 +9,8 @@ import { Skeleton } from '../../components/Skeleton'
 import { useNow } from '../../lib/useNow'
 import type { FleetDevice } from '../../types/devices'
 import { AlertAnnouncer } from '../dashboard/AlertAnnouncer'
-import { DashboardError, LoadingStatus } from '../dashboard/DashboardStates'
+import { useAuth } from '../auth/useAuth'
+import { DashboardError, LoadingStatus, RefreshFailedNotice } from '../dashboard/DashboardStates'
 import { DeviceBattery, OnlineStatus } from '../dashboard/DeviceStatus'
 import { LOW_BATTERY_DISPLAY_PCT } from '../dashboard/labels'
 import { MainLayout } from '../dashboard/MainLayout'
@@ -20,21 +21,28 @@ import { useDeviceFleet } from '../dashboard/useDashboardData'
 import { DEVICE_TYPE_LABELS, filterDevices, fleetStats, sortForTriage, type DeviceFilter } from './fleet'
 import { useFleetAnnouncer } from './useFleetAnnouncer'
 
-/** Staff area tab: every wearable and bedroom sensor. Read-only, no device actions. */
+/**
+ * Staff and ops area tab: every wearable and bedroom sensor. Read-only, no device
+ * actions; polls every 30 s. ops get no resident names or homes (the API sends only the
+ * resident ID) and no link to the resident page, which answers ops with 403.
+ */
 export function DevicesPage() {
-  return <StaffOnly>{() => <StaffDevices />}</StaffOnly>
+  const { view } = useAuth()
+  if (view === 'ops') return <FleetPage forOps />
+  return <StaffOnly>{() => <FleetPage forOps={false} />}</StaffOnly>
 }
 
-function StaffDevices() {
+function FleetPage({ forOps }: { forOps: boolean }) {
   const fleet = useDeviceFleet()
   return (
-    <MainLayout title="Devices" showGreeting={false} before={<StaffNav />}>
+    <MainLayout title="Devices" showGreeting={false} before={<StaffNav label={forOps ? 'Ops area' : 'Staff area'} />}>
+      {fleet.refreshFailed && fleet.data && <RefreshFailedNotice polling />}
       {fleet.error ? (
         <DashboardError title="We couldn't load the devices." onRetry={fleet.retry} />
       ) : fleet.loading || !fleet.data ? (
         <DevicesSkeleton />
       ) : (
-        <DevicesContent devices={fleet.data} />
+        <DevicesContent devices={fleet.data} forOps={forOps} />
       )}
     </MainLayout>
   )
@@ -82,7 +90,7 @@ const FILTERS: ReadonlyArray<{
   },
 ]
 
-function DevicesContent({ devices }: { devices: FleetDevice[] }) {
+function DevicesContent({ devices, forOps }: { devices: FleetDevice[]; forOps: boolean }) {
   const [filter, setFilter] = useState<DeviceFilter>('all')
   const { message, announce } = useFleetAnnouncer(devices)
   const stats = fleetStats(devices)
@@ -136,6 +144,7 @@ function DevicesContent({ devices }: { devices: FleetDevice[] }) {
           title={filter === 'all' ? 'All devices' : current.label}
           emptyText={current.empty}
           onShowAll={filter === 'all' ? undefined : () => choose('all')}
+          forOps={forOps}
         />
       )}
     </>
@@ -147,11 +156,13 @@ function DeviceTable({
   title,
   emptyText,
   onShowAll,
+  forOps,
 }: {
   devices: FleetDevice[]
   title: string
   emptyText: string
   onShowAll?: () => void
+  forOps: boolean
 }) {
   const headingId = useId()
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -202,7 +213,7 @@ function DeviceTable({
               </thead>
               <tbody>
                 {devices.map((device) => (
-                  <DeviceRow key={device.device_id} device={device} now={now} />
+                  <DeviceRow key={device.device_id} device={device} now={now} forOps={forOps} />
                 ))}
               </tbody>
             </table>
@@ -213,7 +224,7 @@ function DeviceTable({
   )
 }
 
-function DeviceRow({ device, now }: { device: FleetDevice; now: Date }) {
+function DeviceRow({ device, now, forOps }: { device: FleetDevice; now: Date; forOps: boolean }) {
   const TypeIcon = device.device_type === 'wearable' ? Watch : BedDouble
   return (
     <tr className="border-b border-slate-100 align-top last:border-0">
@@ -227,7 +238,9 @@ function DeviceRow({ device, now }: { device: FleetDevice; now: Date }) {
         </span>
       </td>
       <td className="py-3 pr-4">
-        {device.assigned_to ? (
+        {device.assigned_to && forOps ? (
+          <span className="text-slate-800">Resident {device.assigned_to.resident_id}</span>
+        ) : device.assigned_to ? (
           <span className="flex flex-col">
             <Link
               to={`/residents/${encodeURIComponent(device.assigned_to.resident_id)}`}

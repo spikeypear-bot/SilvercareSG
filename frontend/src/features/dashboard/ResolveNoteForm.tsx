@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { CircleAlert } from 'lucide-react'
 import { Button } from '../../components/Button'
+import { useHoldRefresh } from '../../lib/refreshHold'
 import { ACK_NOTE_COUNT_FROM, ACK_NOTE_MAX, RESOLVE_NOTE_ERRORS, checkResolveNote } from './ackNote'
 
 interface ResolveNoteFormProps {
@@ -19,6 +20,8 @@ interface ResolveNoteFormProps {
  * focus in the field. The note is never logged or announced.
  */
 export function ResolveNoteForm({ context, onSubmit, onCancel }: ResolveNoteFormProps) {
+  // No background refresh while the note is being written (it could remove this row).
+  useHoldRefresh()
   const fieldId = useId()
   const hintId = useId()
   const countId = useId()

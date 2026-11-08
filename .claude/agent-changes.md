@@ -18,6 +18,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 - **Problem:** the Tableau IAM user had a `path`, but its ARN is a Lake Formation
   principal; iac-reviewer flagged it. **Changed:** `.claude/skills/iam-policy/SKILL.md`:
   no path on users or roles that get Lake Formation grants.
+- **Problem:** with polling added, an acknowledge followed by a resolve showed the alert
+  as open again (the second action's override replaced the first's starting status);
+  the resident page tests caught it. **Changed:** `.claude/skills/frontend/SKILL.md`
+  (Rules): show action results through the data hooks' overrides, never by writing
+  into polled data, and hold refreshes while a form is open.
 
 ## 2026-11-07
 

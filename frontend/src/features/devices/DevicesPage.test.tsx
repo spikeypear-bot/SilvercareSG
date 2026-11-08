@@ -16,7 +16,6 @@ vi.mock('../dashboard/useDashboardData', async (importOriginal) => {
   return { ...actual, useDeviceFleet: () => actual.useDeviceFleet(deviceFleetLoader) }
 })
 
-const BANNER = 'You are viewing synthetic demo data. No real resident information is shown.'
 
 beforeEach(() => {
   resetDeviceFleetLoader()
@@ -138,9 +137,7 @@ describe('layout', () => {
     const nav = screen.getByRole('navigation', { name: 'Staff area' })
     expect(within(nav).getByRole('link', { name: 'Devices' })).toHaveAttribute('aria-current', 'page')
     expect(within(nav).getByRole('link', { name: 'Dashboard' })).not.toHaveAttribute('aria-current')
-    const banner = screen.getByRole('note', { name: 'Demo data' })
-    expect(banner).toHaveTextContent(BANNER)
-    expect(nav.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
     expect(screen.queryByText(/^Good (morning|afternoon|evening)/)).not.toBeInTheDocument()
   })
 
@@ -153,7 +150,7 @@ describe('layout', () => {
 })
 
 describe('page states', () => {
-  it('shows the loading skeleton with a "Loading devices" status, header, nav, and banner', () => {
+  it('shows the loading skeleton with a "Loading devices" status, header, and nav (no demo banner)', () => {
     deviceFleetLoader.mockReturnValue(deferred<FleetDevice[]>().promise)
     const { container } = renderPage()
     expect(screen.getByRole('status')).toHaveTextContent('Loading devices')
@@ -161,7 +158,7 @@ describe('page states', () => {
     expect(container.querySelector('[aria-busy="true"]')).not.toBeNull()
     expect(screen.getByRole('heading', { level: 1, name: 'Devices' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Staff area' })).toBeInTheDocument()
-    expect(screen.getByRole('note', { name: 'Demo data' })).toBeInTheDocument()
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Choose which devices the list shows' })).not.toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
@@ -182,7 +179,7 @@ describe('page states', () => {
     expect(alert).toHaveTextContent("We couldn't load the devices.")
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Choose which devices the list shows' })).not.toBeInTheDocument()
-    expect(screen.getByRole('note', { name: 'Demo data' })).toBeInTheDocument()
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Staff area' })).toBeInTheDocument()
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }))

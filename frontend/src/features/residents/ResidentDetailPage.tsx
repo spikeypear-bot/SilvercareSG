@@ -14,7 +14,7 @@ import type { Resident } from '../../types/dashboard'
 import type { ResidentDetail, VitalsThresholds } from '../../types/resident'
 import { useAuth } from '../auth/useAuth'
 import { AlertAnnouncer } from '../dashboard/AlertAnnouncer'
-import { DashboardError, LoadingStatus } from '../dashboard/DashboardStates'
+import { DashboardError, LoadingStatus, RefreshFailedNotice } from '../dashboard/DashboardStates'
 import { WearableStatusText } from '../dashboard/DeviceStatus'
 import { MainLayout } from '../dashboard/MainLayout'
 import { StaffOnly, type StaffRole } from '../dashboard/StaffOnly'
@@ -64,6 +64,7 @@ function StaffResidentDetail({ role }: { role: StaffRole }) {
         />
       ) : (
         <>
+          {detail.refreshFailed && <RefreshFailedNotice polling={false} />}
           {detail.actionError && (
             <Notice
               tone="error"
@@ -82,6 +83,7 @@ function StaffResidentDetail({ role }: { role: StaffRole }) {
           onAcknowledge={detail.acknowledgeAlert}
           onResolve={detail.resolveAlert}
             onSaveThresholds={detail.updateThresholds}
+            isOwnAction={detail.isOwnAction}
           />
         </>
       )}
@@ -104,9 +106,10 @@ interface DetailContentProps {
   onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
   onResolve: (alertId: string, by: string, resolveNote: string) => Promise<boolean>
   onSaveThresholds: (values: VitalsThresholds, by: string) => Promise<string | null>
+  isOwnAction: (alertId: string) => boolean
 }
 
-function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThresholds }: DetailContentProps) {
+function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThresholds, isOwnAction }: DetailContentProps) {
   const { user } = useAuth()
   // Display only: the API takes who acted from the token's `sub`.
   const staffName = user?.name || 'Staff member'
@@ -116,7 +119,7 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
     [detail.resident],
   )
   // The page's one screen-reader announcer, fed from the alert data and the actions.
-  const { message, announce } = useAlertAnnouncer(detail.alerts, residentsById)
+  const { message, announce } = useAlertAnnouncer(detail.alerts, residentsById, { isOwnAction })
   useEscalationWatcher(detail.alerts, (alert) =>
     announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )

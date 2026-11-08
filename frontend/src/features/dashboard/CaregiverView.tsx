@@ -21,7 +21,7 @@ import {
   RoutingLine,
 } from './AlertRow'
 import { BatteryLevel, BedroomStatusText, WearableStatusText } from './DeviceStatus'
-import { DashboardError, LoadingStatus } from './DashboardStates'
+import { DashboardError, LoadingStatus, RefreshFailedNotice } from './DashboardStates'
 import {
   ALERT_TYPE_LABELS,
   formatActivity,
@@ -46,8 +46,19 @@ const MAX_RECENT_ALERTS = 5
  * decisions 2026-11-05, docs/data-model.md pattern 16).
  */
 export function CaregiverView() {
-  const { data, loading, error, retry, cancelAlert, acknowledgeDeviceProblem, actionError, dismissActionError } =
-    useDashboardData('family')
+  const {
+    data,
+    loading,
+    error,
+    retry,
+    refreshFailed,
+    polling,
+    isOwnAction,
+    cancelAlert,
+    acknowledgeDeviceProblem,
+    actionError,
+    dismissActionError,
+  } = useDashboardData('family')
 
   let content: ReactNode
   if (error) {
@@ -60,7 +71,12 @@ export function CaregiverView() {
     )
   } else {
     content = (
-      <CaregiverContent data={data} onCancel={cancelAlert} onAcknowledge={acknowledgeDeviceProblem} />
+      <CaregiverContent
+        data={data}
+        onCancel={cancelAlert}
+        onAcknowledge={acknowledgeDeviceProblem}
+        isOwnAction={isOwnAction}
+      />
     )
   }
 
@@ -78,6 +94,7 @@ export function CaregiverView() {
           {actionError}
         </Notice>
       )}
+      {refreshFailed && data && <RefreshFailedNotice polling={polling} />}
       {content}
     </MainLayout>
   )
@@ -87,8 +104,10 @@ function CaregiverContent({
   data,
   onCancel,
   onAcknowledge,
+  isOwnAction,
 }: {
   data: DashboardData
+  isOwnAction: (alertId: string) => boolean
   onCancel: (alertId: string, by: string) => Promise<boolean>
   /** Acknowledges an open device problem; `by` is display only, never sent. */
   onAcknowledge: (alertId: string, by: string) => Promise<boolean>
@@ -101,7 +120,7 @@ function CaregiverContent({
     [data.residents],
   )
   // The page's one screen-reader announcer, fed from the alert data and the cancels.
-  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById)
+  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById, { isOwnAction })
   useEscalationWatcher(data.alerts, (alert) =>
     announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )

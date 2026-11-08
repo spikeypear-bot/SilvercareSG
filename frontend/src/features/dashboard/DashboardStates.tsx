@@ -31,3 +31,17 @@ export function LoadingStatus({ label }: { label: string }) {
     </span>
   )
 }
+
+/**
+ * A background refresh failed (e.g. the route's throttle): the page keeps the data it
+ * has, says how old it may be, and when it will try again.
+ */
+export function RefreshFailedNotice({ polling }: { polling: boolean }) {
+  return (
+    <Notice tone="warning" title="Couldn't refresh.">
+      {polling
+        ? 'Showing what was loaded before. Trying again in 30 seconds.'
+        : 'Showing what was loaded before. Come back to this tab or reload the page to try again.'}
+    </Notice>
+  )
+}

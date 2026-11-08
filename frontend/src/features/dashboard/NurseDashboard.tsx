@@ -11,7 +11,7 @@ import { useAuth } from '../auth/useAuth'
 import { AlertAnnouncer } from './AlertAnnouncer'
 import { AlertRow } from './AlertRow'
 import { BatteryLevel, WearableStatusText } from './DeviceStatus'
-import { DashboardError, LoadingStatus } from './DashboardStates'
+import { DashboardError, LoadingStatus, RefreshFailedNotice } from './DashboardStates'
 import { LOW_BATTERY_DISPLAY_PCT } from './labels'
 import { MainLayout } from './MainLayout'
 import { ResidentLine } from './ResidentLine'
@@ -31,8 +31,19 @@ import { useEscalationWatcher } from './useEscalationWatcher'
 
 /** Nurse view: alert response. Acknowledge and resolve, see what needs a visit. */
 export function NurseDashboard() {
-  const { data, loading, error, retry, acknowledgeAlert, resolveAlert, actionError, dismissActionError } =
-    useDashboardData('staff')
+  const {
+    data,
+    loading,
+    error,
+    retry,
+    refreshFailed,
+    polling,
+    isOwnAction,
+    acknowledgeAlert,
+    resolveAlert,
+    actionError,
+    dismissActionError,
+  } = useDashboardData('staff')
 
   return (
     <MainLayout title="Nurse dashboard" before={<StaffNav />}>
@@ -48,12 +59,18 @@ export function NurseDashboard() {
           {actionError}
         </Notice>
       )}
+      {refreshFailed && data && <RefreshFailedNotice polling={polling} />}
       {error ? (
         <DashboardError onRetry={retry} />
       ) : loading || !data ? (
         <NurseSkeleton />
       ) : (
-        <NurseContent data={data} onAcknowledge={acknowledgeAlert} onResolve={resolveAlert} />
+        <NurseContent
+          data={data}
+          onAcknowledge={acknowledgeAlert}
+          onResolve={resolveAlert}
+          isOwnAction={isOwnAction}
+        />
       )}
     </MainLayout>
   )
@@ -65,9 +82,10 @@ interface NurseContentProps {
   data: DashboardData
   onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
   onResolve: (alertId: string, by: string, resolveNote: string) => Promise<boolean>
+  isOwnAction: (alertId: string) => boolean
 }
 
-function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
+function NurseContent({ data, onAcknowledge, onResolve, isOwnAction }: NurseContentProps) {
   const { user } = useAuth()
   const staffName = user?.name || 'Staff member'
   const [panel, setPanel] = useState<StatId>('alerts')
@@ -75,7 +93,7 @@ function NurseContent({ data, onAcknowledge, onResolve }: NurseContentProps) {
     () => new Map(data.residents.map((r) => [r.resident_id, r])),
     [data.residents],
   )
-  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById)
+  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById, { openListOnly: true, isOwnAction })
   useEscalationWatcher(data.alerts, (alert) =>
     announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )

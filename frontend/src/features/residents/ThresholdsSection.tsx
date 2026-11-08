@@ -4,6 +4,7 @@ import { Button } from '../../components/Button'
 import { Notice } from '../../components/Notice'
 import { RelativeTime } from '../../components/RelativeTime'
 import { TextField } from '../../components/TextField'
+import { useHoldRefresh } from '../../lib/refreshHold'
 import type { ResidentThresholds, VitalsThresholds } from '../../types/resident'
 import { DetailSection } from './DetailSection'
 import {
@@ -29,6 +30,8 @@ interface ThresholdsSectionProps {
 /** The resident's vitals limits (pattern 18). The UI never compares readings with them. */
 export function ThresholdsSection({ thresholds, canEdit, onSave, announce, now }: ThresholdsSectionProps) {
   const [editing, setEditing] = useState(false)
+  // No background refresh while the thresholds form is open.
+  useHoldRefresh(editing)
   const editButtonRef = useRef<HTMLButtonElement>(null)
   const returnFocus = useRef(false)
 

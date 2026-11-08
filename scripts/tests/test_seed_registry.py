@@ -508,3 +508,75 @@ def test_aws_error_prints_only_the_code(seed, devices_file):
     assert rc == 1
     assert out.getvalue() == "error: AccessDeniedException\n"
     assert "synthetic detail" not in out.getvalue()
+
+
+# ---- --link-caregiver (docs/data-model.md, User <-> resident link) ----
+
+LINK_SUB = "3f2b8c1e-0000-4000-8000-0000000000e1"
+
+
+def test_link_items_are_exact(seed):
+    items = by_key(seed.link_items(LINK_SUB, NOW))
+
+    assert set(items) == {
+        (f"USER#{LINK_SUB}", f"RESIDENT#res-000{n}") for n in (1, 2, 3)
+    }
+    assert items[(f"USER#{LINK_SUB}", "RESIDENT#res-0002")] == {
+        "pk": f"USER#{LINK_SUB}",
+        "sk": "RESIDENT#res-0002",
+        "relationship": "caregiver",
+        "linked_at": STAMP,
+        "linked_by": "seed",
+        "gsi1_pk": "RESIDENT#res-0002",
+        "gsi1_sk": f"USER#{LINK_SUB}",
+    }
+
+
+def test_no_links_without_the_option(seed, devices_file):
+    items = seed.build_items(seed.load_devices(devices_file), NOW)
+    assert not any(item["pk"].startswith("USER#") for item in items)
+
+
+@pytest.mark.parametrize(
+    "sub",
+    [
+        "",
+        "<paste sub>",
+        "3F2B8C1E-0000-4000-8000-0000000000E1",
+        "3f2b8c1e00004000800000000000e1",
+        "00000000-0000-4000-8000-000000000004",
+        "3f2b8c1e-0000-4000-8000-0000000000e1\n",
+    ],
+)
+def test_invalid_or_retired_sub_is_refused_before_any_write(
+    seed, moto_registry, devices_file, sub
+):
+    out = io.StringIO()
+
+    rc = seed.main(
+        ["--devices-file", str(devices_file), "--link-caregiver", sub],
+        client=moto_registry,
+        out=out,
+        now=NOW,
+    )
+
+    assert rc == 2
+    assert scan(moto_registry) == {}
+    assert "lowercase UUID" in out.getvalue()
+
+
+def test_main_writes_links_and_a_second_run_keeps_them(
+    seed, moto_registry, devices_file
+):
+    args = ["--devices-file", str(devices_file), "--link-caregiver", LINK_SUB]
+
+    assert seed.main(args, client=moto_registry, out=io.StringIO(), now=NOW) == 0
+    out = io.StringIO()
+    assert seed.main(args, client=moto_registry, out=out, now=LATER) == 0
+
+    stored = scan(moto_registry)
+    link = stored[(f"USER#{LINK_SUB}", "RESIDENT#res-0001")]
+    assert link["linked_at"] == {"S": STAMP}  # not overwritten by the second run
+    assert link["gsi1_pk"] == {"S": "RESIDENT#res-0001"}
+    assert link["gsi1_sk"] == {"S": f"USER#{LINK_SUB}"}
+    assert out.getvalue().splitlines()[-1] == "done: 11 exists"

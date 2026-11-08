@@ -3,13 +3,14 @@
  * it was removed (docs/features/alert-routing.md, family members are caregivers), so a
  * user still in only that group gets the no-access screen, as the API refuses it.
  */
-export type CognitoGroup = 'doctor' | 'nurse' | 'caregiver'
+export type CognitoGroup = 'doctor' | 'nurse' | 'ops' | 'caregiver'
 
 /**
  * Which main page a signed-in user sees. Decided from groups; the API enforces access.
- * `family` is the caregiver view (`CaregiverView`, "My residents"), which caregivers get.
+ * `family` is the caregiver view (`CaregiverView`, "My residents"), which caregivers get;
+ * `ops` is the ops view of device problems (`OpsDashboard`).
  */
-export type AppView = 'nurse' | 'doctor' | 'family' | 'no-access'
+export type AppView = 'nurse' | 'doctor' | 'ops' | 'family' | 'no-access'
 
 /** The signed-in user's own profile, from Cognito attributes and the ID token. */
 export interface AuthUser {

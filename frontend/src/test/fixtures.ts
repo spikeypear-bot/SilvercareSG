@@ -9,6 +9,7 @@ export const TEST_USERS = {
     email: 'test.caregiver.a@example.test',
     groups: ['caregiver'],
   },
+  ops: { name: 'Test Ops A', email: 'test.ops.a@example.test', groups: ['ops'] },
   family: { name: 'Test Family A', email: 'test.family.a@example.test', groups: ['family'] },
   noGroup: { name: 'Test User NoRole', email: 'test.norole@example.test', groups: [] },
 } satisfies Record<string, AuthUser>
