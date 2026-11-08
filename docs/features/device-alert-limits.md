@@ -112,8 +112,11 @@ link check). No new group, route, or access pattern on the API side.
    `${iot:Connection.Thing.ThingName}` so a device can reach only its own shadow:
    `iot:Publish` on `topic/$aws/things/<thing>/shadow/get` and `.../shadow/update`;
    `iot:Subscribe` on `topicfilter/` and `iot:Receive` on `topic/` for
-   `.../shadow/get/accepted`, `get/rejected`, `update/accepted`, `update/rejected`,
-   `update/delta`. Nothing else is added (no `delete`, no named shadows, no wildcards).
+   `.../shadow/get/*` and `.../shadow/update/*` (the accepted, rejected, delta, and
+   documents replies). Nothing else is added (no `delete`, no named shadows, no other
+   wildcards). Listing each reply topic took both policies past AWS IoT's 2048-character
+   limit (excluding whitespace) and failed the 2026-11-09 deploy; a test now checks the
+   size.
 
 ### On save (`api-thresholds`)
 

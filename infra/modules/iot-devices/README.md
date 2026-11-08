@@ -16,9 +16,10 @@ The AWS IoT Core device registry from `docs/features/iot-core.md`:
   `vitals`, `vitals_alert`, `fall`, `status`, `alert_cancel`; bedroom `motion`, `bed`,
   `status`), and reach only the device's own classic shadow
   (`$aws/things/<own thing name>/shadow/...`: publish to `get` and `update`; subscribe
-  and receive on `get/accepted`, `get/rejected`, `update/accepted`, `update/rejected`,
-  `update/delta`; docs/features/device-alert-limits.md). No shadow delete, named
-  shadows, or wildcard actions.
+  and receive on `get/*` and `update/*`, their replies; docs/features/device-alert-limits.md).
+  No shadow delete, named shadows, or other wildcards. AWS IoT policies are limited to
+  2048 characters excluding whitespace (wearable is about 1770): a new permission set,
+  such as ota-updates' Jobs topics, needs a second policy.
 
 The device list is validated: an ID that doesn't match `^(wearable|bedroom)-[0-9]{4}$`,
 an ID prefix that doesn't match the type, or a duplicate ID fails the plan with an

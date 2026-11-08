@@ -79,6 +79,12 @@ Devices must only act as themselves:
 - `iot:Subscribe` / `iot:Receive` only if the device needs commands, and only on
   its own command topic.
 - In Terraform, escape the policy variable as `$${iot:Connection.Thing.ThingName}`.
+- **Size:** an IoT policy is at most 2048 characters excluding whitespace, and only
+  `apply` finds out (`validate`, checkov, and `plan` pass). Every full ARN costs about
+  100 characters, so prefer one `.../<request>/*` wildcard over listing each reply topic,
+  and give a new permission set its own policy. Keep
+  `test_device_policies_fit_aws_iot_size_limit` (`lambdas/shadow-sync/tests/test_infra.py`)
+  passing when adding statements.
 
 ## CI role
 
