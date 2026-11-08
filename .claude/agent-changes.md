@@ -5,6 +5,14 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **Problem:** the `simulator-backfill` spec (written by Claude) said generated history
+  would flow into the daily summaries, but summaries drop readings before each device's
+  `assigned_at` (the seed's run time), so loading it would have written months of empty,
+  undeletable summaries (privacy-reviewer, high). **Changed:**
+  `.claude/skills/feature-spec/SKILL.md` (readiness checklist): data made for another
+  component is checked against that component's filters and what can't be undone once
+  loaded. (Fix: seed's fixed `assigned_at`, load steps re-seed and check overlap.)
+
 - **Problem:** the curated-layer go-live checklist said to clean only D−1 and D before a
   manual summaries run, but summaries also needs D−2 for `bed` and `vitals_alert`; the
   run failed with "clean partition missing". **Changed:**

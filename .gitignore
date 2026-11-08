@@ -18,6 +18,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Generated history from the simulator backfill (docs/features/simulator-backfill.md)
+/backfill-data/
+
 # Claude Code (personal, not shared)
 .claude/settings.local.json
 CLAUDE.local.md

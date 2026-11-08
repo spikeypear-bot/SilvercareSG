@@ -429,6 +429,9 @@ How links are created is Open decision #3 (user onboarding).
 data from `scripts/seed-data.json`: 20 resident profiles and thresholds, the 40 device
 assignments, and links for the test caregiver user.
 
+- Seeded device assignments have the fixed `assigned_at` `2026-01-31T16:00:00Z`
+  (2026-02-01 00:00 SGT), so the daily summaries count backfilled history
+  (docs/features/simulator-backfill.md).
 - Seeded thresholds have `updated_by = "seed"` and seeded links have
   `linked_by = "seed"` (instead of a staff `sub`). `--delete` uses this marker to find
   the seed's links, and every seed run uses it to remove its own links that are no
@@ -1372,6 +1375,10 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   query history age out rather than being erased.
 - **Before any real resident data arrives:**
   - the per-device erasure tool above exists
+  - generated history (docs/features/simulator-backfill.md: `telemetry/` objects with
+    metadata `source=simulator-backfill`, the clean `tables/` and `summaries/` built
+    from them, and their dates) is removed or clearly set apart, since it uses the real
+    device IDs that real residents will wear
   - one resident's S3 `alerts/` objects can be found and deleted (access, correction,
     and date-of-death + 6 years requests): the keys hold only dates and alert IDs, and
     the `<alert_id>.final.json` records hold free-text acknowledge and closing notes

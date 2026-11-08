@@ -25,7 +25,7 @@ BACK_IN_BED ?=
 SECRETS_DIR := secrets
 KEYS_DIR := $(SECRETS_DIR)/device-keys
 
-.PHONY: help build up down shell test test-integration lint fmt tf-check check seed-local simulate-dry-run device-keys device-certs smoke-test simulate
+.PHONY: help build up down shell test test-integration lint fmt tf-check check seed-local simulate-dry-run backfill device-keys device-certs smoke-test simulate
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -73,6 +73,10 @@ seed-local: ## Seed the registry in DynamoDB Local with synthetic data: make see
 # `@` keeps make's own command line out of stdout, so the dry-run output stays JSON lines.
 simulate-dry-run: ## Print simulated device messages, no keys or network: make simulate-dry-run [ARGS="--instant --duration 1h"]
 	@$(COMPOSE) run --rm --quiet-pull dev python simulator/src/main.py --dry-run $(ARGS)
+
+# docs/features/simulator-backfill.md: past days as local raw-history files, no network.
+backfill: ## Write past days of simulated history to local files: make backfill ARGS="--from 2026-03-01 --to 2026-10-31 --out backfill-data"
+	$(COMPOSE) run --rm --quiet-pull dev python simulator/src/backfill.py $(ARGS)
 
 # IoT device targets (docs/features/iot-core.md). The developer runs these, not Claude:
 # they read or write the private keys in $(KEYS_DIR)/.
