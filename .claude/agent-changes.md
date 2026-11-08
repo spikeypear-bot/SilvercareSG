@@ -3,6 +3,13 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-09
+
+- **Problem:** the device-alert-limits deploy failed: listing each shadow reply topic
+  took both IoT device policies past AWS IoT's 2048-character limit, which no local
+  check catches. **Changed:** `.claude/skills/iam-policy/SKILL.md` (IoT device policies):
+  the size limit, prefer one wildcard per request's replies, and the size test.
+
 ## 2026-11-08
 
 - **User's request:** remove the agent workflows and agents. **Changed:** deleted

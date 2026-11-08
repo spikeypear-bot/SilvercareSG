@@ -4,6 +4,7 @@ criteria 5, 6, 10, 12), and how the IAM conditions match what the handler sends.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -193,13 +194,9 @@ def test_own_shadow_uses_the_connection_thing_name(device_policy):
 def test_shadow_topics_are_exactly_the_classic_ones(device_policy):
     text, _ = device_policy
     assert _list_local(text, "shadow_request_topics") == ["get", "update"]
-    assert _list_local(text, "shadow_response_topics") == [
-        "get/accepted",
-        "get/rejected",
-        "update/accepted",
-        "update/rejected",
-        "update/delta",
-    ]
+    # One wildcard per request topic's replies (accepted, rejected, delta, documents):
+    # listing them took the policies past AWS IoT's 2048-character limit.
+    assert _list_local(text, "shadow_response_topics") == ["get/*", "update/*"]
 
 
 @pytest.mark.parametrize(
@@ -239,6 +236,11 @@ def test_device_policy_has_no_delete_named_shadow_or_wildcard(device_policy):
     )
     for topic in topics:
         assert "#" not in topic and "+" not in topic
+    # Requests stay exact (no delete); "*" only as the last level of a reply topic.
+    for topic in _list_local(text, "shadow_request_topics"):
+        assert "*" not in topic
+    for topic in _list_local(text, "shadow_response_topics"):
+        assert topic.count("*") == 1 and topic.endswith("/*")
     for statement in policy.values():
         for action in actions(statement):
             assert action in {
@@ -255,3 +257,69 @@ def test_both_device_types_get_the_shadow_statements(device_policy):
     document = block(text, 'data "aws_iam_policy_document" "device" {')
     assert "for_each = local.device_types" in document
     assert not re.search(r"dynamic\s+\"statement\"", document)
+
+
+def _device_messages(text: str) -> dict[str, list[str]]:
+    types = re.search(r"device_types\s*=\s*\{(.*?)\n  \}", text, re.DOTALL).group(1)
+    return {
+        name: strings(body)
+        for name, body in re.findall(
+            r"(\w+)\s*=\s*\{[^{}]*?messages\s*=\s*\[(.*?)\]", types, re.DOTALL
+        )
+    }
+
+
+def test_device_policies_fit_aws_iot_size_limit():
+    # AWS IoT rejects a policy over 2048 characters, excluding whitespace (the
+    # 2026-11-09 deploy failed on this). Rebuild each policy as the data source renders
+    # it, with the real ARN prefix length, and keep a margin.
+    text = read("modules/iot-devices/main.tf")
+    prefix = "arn:aws:iot:ap-southeast-1:123456789012"
+    thing = "${iot:Connection.Thing.ThingName}"
+    own = f"$aws/things/{thing}/shadow"
+    requests = _list_local(text, "shadow_request_topics")
+    replies = _list_local(text, "shadow_response_topics")
+    messages = _device_messages(text)
+    assert set(messages) == {"wearable", "bedroom"}
+
+    def statement(sid, action, res, condition=None):
+        out = {"Sid": sid, "Effect": "Allow", "Action": action}
+        out["Resource"] = res if len(res) > 1 else res[0]
+        if condition:
+            out["Condition"] = condition
+        return out
+
+    for device_type, msgs in messages.items():
+        document = {
+            "Version": "2012-10-17",
+            "Statement": [
+                statement(
+                    "ConnectAsOwnThing",
+                    "iot:Connect",
+                    [f"{prefix}:client/{thing}"],
+                    {"Bool": {"iot:Connection.Thing.IsAttached": "true"}},
+                ),
+                statement(
+                    "PublishOwnMessages",
+                    "iot:Publish",
+                    [f"{prefix}:topic/silvercare/v1/{thing}/{m}" for m in msgs],
+                ),
+                statement(
+                    "PublishOwnShadow",
+                    "iot:Publish",
+                    [f"{prefix}:topic/{own}/{t}" for t in requests],
+                ),
+                statement(
+                    "SubscribeOwnShadow",
+                    "iot:Subscribe",
+                    [f"{prefix}:topicfilter/{own}/{t}" for t in replies],
+                ),
+                statement(
+                    "ReceiveOwnShadow",
+                    "iot:Receive",
+                    [f"{prefix}:topic/{own}/{t}" for t in replies],
+                ),
+            ],
+        }
+        size = len(re.sub(r"\s", "", json.dumps(document)))
+        assert size <= 1900, f"{device_type} policy is {size} characters (limit 2048)"

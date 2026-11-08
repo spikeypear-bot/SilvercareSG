@@ -105,14 +105,19 @@ resource "aws_iot_thing_group_membership" "device" {
 #    attached to that thing
 #  - publish only to its own topics, and only its type's message types
 #  - its own classic shadow only (docs/features/device-alert-limits.md, criterion 5):
-#    publish to shadow/get and shadow/update; subscribe and receive on get/accepted,
-#    get/rejected, update/accepted, update/rejected, and update/delta
-# No delete, named-shadow, or wildcard actions (ota-updates adds the Jobs topics).
+#    publish to shadow/get and shadow/update; subscribe and receive on shadow/get/* and
+#    shadow/update/* (the accepted, rejected, delta, and documents replies)
+# AWS IoT policies are limited to 2048 characters (excluding whitespace): listing each
+# reply topic took both policies over it (2026-11-09 deploy), so replies use one
+# wildcard per request topic, still inside the device's own classic shadow. Requests
+# stay exact, so no delete. Wearable ~1770 characters, bedroom ~1560: ota-updates'
+# Jobs topics won't fit in this policy and need a second one.
+# No delete, named-shadow, or wildcard actions outside those replies.
 # $${...} escapes HCL interpolation, so the policy contains the literal ${...} variable.
 locals {
   own_shadow             = "$aws/things/$${iot:Connection.Thing.ThingName}/shadow"
   shadow_request_topics  = ["get", "update"]
-  shadow_response_topics = ["get/accepted", "get/rejected", "update/accepted", "update/rejected", "update/delta"]
+  shadow_response_topics = ["get/*", "update/*"]
 }
 
 data "aws_iam_policy_document" "device" {
