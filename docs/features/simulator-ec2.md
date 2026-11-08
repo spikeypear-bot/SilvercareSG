@@ -110,6 +110,9 @@ residents).
    Root volume 8 GB gp3, encrypted. IMDSv2 required. Detailed monitoring off.
 7. Security group: **no inbound rules**. Outbound TCP 443 (SSM, GitHub, dnf, PyPI) and
    8883 (IoT) to anywhere; nothing else.
+   The default VPC's network ACL has no inbound allow rule (found on the first boot,
+   2026-11-09), so Terraform adds inbound rule 100: TCP 32768-65535 from anywhere, for
+   replies only (NACLs are stateless; the security group still allows no inbound).
 8. Instance role: `ssm:GetParameter` on `parameter/silvercare/device-keys/*`, plus
    Session Manager's documented minimum written out (not `AmazonSSMManagedInstanceCore`,
    which allows `ssm:GetParameter*` on every parameter): `ssm:UpdateInstanceInformation`

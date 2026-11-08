@@ -33,7 +33,9 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
 - A name Terraform doesn't create (a hard-coded `default`, a `data` lookup) fails only at
   plan or apply: `make tf-check` never contacts AWS. Create it in Terraform where that's
   safe; otherwise have the owner confirm it exists in AWS before the first push. Docs saying
-  it exists aren't proof, especially for anything made by hand.
+  it exists aren't proof, especially for anything made by hand. For the default VPC,
+  existing isn't enough: its network ACL here has no inbound allow rule, so anything in
+  it needs `aws_network_acl_rule.simulator_replies` (`infra/simulator.tf`) or its own.
 - A new service that stores or returns data: add its read actions to `DenyDataReads` in
   `infra/bootstrap/ci-plan-role.tf` (the owner applies it). The plan role has
   `ReadOnlyAccess`, and any PR from this repo can use it.

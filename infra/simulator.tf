@@ -20,6 +20,29 @@ data "aws_vpc" "default" {
   default = true
 }
 
+# The default VPC's network ACL has no inbound allow rule (found 2026-11-09), and NACLs
+# are stateless, so replies to the instance's own HTTPS/MQTT connections were dropped.
+# Let replies back in on Linux's ephemeral ports only (not 22 or 3389); the security
+# group still has no inbound rules, so nothing can open a connection to the instance.
+data "aws_network_acls" "simulator" {
+  vpc_id = data.aws_vpc.default.id
+  filter {
+    name   = "association.subnet-id"
+    values = [aws_instance.simulator.subnet_id]
+  }
+}
+
+resource "aws_network_acl_rule" "simulator_replies" {
+  network_acl_id = one(data.aws_network_acls.simulator.ids)
+  rule_number    = 100
+  egress         = false
+  protocol       = "tcp"
+  rule_action    = "allow"
+  cidr_block     = "0.0.0.0/0"
+  from_port      = 32768
+  to_port        = 65535
+}
+
 resource "aws_security_group" "simulator" {
   name        = "silvercare-simulator"
   description = "Simulator instance: no inbound, outbound HTTPS and MQTT only"
