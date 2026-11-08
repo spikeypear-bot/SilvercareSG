@@ -1301,7 +1301,8 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   - `silvercare-athena-results-<account_id>`: `clean/` for the clean Lambda,
     `summaries/` for the summaries Lambda (workgroup `silvercare-summaries`, the same
     settings as `silvercare-clean`: engine 3, enforced, 1 GB scan limit), `analysis/` for
-    developers. Objects expire after 7 days.
+    developers, `tableau/` for the Tableau users (workgroup `silvercare-tableau`, the
+    same settings; docs/features/tableau-access.md). Objects expire after 7 days.
 - **Glue database** `silvercare_lake`:
   - `raw_telemetry`: one `line string` column (text input, gzip read automatically),
     partitioned by `message` and `date`, at `s3://silvercare-history-<account_id>/telemetry/`.
@@ -1357,6 +1358,7 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   | `silvercare-clean` role | runs queries in `silvercare-clean`; reads `raw_telemetry`, adds partitions | read `telemetry/` (no write or delete); list, write, and delete `tables/` in the clean bucket; own results prefix |
   | `silvercare-summaries` role | runs queries in `silvercare-summaries`; `DESCRIBE` on `default` and `silvercare_lake`; `SELECT` on `vitals`, `fall`, `vitals_alert`, `alert_cancel`, `bed`, `motion`; `ALTER`, `DESCRIBE`, `INSERT` on `daily_summaries` (adds partitions) | list, write (with tags), and delete `summaries/` in the history bucket (no read, no `telemetry/` or `alerts/`); own `summaries/` results prefix |
   | Developers | run queries in `silvercare-analysis`; the eight clean tables and `daily_summaries`, not `raw_telemetry` or `rejected` | read everything, including `rejected`, raw, and `summaries/`, through `ReadProjectBuckets`; write only to `analysis/` results |
+  | Tableau users (`silvercare-tableau-1`, IAM group `silvercare-tableau`, docs/features/tableau-access.md) | run queries in `silvercare-tableau` only; `DESCRIBE` on `default` and `silvercare_lake`; `DESCRIBE` and `SELECT` on `daily_summaries` only | own `tableau/` results prefix only (no history or clean bucket access: Lake Formation vends the read of `summaries/`) |
 
   Lake Formation doesn't limit direct S3 reads. That matches today's rule while all data
   is synthetic.
@@ -1385,6 +1387,8 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
     Cognito record to show their name) is replaced, e.g. by a name-only store the role
     can read, or names copied to the alert at acknowledge time (both are product
     decisions: the second changes the Actor names rule)
+  - decide whether Tableau users' laptops may display real resident data
+    (docs/features/tableau-access.md)
 
 ## Capacity
 

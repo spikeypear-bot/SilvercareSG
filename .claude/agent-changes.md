@@ -11,6 +11,13 @@ a wasted step. Newest first. Review these in the diff before committing.
   `.claude/skills/recap/SKILL.md` (To do → You): manual commands and checklists take
   their inputs and prerequisites from the defining code or doc, covering every
   precondition the job checks.
+- **Problem:** the tableau-access spec said a live Tableau connection stores no data on
+  the laptop (Tableau caches query results; a .twb can hold values), from memory; the
+  privacy reviewer caught it. **Changed:** `.claude/skills/feature-spec/SKILL.md`
+  (readiness checklist): check a third-party tool's behaviour in its own docs.
+- **Problem:** the Tableau IAM user had a `path`, but its ARN is a Lake Formation
+  principal; iac-reviewer flagged it. **Changed:** `.claude/skills/iam-policy/SKILL.md`:
+  no path on users or roles that get Lake Formation grants.
 
 ## 2026-11-07
 
