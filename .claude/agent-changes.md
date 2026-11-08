@@ -3,6 +3,14 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-08
+
+- **Problem:** with polling added, an acknowledge followed by a resolve showed the alert
+  as open again (the second action's override replaced the first's starting status);
+  the resident page tests caught it. **Changed:** `.claude/skills/frontend/SKILL.md`
+  (Rules): show action results through the data hooks' overrides, never by writing
+  into polled data, and hold refreshes while a form is open.
+
 ## 2026-11-07
 
 - **Problem:** frontend-tester saved raw zero-width and bidi characters into

@@ -5,7 +5,7 @@ import { useNow } from '../../lib/useNow'
 import type { DashboardData, Resident, ResidentAlert } from '../../types/dashboard'
 import { AlertAnnouncer } from './AlertAnnouncer'
 import { AlertRow } from './AlertRow'
-import { DashboardError, LoadingStatus } from './DashboardStates'
+import { DashboardError, LoadingStatus, RefreshFailedNotice } from './DashboardStates'
 import { MainLayout } from './MainLayout'
 import { ResidentsPanel } from './ResidentsPanel'
 import { StaffNav } from './StaffNav'
@@ -20,10 +20,11 @@ const SUMMARY_ALERTS = 3
 
 /** Doctor view: clinical review. Residents with vitals trends; alerts as a compact summary. */
 export function DoctorDashboard() {
-  const { data, loading, error, retry } = useDashboardData('staff')
+  const { data, loading, error, retry, refreshFailed, polling } = useDashboardData('staff')
 
   return (
     <MainLayout title="Doctor dashboard" before={<StaffNav />}>
+      {refreshFailed && data && <RefreshFailedNotice polling={polling} />}
       {error ? (
         <DashboardError onRetry={retry} />
       ) : loading || !data ? (
@@ -42,7 +43,7 @@ function DoctorContent({ data }: { data: DashboardData }) {
     () => new Map(data.residents.map((r) => [r.resident_id, r])),
     [data.residents],
   )
-  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById)
+  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById, { openListOnly: true })
   useEscalationWatcher(data.alerts, (alert) =>
     announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )

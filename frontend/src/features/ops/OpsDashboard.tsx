@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { BatteryLow, Cpu, Watch, WifiOff } from 'lucide-react'
 import { Button } from '../../components/Button'
 import { Card } from '../../components/Card'
@@ -6,15 +6,17 @@ import { EmptyState } from '../../components/EmptyState'
 import { Notice } from '../../components/Notice'
 import { RelativeTime } from '../../components/RelativeTime'
 import { Skeleton } from '../../components/Skeleton'
-import { acknowledgeAlertApi, getDeviceProblems } from '../../lib/api'
 import { useNow } from '../../lib/useNow'
 import type { DeviceProblem, DeviceProblemType } from '../../types/ops'
 import { AlertAnnouncer } from '../dashboard/AlertAnnouncer'
-import { DashboardError, LoadingStatus } from '../dashboard/DashboardStates'
+import { DashboardError, LoadingStatus, RefreshFailedNotice } from '../dashboard/DashboardStates'
 import { ALERT_TYPE_LABELS } from '../dashboard/labels'
 import { MainLayout } from '../dashboard/MainLayout'
+import { StaffNav } from '../dashboard/StaffNav'
 import { StatTile, StatTilesSkeleton } from '../dashboard/StatTile'
-import { useAnnouncer } from '../dashboard/useAnnouncer'
+import { useAlertAnnouncer } from '../dashboard/useAlertAnnouncer'
+import { useDeviceProblems, type DeviceProblemsState } from '../dashboard/useDashboardData'
+import { describeProblem } from './describeProblem'
 
 /**
  * The ops view (docs/data-model.md, the ops paragraph): open and acknowledged device
@@ -24,38 +26,24 @@ import { useAnnouncer } from '../dashboard/useAnnouncer'
  * Device problems are resolved by the watchdog when they clear, so there is no resolve.
  */
 export function OpsDashboard() {
-  const [problems, setProblems] = useState<DeviceProblem[] | null>(null)
-  const [loadError, setLoadError] = useState(false)
-  const [attempt, setAttempt] = useState(0)
-
-  useEffect(() => {
-    let current = true
-    getDeviceProblems()
-      .then((result) => current && setProblems(result))
-      .catch(() => current && setLoadError(true))
-    return () => {
-      current = false
-    }
-  }, [attempt])
-
-  const retry = useCallback(() => {
-    setLoadError(false)
-    setProblems(null)
-    setAttempt((n) => n + 1)
-  }, [])
+  const ops = useDeviceProblems()
 
   return (
-    <MainLayout title="Ops dashboard">
-      {loadError ? (
-        <DashboardError title="We couldn't load the device problems." onRetry={retry} />
-      ) : problems === null ? (
+    <MainLayout title="Ops dashboard" before={<StaffNav label="Ops area" />}>
+      {ops.refreshFailed && ops.data && <RefreshFailedNotice polling />}
+      {ops.error ? (
+        <DashboardError title="We couldn't load the device problems." onRetry={ops.retry} />
+      ) : ops.loading || ops.data === null ? (
         <OpsSkeleton />
       ) : (
-        <OpsContent problems={problems} onChange={setProblems} />
+        <OpsContent problems={ops.data} ops={ops} />
       )}
     </MainLayout>
   )
 }
+
+/** No resident names for ops: the announcer and the bell name devices and resident IDs. */
+const NO_RESIDENTS = new Map<string, never>()
 
 type Filter = 'all' | DeviceProblemType
 
@@ -90,17 +78,15 @@ const FILTERS: ReadonlyArray<{ id: Filter; label: string; spoken: string; empty:
   },
 ]
 
-function OpsContent({
-  problems,
-  onChange,
-}: {
-  problems: DeviceProblem[]
-  onChange: (next: DeviceProblem[]) => void
-}) {
+function OpsContent({ problems, ops }: { problems: DeviceProblem[]; ops: DeviceProblemsState }) {
   const [filter, setFilter] = useState<Filter>('all')
-  const [pending, setPending] = useState<string | null>(null)
-  const [actionError, setActionError] = useState(false)
-  const { message, announce } = useAnnouncer()
+  const { pending, actionError, isOwnAction } = ops
+  // The page's one announcer: new device problems (polling), filter changes, acknowledges.
+  const { message, announce } = useAlertAnnouncer(problems, NO_RESIDENTS, {
+    openListOnly: true,
+    describe: describeProblem,
+    isOwnAction,
+  })
 
   const count = (f: Filter) => (f === 'all' ? problems.length : problems.filter((p) => p.alert_type === f).length)
   const visible = filter === 'all' ? problems : problems.filter((p) => p.alert_type === filter)
@@ -112,31 +98,11 @@ function OpsContent({
     announce(`Showing ${count(next)} of ${problems.length}: ${spec.spoken}.`)
   }
 
-  async function acknowledge(problem: DeviceProblem) {
-    setPending(problem.alert_id)
-    setActionError(false)
-    try {
-      await acknowledgeAlertApi(problem, null)
-      // Queued (202); alert-processor applies it. Shown at once, as the other views do.
-      onChange(
-        problems.map((p) =>
-          p.alert_id === problem.alert_id
-            ? {
-                ...p,
-                status: 'acknowledged',
-                acknowledged_at: new Date().toISOString(),
-                acknowledged_by_role: 'ops',
-                acknowledged_by: 'the ops team',
-              }
-            : p,
-        ),
-      )
-      announce(`${ALERT_TYPE_LABELS[problem.alert_type]} on ${problem.device_id ?? 'the device'} acknowledged.`)
-    } catch {
-      setActionError(true)
-    } finally {
-      setPending(null)
-    }
+  function acknowledge(problem: DeviceProblem) {
+    // Queued (202); alert-processor applies it. Shown at once, then refetched.
+    void ops.acknowledge(problem).then((ok) => {
+      if (ok) announce(`${ALERT_TYPE_LABELS[problem.alert_type]} on ${problem.device_id ?? 'the device'} acknowledged.`)
+    })
   }
 
   return (

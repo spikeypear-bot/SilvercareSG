@@ -3,8 +3,9 @@
 # server), a Cognito JWT authorizer on every route, and one Lambda per route.
 #
 # Routes:
-# - GET /devices: staff devices view (docs/data-model.md, Devices view; patterns 4, 5,
-#   8), Lambda silvercare-api-devices (lambdas/api-devices/).
+# - GET /devices: devices view for staff and ops (docs/data-model.md, Devices view;
+#   patterns 4, 5, 8; ops without pattern 8), Lambda silvercare-api-devices
+#   (lambdas/api-devices/).
 # - GET /dashboard: nurse and doctor dashboards (docs/data-model.md, Dashboard;
 #   patterns 9, 8, 5, 4), Lambda silvercare-api-dashboard (lambdas/api-dashboard/).
 # - POST /residents/{resident_id}/alerts/{alert_id}/acknowledge, .../cancel, and
@@ -174,7 +175,8 @@ resource "aws_apigatewayv2_stage" "default" {
   # problem's base item (0.5 RCU each) on the alerts base table's 3 RCU, which
   # alert-processor reads strongly consistent on the alert path. 40 offline devices
   # would be 20 RCU per load, so a stuck client is held to one load per 20 s
-  # (about 1 RCU/s); the page loads once per view.
+  # (about 1 RCU/s). The ops dashboard polls every 30 s while its tab is visible, so a
+  # second ops user's polls can be throttled (429): the page keeps its last data.
   route_settings {
     route_key              = aws_apigatewayv2_route.get_ops_device_problems.route_key
     throttling_rate_limit  = 0.05
@@ -282,7 +284,7 @@ module "api_devices" {
   source = "./modules/python-lambda"
 
   function_name = local.api_devices_function_name
-  description   = "GET /devices: every device with its newest status and assigned resident, for staff."
+  description   = "GET /devices: every device with its newest status and assigned resident, for staff and ops."
   handler       = "handler.lambda_handler"
   zip_path      = data.archive_file.api_devices.output_path
   zip_hash      = data.archive_file.api_devices.output_base64sha256
