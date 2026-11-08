@@ -25,7 +25,7 @@ BACK_IN_BED ?=
 SECRETS_DIR := secrets
 KEYS_DIR := $(SECRETS_DIR)/device-keys
 
-.PHONY: help build up down shell test test-integration lint fmt tf-check check seed-local simulate-dry-run backfill device-keys device-certs smoke-test simulate
+.PHONY: help build up down shell test test-integration lint fmt tf-check check seed-local simulate-dry-run backfill device-keys device-certs smoke-test simulate upload-device-keys
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -77,6 +77,11 @@ simulate-dry-run: ## Print simulated device messages, no keys or network: make s
 # docs/features/simulator-backfill.md: past days as local raw-history files, no network.
 backfill: ## Write past days of simulated history to local files: make backfill ARGS="--from 2026-03-01 --to 2026-10-31 --out backfill-data"
 	$(COMPOSE) run --rm --quiet-pull dev python simulator/src/backfill.py $(ARGS)
+
+# docs/features/simulator-ec2.md: the EC2 simulator's keys in Parameter Store. Runs on the
+# host (the dev container has no AWS credentials), with your own AWS credentials.
+upload-device-keys: ## Upload device keys to Parameter Store (host): make upload-device-keys [ARGS="--devices <id>" | ARGS=--delete]
+	python scripts/upload-device-keys.py --keys-dir $(KEYS_DIR) $(ARGS)
 
 # IoT device targets (docs/features/iot-core.md). The developer runs these, not Claude:
 # they read or write the private keys in $(KEYS_DIR)/.

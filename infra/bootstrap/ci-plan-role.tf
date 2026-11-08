@@ -93,6 +93,25 @@ data "aws_iam_policy_document" "ci_plan" {
     resources = ["*"]
   }
 
+  # Device private keys for the EC2 simulator (docs/features/simulator-ec2.md, 8a).
+  # The aws/ssm key decrypts for every principal in the account, so ssm:GetParameter*
+  # is the only lock. Scoped to our path: plans still read AWS's public AMI parameter.
+  statement {
+    sid    = "DenyProjectParameterReads"
+    effect = "Deny"
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:GetParametersByPath",
+      "ssm:GetParameterHistory",
+    ]
+    # The bare path too: GetParametersByPath is authorised on the path itself.
+    resources = [
+      "arn:aws:ssm:ap-southeast-1:753674274065:parameter/silvercare",
+      "arn:aws:ssm:ap-southeast-1:753674274065:parameter/silvercare/*",
+    ]
+  }
+
   statement {
     sid           = "DenyObjectReadsExceptState"
     effect        = "Deny"

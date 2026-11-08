@@ -1,0 +1,46 @@
+#!/bin/bash
+# First-boot setup of the simulator instance (docs/features/simulator-ec2.md,
+# criteria 9-10). Runs once as root via cloud-init. Never prints key material.
+set -euo pipefail
+
+dnf install -y git tmux python3.13 python3.13-pip
+
+useradd --system --create-home --shell /sbin/nologin simulator
+
+git clone --depth 1 ${repo_url} /opt/silvercare
+chown -R simulator:simulator /opt/silvercare
+
+# Pinned like requirements-dev.txt / scripts/requirements.txt.
+python3.13 -m venv /opt/silvercare-venv
+/opt/silvercare-venv/bin/pip install --no-cache-dir paho-mqtt==2.1.0 boto3==1.43.114
+
+cat > /etc/systemd/system/silvercare-simulator.service <<'UNIT'
+[Unit]
+Description=SilverCare simulator, 40 devices (docs/features/simulator-ec2.md)
+After=network-online.target
+Wants=network-online.target
+# Retry forever: missing keys mean a quiet loop every 60 s, not a stop.
+StartLimitIntervalSec=0
+
+[Service]
+Type=forking
+User=simulator
+WorkingDirectory=/opt/silvercare
+# /run/silvercare-keys: tmpfs, 0700, owned by simulator, deleted when the service stops.
+RuntimeDirectory=silvercare-keys
+RuntimeDirectoryMode=0700
+ExecStartPre=/opt/silvercare-venv/bin/python simulator/deploy/fetch_keys.py --out /run/silvercare-keys
+# Inside tmux so stdin is a terminal and typed scenario commands work.
+ExecStart=/usr/bin/tmux new-session -d -s sim "/opt/silvercare-venv/bin/python simulator/src/main.py --endpoint ${iot_endpoint} --keys-dir /run/silvercare-keys"
+# Ctrl+C is the simulator's clean shutdown; wait for it to disconnect every device.
+ExecStop=/bin/sh -c 'tmux send-keys -t sim C-c; while tmux has-session -t sim 2>/dev/null; do sleep 1; done'
+TimeoutStopSec=30
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now silvercare-simulator

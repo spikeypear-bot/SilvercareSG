@@ -185,6 +185,53 @@
       "Resource": "arn:aws:s3:::silvercare-athena-results-753674274065/analysis/*"
     },
     {
+      "Sid": "WriteDeviceKeyParameters",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter"
+      ],
+      "Resource": "arn:aws:ssm:ap-southeast-1:753674274065:parameter/silvercare/device-keys/*"
+    },
+    {
+      "Sid": "StartSessionOnSimulator",
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": "arn:aws:ec2:ap-southeast-1:753674274065:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "ssm:resourceTag/role": "simulator"
+        }
+      }
+    },
+    {
+      "Sid": "SessionDocument",
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": "arn:aws:ssm:ap-southeast-1:753674274065:document/SSM-SessionManagerRunShell"
+    },
+    {
+      "Sid": "FindSimulator",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
+    },
+    {
+      "Sid": "OwnSessionsOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:TerminateSession",
+        "ssm:ResumeSession",
+        "ssmmessages:OpenDataChannel"
+      ],
+      "Resource": "arn:aws:ssm:*:*:session/*",
+      "Condition": {
+        "StringEquals": {
+          "ssm:resourceTag/aws:ssmmessages:session-id": "${aws:userid}"
+        }
+      }
+    },
+    {
       "Sid": "TerraformLockForLocalPlan",
       "Effect": "Allow",
       "Action": [
