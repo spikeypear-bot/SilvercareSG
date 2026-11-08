@@ -35,6 +35,7 @@ from events import (
     put_alert,
     put_bed_and_motion,
     put_device,
+    put_home,
     put_resident,
     put_status,
     put_thresholds,
@@ -397,6 +398,98 @@ def test_thresholds_items_hold_only_the_limits(aws):
     found = handler.batch_get_thresholds([RESIDENT_A])
 
     assert set(found[RESIDENT_A]) == {"pk", "spo2_pct"}
+
+
+# ---- registry HOME# (BatchGetItem, docs/features/alerts-map.md criterion 10) ----
+
+
+@pytest.fixture
+def homes_request(monkeypatch):
+    seen: list[dict[str, Any]] = []
+
+    class Client:
+        def batch_get_item(self, RequestItems):
+            seen.append(RequestItems)
+            return {"Responses": {}}
+
+    monkeypatch.setattr(handler, "dynamodb_client", lambda: Client())
+    handler.batch_get_homes(["home-0001", "home-0002"])
+    (request,) = seen
+    return request
+
+
+def test_homes_statement_is_batch_get_on_the_registry_only():
+    statement = _statement("RegistryHomes")
+    assert _list(statement, "actions") == {"dynamodb:BatchGetItem"}
+    assert re.search(r"resources\s*=\s*\[module\.registry_table\.arn\]", statement)
+    assert re.search(r'effect\s*=\s*"Allow"', statement)
+
+
+def test_homes_statement_limits_partitions_to_home():
+    assert "ForAllValues:StringLike" in _statement("RegistryHomes")
+    assert _condition_values("RegistryHomes", "dynamodb:LeadingKeys") == {"HOME#*"}
+
+
+def test_homes_statement_limits_attributes_to_address_and_position():
+    assert "ForAllValues:StringEquals" in _statement("RegistryHomes")
+    assert _condition_values("RegistryHomes", "dynamodb:Attributes") == {
+        "pk",
+        "sk",
+        "address",
+        "lat",
+        "lng",
+    }
+
+
+def test_homes_statement_requires_an_attribute_list():
+    """Null dynamodb:Attributes = false: a request with no projection (every
+    attribute) is denied."""
+    statement = _statement("RegistryHomes")
+    assert re.search(
+        r'test\s*=\s*"Null"\s*variable\s*=\s*"dynamodb:Attributes"\s*'
+        r'values\s*=\s*\["false"\]',
+        statement,
+    )
+
+
+def test_homes_statement_allows_select_only_as_specific_attributes():
+    assert "StringEqualsIfExists" in _statement("RegistryHomes")
+    assert _condition_values("RegistryHomes", "dynamodb:Select") == {
+        "SPECIFIC_ATTRIBUTES"
+    }
+
+
+def test_homes_batch_get_reads_only_attributes_the_role_allows(homes_request):
+    allowed = _condition_values("RegistryHomes", "dynamodb:Attributes")
+    ((table, spec),) = homes_request.items()
+
+    read = _names(spec["ProjectionExpression"], spec["ExpressionAttributeNames"])
+    assert table == REGISTRY_TABLE
+    assert read <= allowed
+    assert read == {"pk", "address", "lat", "lng"}
+    assert spec.get("Select", "SPECIFIC_ATTRIBUTES") == "SPECIFIC_ATTRIBUTES"
+
+
+def test_homes_batch_get_reads_only_home_partitions(homes_request):
+    ((_, spec),) = homes_request.items()
+    assert [k["pk"]["S"] for k in spec["Keys"]] == ["HOME#home-0001", "HOME#home-0002"]
+    assert all(k["sk"]["S"] == "PROFILE" for k in spec["Keys"])
+
+
+def test_homes_items_hold_only_the_requested_attributes(aws):
+    put_home(aws.ddb, "home-0001")
+
+    found = handler.batch_get_homes(["home-0001"])
+
+    assert set(found["home-0001"]) == {"pk", "address", "lat", "lng"}
+
+
+def test_thresholds_statement_still_covers_thresholds_only():
+    """The new statement didn't widen the thresholds one."""
+    assert _condition_values("RegistryThresholds", "dynamodb:LeadingKeys") == {
+        "THRESHOLDS#*"
+    }
+    assert "HOME#" not in _statement("RegistryThresholds")
 
 
 # ---- Cognito ----

@@ -17,6 +17,9 @@ acknowledger's `sub`) can never reach the response.
   resident's resolved thresholds, else `ok`.
 - `acknowledged_by` is a name (looked up by the handler, see actors.py) only for a
   caregiver's acknowledge of a device problem; never a `sub`.
+- `homes` (nurses only, docs/features/alerts-map.md): one entry per distinct home of a
+  resident with an open-index alert whose HOME item is valid (`home_view`); built with
+  exactly HOME_KEYS.
 """
 
 from __future__ import annotations
@@ -49,6 +52,10 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\Z")
 DISPLAY_NAME_MAX_LEN = 100
 ACK_NOTE_MAX_LEN = 500
+ADDRESS_MAX_LEN = 200
+# Singapore (docs/features/alerts-map.md, criterion 2), inclusive.
+LAT_RANGE = (Decimal("1.16"), Decimal("1.48"))
+LNG_RANGE = (Decimal("103.6"), Decimal("104.1"))
 
 HEALTH_ALERT_TYPES = frozenset(
     {
@@ -103,6 +110,8 @@ ALERT_KEYS = (
     "escalated_at",
     "escalates_at",
 )
+
+HOME_KEYS = ("home_id", "address", "lat", "lng")
 
 # Valid ranges (docs/metrics.md, vitals): anything else becomes None.
 VITAL_RANGES: dict[str, tuple[Decimal, Decimal, bool]] = {
@@ -205,6 +214,29 @@ def device_from_item(item: Mapping[str, Any]) -> Device | None:
         return None
     # The ID prefix is the type (docs/metrics.md).
     return Device(device_id, device_id.split("-", 1)[0], resident_id)
+
+
+def home_view(
+    home_id: str, item: Mapping[str, Any] | None
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """(one `homes` entry with exactly HOME_KEYS, invalid field names) from a HOME
+    item. None with no fields for a missing item; None with the bad field names for an
+    invalid one (the caller logs the names, never the values)."""
+    if item is None:
+        return None, []
+    address = item.get("address")
+    lat = _number(item.get("lat"), *LAT_RANGE, False)
+    lng = _number(item.get("lng"), *LNG_RANGE, False)
+    invalid = []
+    if not isinstance(address, str) or not 1 <= len(address) <= ADDRESS_MAX_LEN:
+        invalid.append("address")
+    if lat is None:
+        invalid.append("lat")
+    if lng is None:
+        invalid.append("lng")
+    if invalid:
+        return None, invalid
+    return {"home_id": home_id, "address": address, "lat": lat, "lng": lng}, []
 
 
 # ---- latest (pattern 5) ----
@@ -486,6 +518,17 @@ class Parsed:
 
     def caregiver_subs(self) -> set[str]:
         return {a.acknowledged_by_sub for a in self.alerts if a.acknowledged_by_sub}
+
+    def alert_home_ids(self) -> list[str]:
+        """Distinct, sorted home_ids of residents with an open-index alert (every parsed
+        alert is `open` or `acknowledged`). Unassigned alerts and residents with no
+        home_id add nothing."""
+        homes = set()
+        for alert in self.alerts:
+            resident = self.residents.get(alert.resident_id)
+            if resident is not None and resident.home_id is not None:
+                homes.add(resident.home_id)
+        return sorted(homes)
 
     def residents_needing_thresholds(self) -> list[str]:
         """Residents whose status depends on their vitals: no open alert, and at least

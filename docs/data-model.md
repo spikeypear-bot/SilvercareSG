@@ -158,6 +158,7 @@ acknowledge was already built in `lambdas/api-alert-actions/`.
 | 29 | backend: `summaries` (docs/features/curated-layer.md, criteria 6-8) | Every assigned device's `assigned_at` (which `by-type` doesn't project), and each assigned resident's thresholds | registry | BatchGetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` (projecting `pk`, `resident_id`, `device_type`, `assigned_at`), then `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` (projecting `pk`, `hr_bpm`, `spo2_pct`, `skin_temp_c`); eventually consistent, up to 100 keys per call, `UnprocessedKeys` retried with back-off. IAM limits the role to `DEVICE#*` and `THRESHOLDS#*` partitions (`dynamodb:LeadingKeys`) | once a day (after the clean job) |
 | 30 | backend: `results` (docs/features/nightly-results.md, criteria 2, 6) | Write one resident's night | results | PutItem `pk = RESIDENT#<resident_id>`, `sk = NIGHT#<date>`, unconditional (a re-run overwrites the same key) | about 20 a day, after `summaries` (about 2 WCU each, within burst capacity) |
 | 31 | Doctor only: resident page, "Nightly summary" (docs/features/nightly-results.md, criteria 16-18) | This resident's stored nights, newest first | results | Query `pk = RESIDENT#<resident_id>`, `begins_with(sk, "NIGHT#")`, descending, eventually consistent, paginated, projecting `pk`, `sk`, `summary`. Returns per night `date` (from `sk`) and every field of `summary`; drops `resident_id`, `schema_version`, `loaded_at`, `expires_at`, and nights older than 30 days before today's Singapore date | per page view (route throttled to 0.1/s, burst 2) |
+| 33 | Nurse only: nurse dashboard, alerts map (`GET /dashboard`, docs/features/alerts-map.md, criteria 3-9) | Address and map position of each home with an open-list alert | registry | After patterns 9 and 8: BatchGetItem `pk = HOME#<home_id>`, `sk = PROFILE` for the distinct `home_id`s of residents with an `open` or `acknowledged` alert, up to 100 keys per call, eventually consistent, `UnprocessedKeys` retried with back-off, projecting `pk`, `address`, `lat`, `lng`; cached 5 minutes per container per `home_id` (including "no item"). Returns per valid home `home_id`, `address`, `lat`, `lng`; drops `created_at`, `updated_at`, and invalid items. IAM limits the role to `HOME#*` partitions and those attributes | at most once per 5 minutes per home per container; about 0.5 RCU per home |
 
 No pattern uses `Scan`.
 
@@ -194,7 +195,8 @@ question for the user, 2026-11-07).
 **Dashboard** (patterns 9, 8, 5, and 4, staff only; built 2026-11-07 as
 `GET /dashboard`, `lambdas/api-dashboard/`, at the user's request): one route serves the
 nurse and doctor dashboards. `doctor` and `nurse` only: `caregiver`, `ops`, `family`,
-and no group get `403`. It returns exactly `{"residents": [...], "alerts": [...]}`:
+and no group get `403`. It returns exactly `{"residents": [...], "alerts": [...]}`, plus
+`homes` for callers in `nurse` (below):
 
 - per resident (every RESIDENT profile, sorted by `resident_id`): `resident_id`,
   `display_name`, `home_id`, `status`, `status_text` ([Resident status](#access-patterns),
@@ -209,7 +211,12 @@ and no group get `403`. It returns exactly `{"residents": [...], "alerts": [...]
   `acknowledged_at`, `acknowledged_by_role` and `acknowledged_by` (device problems only:
   the caregiver's Cognito `name`, "Former caregiver" once the account is gone, null for
   ops and for a nurse's acknowledge), `ack_note`, `escalated_at`, and the computed
-  `escalates_at`. Absent values are null. A route test checks the exact keys.
+  `escalates_at`. Absent values are null. A route test checks the exact keys;
+- `homes`, nurse callers only (a user in both groups too; docs/features/alerts-map.md,
+  pattern 33 "alerts map"): per distinct home of a resident with an alert in the list
+  whose [Home location](#home-location) item is valid, sorted by `home_id`: `home_id`,
+  `address`, `lat`, `lng`. Doctors get no `homes` key and cause no home read. If the
+  home read fails, `"homes": []` and `"homes_error": true`; the rest is unaffected.
 
 *(proposed, decided by the builder 2026-11-07; for the user to confirm)*:
 
@@ -304,7 +311,7 @@ Only staff can edit it.
 | `entity_type` | `RESIDENT` | `by-type` hash key |
 | `resident_id` | `res-0003` | opaque |
 | `display_name` | `Test Resident C` | identify the resident in the portal |
-| `home_id` | `home-0011` | opaque; which home the devices are in. No address is stored |
+| `home_id` | `home-0011` | opaque; which home the devices are in. The address is in a separate [Home location](#home-location) item |
 | `year_of_birth` | `1941` | show age. Year only, not a full date of birth |
 | `medical_notes` | `Synthetic note: uses a walking frame.` | care context for staff and caregivers. Free text, max 2,000 characters |
 | `emergency_contacts` | `[{"name": "Test Contact C1", "relationship": "daughter", "phone": "+65 0000 0001"}]` | who to call in an emergency. Max 2 contacts |
@@ -438,6 +445,38 @@ rewrite this item **and delete the device's items in `silvercare-latest`**. Othe
 the new resident's page would show the previous resident's readings. As a second
 safeguard, the API drops any entry whose `ts` is earlier than `assigned_at`.
 
+### Home location
+
+docs/features/alerts-map.md (user's decisions 2026-11-08): the address and map position
+of a home, for the nurse's alerts map. One item per home; no `entity_type`, so it is in
+no index.
+
+| Attribute | Example | Notes |
+|---|---|---|
+| `pk` | `HOME#home-0003` | opaque `home_id` (`^home-[0-9]{4}$`) |
+| `sk` | `PROFILE` | |
+| `home_id` | `home-0003` | |
+| `address` | `Test address 3 (synthetic)` | street, block, and unit; no name. 1-200 characters |
+| `lat`, `lng` | `1.357`, `103.805` | number; valid only inside Singapore: `lat` in [1.16, 1.48], `lng` in [103.6, 104.1] |
+| `created_at`, `updated_at` | `2026-11-08T03:00:00Z` | |
+
+- **Writer:** developers, by hand (no edit screen or API); `scripts/seed.py` writes the
+  synthetic `home-0001` ... `home-0020`.
+- **Reader:** `GET /dashboard` (`api-dashboard`), nurse callers only (pattern 33,
+  "alerts map"): `pk`, `address`, `lat`, `lng`. An item failing the checks above is
+  treated as "no location on file"; the Lambda logs the `home_id` and the field names,
+  never the values. Its role may only `dynamodb:BatchGetItem` `HOME#*` partitions for
+  those attributes (with `pk`, `sk`). Cached in the Lambda's memory for at most 5
+  minutes.
+- **Retention:** kept while any resident of that home is in the programme (a shared
+  home keeps its address while anyone still lives there); deleted 90 days after the
+  **last** resident of that home is offboarded (user, 2026-11-08), a manual step (see
+  [Retention](#retention) and the Offboarding steps).
+- **Erasure:** delete the `HOME#<home_id>` item; it stays recoverable for 35 days through
+  point-in-time recovery.
+- Personal and sensitive (where a vulnerable elderly person lives): never logged, and
+  test data uses synthetic addresses and positions on HDB towns' MRT stations only.
+
 ### User ↔ resident link
 
 Links a caregiver user (Cognito) to a resident. Names, emails, and phone
@@ -458,7 +497,12 @@ How links are created is Open decision #3 (user onboarding).
 
 `scripts/seed.py` (docs/features/seed-data.md) fills the registry with synthetic test
 data from `scripts/seed-data.json`: 20 resident profiles and thresholds, the 40 device
-assignments, and links for the test caregiver user.
+assignments, and links for the test caregiver user. It also writes a synthetic
+[Home location](#home-location) for each seeded `home-0001` ... `home-0020`
+(docs/features/alerts-map.md): address `Test address <n> (synthetic)` and a position
+from a fixed table in `seed.py`, one point per home number, each on an HDB town's
+MRT station (public transport, never a residential block). `--delete` deletes a home item only
+while its address is still that synthetic one (a conditional delete).
 
 - Seeded thresholds have `updated_by = "seed"` and seeded links have
   `linked_by = "seed"` (instead of a staff `sub`). `--delete` uses this marker to find
@@ -1407,6 +1451,9 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   query history age out rather than being erased.
 - **Before any real resident data arrives:**
   - the per-device erasure tool above exists
+  - home `address`, `lat`, `lng` ([Home location](#home-location), the nurse's alerts
+    map): their 90-day deletion after offboarding is automated or a checked manual
+    step, and their entry by hand is reviewed (developers can read and write them)
   - one resident's S3 `alerts/` objects can be found and deleted (access, correction,
     and date-of-death + 6 years requests): the keys hold only dates and alert IDs, and
     the `<alert_id>.final.json` records hold free-text acknowledge and closing notes
@@ -1516,6 +1563,7 @@ critical-alert and `silvercare-iot-rules`.
 | Device-problem alerts (`device_offline`, `battery_low`, `not_worn`; docs/features/watchdog.md) | open (or acknowledged) until the watchdog resolves them; resolved (or, for any cancelled one, cancelled) → 30 days after `resolved_at` / `cancelled_at`. An alert for a device that never recovers stays open until it is resolved by unassigning the device (the next watchdog run then resolves it) | TTL `expires_at` (the S3 `alerts/` copy stays, Open decision #4) |
 | `worn_false_since` (wearable `MSG#status` item) | while the wearable is off the wrist: overwritten or removed by `device-health` with the next newest status, gone when the item is replaced or removed (e.g. the device is unassigned or moved) | write rule |
 | Suppressed repeat alerts | not kept (log line with IDs and outcome only, 30 days) | — |
+| Home location (`HOME#<home_id>`: address, `lat`, `lng`) | while any resident of that home is in the programme; deleted 90 days after the **last** resident of that home is offboarded (user, 2026-11-08) | manual `DeleteItem` by a developer (offboarding step 5); recoverable 35 days through point-in-time recovery |
 | User accounts (Cognito) | disabled at the user's offboarding, deleted 90 days later | admin steps in the Cognito console (see `docs/features/sign-in.md`) |
 
 Point-in-time recovery keeps deleted and TTL-expired items restorable for up to 35
@@ -1531,6 +1579,9 @@ runs in one go:
    `THRESHOLD_LOG#` items (pattern 27) are **kept**, and this step does not set
    `expires_at`: that waits for a recorded date of death (see
    [Threshold change history](#threshold-change-history)).
+5. If they were the **last** resident of their home (no other resident has that
+   `home_id`), note the date; 90 days later a developer deletes the
+   `HOME#<home_id>` / `PROFILE` item by hand (not part of the API's offboarding action).
 
 Acknowledged alerts that are never resolved have no TTL, on purpose: deleting an
 unhandled alert automatically could hide a fall. The nurse dashboard lists them until

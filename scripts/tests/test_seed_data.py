@@ -380,9 +380,9 @@ def items(seed, data):
     return items_by_key(seed.build_registry_items(data, seed.local_subs(data), NOW))
 
 
-def test_builds_83_items(seed, data):
-    # 20 profiles + 20 thresholds + 40 devices + 3 links
-    assert len(seed.build_registry_items(data, seed.local_subs(data), NOW)) == 83
+def test_builds_103_items(seed, data):
+    # 20 profiles + 20 homes + 20 thresholds + 40 devices + 3 links
+    assert len(seed.build_registry_items(data, seed.local_subs(data), NOW)) == 103
 
 
 def test_profile_item_shape(items):

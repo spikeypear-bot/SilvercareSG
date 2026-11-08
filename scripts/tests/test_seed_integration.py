@@ -123,8 +123,8 @@ def check_criterion_8(client, table):
 
 def test_seed_local_twice_on_a_fresh_table(seed, local, scratch_table):
     # Exact counts: this table holds only the seed.
-    assert seed.seed_local(local, table=scratch_table, now=NOW) == 83
-    assert seed.seed_local(local, table=scratch_table, now=LATER) == 83
+    assert seed.seed_local(local, table=scratch_table, now=NOW) == 103
+    assert seed.seed_local(local, table=scratch_table, now=LATER) == 103
     check_criterion_8(local, scratch_table)
     assert len(query(local, scratch_table, "by-type", "entity_type", "DEVICE")) == 40
     assert len(query(local, scratch_table, "by-type", "entity_type", "RESIDENT")) == 20
@@ -139,7 +139,7 @@ def test_seed_local_twice_on_a_fresh_table(seed, local, scratch_table):
     )
     assert [i["gsi1_sk"]["S"] for i in users] == [f"USER#{CAREGIVER_SUB}"]
     count = local.scan(TableName=scratch_table, Select="COUNT")["Count"]
-    assert count == 83
+    assert count == 103
 
 
 def old_link(sub, resident_id, linked_by):
@@ -155,7 +155,7 @@ def old_link(sub, resident_id, linked_by):
 
 
 def test_seed_local_prunes_old_seed_links_only(seed, local, scratch_table):
-    assert seed.seed_local(local, table=scratch_table, now=NOW) == 83
+    assert seed.seed_local(local, table=scratch_table, now=NOW) == 103
     stale = [
         old_link(OLD_FAMILY_SUB, "res-0002", "seed"),
         old_link(OLD_FAMILY_SUB, "res-0005", "seed"),
@@ -166,7 +166,7 @@ def test_seed_local_prunes_old_seed_links_only(seed, local, scratch_table):
     ]
     for item in stale + kept:
         local.put_item(TableName=scratch_table, Item=item)
-    assert seed.seed_local(local, table=scratch_table, now=LATER) == 83
+    assert seed.seed_local(local, table=scratch_table, now=LATER) == 103
     old = query(
         local, scratch_table, None, "pk", f"USER#{OLD_FAMILY_SUB}", "RESIDENT#", "sk"
     )
@@ -175,7 +175,7 @@ def test_seed_local_prunes_old_seed_links_only(seed, local, scratch_table):
         "RESIDENT#res-9001",
     ]
     count = local.scan(TableName=scratch_table, Select="COUNT")["Count"]
-    assert count == 83 + len(kept)
+    assert count == 103 + len(kept)
 
 
 def test_main_local_twice(seed, local):
@@ -185,6 +185,6 @@ def test_main_local_twice(seed, local):
         out, err = io.StringIO(), io.StringIO()
         code = seed.main(["--local"], out=out, err=err)
         assert code == 0, err.getvalue()
-        assert "registry: 83 items written" in out.getvalue()
+        assert "registry: 103 items written" in out.getvalue()
         assert "old seed links removed" in out.getvalue()
     check_criterion_8(local, "silvercare-registry")

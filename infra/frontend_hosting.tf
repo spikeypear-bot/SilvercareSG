@@ -151,9 +151,11 @@ resource "aws_cloudfront_response_headers_policy" "frontend_security" {
 
     # connect-src: Cognito sign-in and this project's HTTP API only (api.tf). The API's
     # CORS pins this distribution's domain in a local instead of referencing it, to
-    # avoid a dependency cycle.
+    # avoid a dependency cycle. img-src adds OneMap's basemap tiles for the nurse's
+    # alerts map (docs/features/alerts-map.md); Leaflet's CSS is bundled, so style-src
+    # stays 'self'.
     content_security_policy {
-      content_security_policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cognito-idp.ap-southeast-1.amazonaws.com ${aws_apigatewayv2_api.api.api_endpoint}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+      content_security_policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://www.onemap.gov.sg; font-src 'self'; connect-src 'self' https://cognito-idp.ap-southeast-1.amazonaws.com ${aws_apigatewayv2_api.api.api_endpoint}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
       override                = true
     }
   }

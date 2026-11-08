@@ -5,6 +5,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **Problem:** during the alerts-map build, backend-builder ran `git stash` / `git stash
+  pop` for a baseline test run, which reverted the frontend agents' files on disk for a
+  few minutes while they worked in parallel. **Changed:**
+  `.claude/workflows/build-feature.js` (`MANDATE`, sent to every agent): never run git
+  stash, checkout, reset, or restore, because other agents share the working tree.
 - **Problem:** the curated-layer go-live checklist said to clean only D−1 and D before a
   manual summaries run, but summaries also needs D−2 for `bed` and `vitals_alert`; the
   run failed with "clean partition missing". **Changed:**

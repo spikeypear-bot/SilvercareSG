@@ -13,8 +13,10 @@ DynamoDB Local (dev container, no prompt, no Cognito or STS):
     make seed-local ARGS=--delete
 
 Every value comes from scripts/seed-data.json (20 residents, their thresholds, the 40
-device assignments, 3 test users without passwords, and the user <-> resident links);
-the device list is checked against infra/devices/devices.json. The seed file is
+device assignments, 3 test users without passwords, and the user <-> resident links),
+except each resident's synthetic home item (address from the home number, map position
+from the fixed HOME_POSITIONS table: HDB towns' MRT stations only,
+docs/features/alerts-map.md); the device list is checked against infra/devices/devices.json. The seed file is
 validated before any AWS client is created.
 
 Live steps, after the confirmation prompt: create or update the 3 test users (one per
@@ -29,7 +31,8 @@ retired test user test-family@example.com (the family group was removed) is then
 deleted if it still exists, and its line is removed from the passwords file. No other
 user is deleted outside --delete.
 
---delete removes the seeded items, every link to a seeded resident with
+--delete removes the seeded items (a home item only while its address is still the
+synthetic one the seed wrote), every link to a seeded resident with
 linked_by = "seed", the 3 test users and the retired user, and their lines in the
 passwords file.
 
@@ -141,6 +144,36 @@ DISPLAY_NAME_RE = re.compile(r"^Test Resident [A-Z]\Z")
 CONTACT_NAME_RE = re.compile(r"^Test Contact [A-Z][0-9]\Z")
 PHONE_RE = re.compile(r"^\+65 0000 [0-9]{4}\Z")
 USER_NAME_RE = re.compile(r"^Test [A-Z][a-z]+\Z")
+HOME_ID_RE = re.compile(r"^home-([0-9]{4})\Z")
+# Synthetic home positions (docs/features/alerts-map.md, criterion 21): one fixed point
+# per home number, each on an HDB town's MRT station (public transport, never a
+# residential block), so pins spread across the estates but none lands on a real home.
+# (lat, lng), 4 decimal places.
+HOME_POSITIONS: dict[int, tuple[Decimal, Decimal]] = {
+    1: (Decimal("1.3700"), Decimal("103.8496")),  # Ang Mo Kio MRT
+    2: (Decimal("1.3510"), Decimal("103.8485")),  # Bishan MRT
+    3: (Decimal("1.3326"), Decimal("103.8474")),  # Toa Payoh MRT
+    4: (Decimal("1.2945"), Decimal("103.8060")),  # Queenstown MRT
+    5: (Decimal("1.2896"), Decimal("103.8168")),  # Redhill MRT (Bukit Merah)
+    6: (Decimal("1.3151"), Decimal("103.7652")),  # Clementi MRT
+    7: (Decimal("1.3332"), Decimal("103.7423")),  # Jurong East MRT
+    8: (Decimal("1.3490"), Decimal("103.7496")),  # Bukit Batok MRT
+    9: (Decimal("1.3854"), Decimal("103.7444")),  # Choa Chu Kang MRT
+    10: (Decimal("1.3784"), Decimal("103.7622")),  # Bukit Panjang MRT
+    11: (Decimal("1.4370"), Decimal("103.7865")),  # Woodlands MRT
+    12: (Decimal("1.4294"), Decimal("103.8350")),  # Yishun MRT
+    13: (Decimal("1.4491"), Decimal("103.8201")),  # Sembawang MRT
+    14: (Decimal("1.3916"), Decimal("103.8952")),  # Sengkang MRT
+    15: (Decimal("1.4052"), Decimal("103.9024")),  # Punggol MRT
+    16: (Decimal("1.3713"), Decimal("103.8923")),  # Hougang MRT
+    17: (Decimal("1.3498"), Decimal("103.8737")),  # Serangoon MRT
+    18: (Decimal("1.3534"), Decimal("103.9452")),  # Tampines MRT
+    19: (Decimal("1.3731"), Decimal("103.9493")),  # Pasir Ris MRT
+    20: (Decimal("1.3240"), Decimal("103.9300")),  # Bedok MRT
+}
+# Criterion 2's validity bounds (Singapore): a point outside them is "no location".
+HOME_LAT_BOUNDS = (Decimal("1.16"), Decimal("1.48"))
+HOME_LNG_BOUNDS = (Decimal("103.6"), Decimal("104.1"))
 
 # Same keys, indexes, projections, and capacity as infra/dynamodb.tf (registry_table).
 REGISTRY_TABLE_DEFINITION: dict[str, Any] = {
@@ -286,6 +319,17 @@ def _validate_resident(resident: Any, label: str, problems: list[str]) -> None:
         )
     elif resident.get("home_id") != f"home-{match.group(1)}":
         problems.append(f"resident {label}: home_id must be home-{match.group(1)}")
+    else:
+        position = HOME_POSITIONS.get(int(match.group(1)))
+        if position is None:
+            problems.append(f"resident {label}: home has no position in HOME_POSITIONS")
+        elif not (
+            HOME_LAT_BOUNDS[0] <= position[0] <= HOME_LAT_BOUNDS[1]
+            and HOME_LNG_BOUNDS[0] <= position[1] <= HOME_LNG_BOUNDS[1]
+        ):
+            problems.append(
+                f"resident {label}: home position is outside the Singapore bounds"
+            )
     name = resident.get("display_name")
     if not isinstance(name, str) or not DISPLAY_NAME_RE.match(name):
         problems.append(
@@ -546,6 +590,23 @@ def thresholds_key(resident_id: str) -> dict[str, dict[str, str]]:
     return {"pk": {"S": f"THRESHOLDS#{resident_id}"}, "sk": {"S": "THRESHOLDS"}}
 
 
+def home_key(home_id: str) -> dict[str, dict[str, str]]:
+    return {"pk": {"S": f"HOME#{home_id}"}, "sk": {"S": "PROFILE"}}
+
+
+def home_values(home_id: str) -> tuple[str, Decimal, Decimal]:
+    """(synthetic address, lat, lng) of a seeded home; the position is the home
+    number's entry in HOME_POSITIONS."""
+    match = HOME_ID_RE.match(home_id)
+    if match is None:
+        raise ValueError("home_id must be home-NNNN")
+    n = int(match.group(1))
+    if n not in HOME_POSITIONS:
+        raise ValueError("home_id has no position in HOME_POSITIONS")
+    lat, lng = HOME_POSITIONS[n]
+    return f"Test address {n} (synthetic)", lat, lng
+
+
 def device_key(device_id: str) -> dict[str, dict[str, str]]:
     return {"pk": {"S": f"DEVICE#{device_id}"}, "sk": {"S": "ASSIGNMENT"}}
 
@@ -575,6 +636,21 @@ def build_registry_items(
                     "year_of_birth": resident["year_of_birth"],
                     "medical_notes": resident["medical_notes"],
                     "emergency_contacts": resident["emergency_contacts"],
+                    "created_at": ts,
+                    "updated_at": ts,
+                }
+            )
+        )
+        address, lat, lng = home_values(resident["home_id"])
+        items.append(
+            to_item(
+                {
+                    "pk": f"HOME#{resident['home_id']}",
+                    "sk": "PROFILE",
+                    "home_id": resident["home_id"],
+                    "address": address,
+                    "lat": lat,
+                    "lng": lng,
                     "created_at": ts,
                     "updated_at": ts,
                 }
@@ -633,7 +709,8 @@ def build_registry_items(
 
 
 def owned_keys(seed: dict[str, Any]) -> list[dict[str, dict[str, str]]]:
-    """Keys of the seeded profiles, thresholds, and device assignments (not links)."""
+    """Keys of the seeded profiles, thresholds, and device assignments (not links or
+    homes: delete_seed deletes those conditionally)."""
     keys = []
     for resident in seed["residents"]:
         keys.append(profile_key(resident["resident_id"]))
@@ -1062,10 +1139,13 @@ def delete_seed(
     table: str = TABLE,
     sleep: Callable[[float], None] = time.sleep,
     skipped: list[str] | None = None,
+    kept_homes: list[str] | None = None,
 ) -> tuple[int, int]:
-    """Delete the seed's links (linked_by = seed), then its devices, thresholds, and
-    profiles. Items already gone are fine. Device assignments to a resident the seed
-    doesn't own are kept; their IDs are appended to skipped if given.
+    """Delete the seed's links (linked_by = seed), then its devices, thresholds,
+    profiles, and homes. Items already gone are fine. Device assignments to a resident
+    the seed doesn't own are kept; their IDs are appended to skipped if given. A home
+    item whose address is no longer the seed's synthetic one is kept; its home_id is
+    appended to kept_homes if given.
     Returns (links deleted, other items deleted or already gone)."""
     resident_ids = [resident["resident_id"] for resident in seed["residents"]]
     foreign = set(foreign_devices(client, seed, table=table, sleep=sleep))
@@ -1085,7 +1165,34 @@ def delete_seed(
     other_count = batch_write(
         client, table, delete_requests(devices + others), sleep=sleep
     )
+    for resident in seed["residents"]:
+        kept = not delete_home(client, resident["home_id"], table=table)
+        if kept and kept_homes is not None:
+            kept_homes.append(resident["home_id"])
+        other_count += not kept
     return link_count, other_count
+
+
+def delete_home(client: Any, home_id: str, table: str = TABLE) -> bool:
+    """Delete a seeded home item only while it is missing or still holds the seed's
+    synthetic address (checked by DynamoDB at delete time), so a home someone has since
+    written by hand is kept. True if deleted or already gone, False if kept. One
+    DeleteItem per home: the client's adaptive retries pace them for 1 WCU."""
+    from botocore.exceptions import ClientError
+
+    address, _, _ = home_values(home_id)
+    try:
+        client.delete_item(
+            TableName=table,
+            Key=home_key(home_id),
+            ConditionExpression="attribute_not_exists(pk) OR address = :address",
+            ExpressionAttributeValues={":address": {"S": address}},
+        )
+    except ClientError as exc:
+        if _error_code(exc) != "ConditionalCheckFailedException":
+            raise
+        return False
+    return True
 
 
 def table_exists(client: Any, table: str = TABLE) -> bool:
@@ -1458,9 +1565,18 @@ def _delete_registry(
     client: Any, seed: dict[str, Any], out: TextIO, sleep: Callable[[float], None]
 ) -> None:
     skipped: list[str] = []
-    links, others = delete_seed(client, seed, sleep=sleep, skipped=skipped)
+    kept_homes: list[str] = []
+    links, others = delete_seed(
+        client, seed, sleep=sleep, skipped=skipped, kept_homes=kept_homes
+    )
     print(f"registry: {links} seed links deleted", file=out)
     print(f"registry: {others} items deleted or already gone", file=out)
+    if kept_homes:
+        print(
+            f"registry: {len(kept_homes)} homes kept, changed since the seed wrote"
+            f" them ({', '.join(kept_homes)})",
+            file=out,
+        )
     if skipped:
         print(
             f"registry: {len(skipped)} devices skipped, assigned to residents the"

@@ -292,6 +292,33 @@ describe('loadDashboardData', () => {
     expect(data.alerts.map((a) => a.alert_id)).toEqual(['alert-test-002', 'alert-test-001'])
   })
 
+  it('staff (nurse): copies homes by field name, dropping unknown keys (alerts-map)', async () => {
+    const home = { home_id: 'home-test-001', address: 'Test address 1 (synthetic)', lat: 1.36, lng: 103.8 }
+    api.getDashboard.mockResolvedValue({
+      residents: [apiResident(1)],
+      alerts: [apiAlert()],
+      homes: [{ ...home, extra: 'not copied' } as typeof home],
+    })
+    const data = await loadDashboardData('staff')
+    expect(data.homes).toEqual([home])
+    expect(Object.keys(data.homes![0]).sort()).toEqual(['address', 'home_id', 'lat', 'lng'])
+    expect(sortedKeys(data)).toEqual(['alerts', 'homes', 'residents'])
+  })
+
+  it('staff (nurse): carries homes_error with empty homes', async () => {
+    api.getDashboard.mockResolvedValue({ residents: [], alerts: [], homes: [], homes_error: true })
+    const data = await loadDashboardData('staff')
+    expect(data.homes).toEqual([])
+    expect(data.homes_error).toBe(true)
+  })
+
+  it('staff (doctor): no homes key in the response means no homes or homes_error in the data', async () => {
+    api.getDashboard.mockResolvedValue({ residents: [apiResident(1)], alerts: [apiAlert()] })
+    const data = await loadDashboardData('staff')
+    expect(data).not.toHaveProperty('homes')
+    expect(data).not.toHaveProperty('homes_error')
+  })
+
   it('staff: rejects with the ApiError from getDashboard', async () => {
     const error = new ApiError(403, 'forbidden')
     api.getDashboard.mockRejectedValue(error)

@@ -472,6 +472,39 @@ data "aws_iam_policy_document" "api_dashboard" {
     }
   }
 
+  # Alerts map (docs/features/alerts-map.md): nurse callers read the address and
+  # position of homes with open-list alerts, projected, never any other attribute.
+  statement {
+    sid       = "RegistryHomes"
+    effect    = "Allow"
+    actions   = ["dynamodb:BatchGetItem"]
+    resources = [module.registry_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["HOME#*"]
+    }
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["pk", "sk", "address", "lat", "lng"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "dynamodb:Select"
+      values   = ["SPECIFIC_ATTRIBUTES"]
+    }
+  }
+
   statement {
     sid       = "CognitoNames"
     effect    = "Allow"

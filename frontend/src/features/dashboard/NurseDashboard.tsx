@@ -6,9 +6,10 @@ import { Notice } from '../../components/Notice'
 import { RelativeTime } from '../../components/RelativeTime'
 import { Skeleton } from '../../components/Skeleton'
 import { useNow } from '../../lib/useNow'
-import type { DashboardData, Resident, ResidentAlert } from '../../types/dashboard'
+import type { DashboardData, Home, Resident, ResidentAlert } from '../../types/dashboard'
 import { useAuth } from '../auth/useAuth'
 import { AlertAnnouncer } from './AlertAnnouncer'
+import { AlertsMap } from './AlertsMap'
 import { AlertRow } from './AlertRow'
 import { BatteryLevel, WearableStatusText } from './DeviceStatus'
 import { DashboardError, LoadingStatus, RefreshFailedNotice } from './DashboardStates'
@@ -106,6 +107,8 @@ function NurseContent({ data, onAcknowledge, onResolve, isOwnAction }: NurseCont
         <AlertInbox
           alerts={data.alerts}
           residentsById={residentsById}
+          homes={data.homes}
+          homesError={data.homes_error === true}
           announce={announce}
           onAcknowledge={onAcknowledge}
           onResolve={(id, resolveNote) => onResolve(id, staffName, resolveNote)}
@@ -123,13 +126,16 @@ function NurseContent({ data, onAcknowledge, onResolve, isOwnAction }: NurseCont
 interface AlertInboxProps {
   alerts: ResidentAlert[]
   residentsById: Map<string, Resident>
+  homes: Home[] | undefined
+  homesError: boolean
   announce: (message: string) => void
   onAcknowledge: (alertId: string, ackNote?: string) => Promise<boolean>
   onResolve: (alertId: string, resolveNote: string) => Promise<boolean>
 }
 
-function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve }: AlertInboxProps) {
+function AlertInbox({ alerts, residentsById, homes, homesError, announce, onAcknowledge, onResolve }: AlertInboxProps) {
   const headingRef = useRef<HTMLHeadingElement>(null)
+  const [view, setView] = useState<'list' | 'map'>('list')
   const open = useMemo(() => sortAlertsForInbox(openListAlerts(alerts)), [alerts])
   const resolved = useMemo(
     () =>
@@ -147,8 +153,24 @@ function AlertInbox({ alerts, residentsById, announce, onAcknowledge, onResolve 
       headingRef={headingRef}
       description="Critical alerts are pinned to the top, then newest first."
     >
+      {open.length > 0 && (
+        <div role="group" aria-label="Show alerts as" className="flex gap-2">
+          {(['list', 'map'] as const).map((v) => (
+            <Button
+              key={v}
+              variant={view === v ? 'primary' : 'secondary'}
+              aria-pressed={view === v}
+              onClick={() => setView(v)}
+            >
+              {v === 'list' ? 'List' : 'Map'}
+            </Button>
+          ))}
+        </div>
+      )}
       {open.length === 0 ? (
         <p className="text-base text-slate-600">No open alerts.</p>
+      ) : view === 'map' ? (
+        <AlertsMap alerts={open} residentsById={residentsById} homes={homes} homesError={homesError} />
       ) : (
         <ul className="flex flex-col divide-y divide-slate-200">
           {open.map((alert) => {

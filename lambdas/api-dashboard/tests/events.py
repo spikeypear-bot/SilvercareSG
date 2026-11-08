@@ -318,3 +318,38 @@ def put_alert(ddb, **kwargs: Any) -> dict[str, Any]:
     item = alert_item(**kwargs)
     put_raw(ddb, os.environ["ALERTS_TABLE"], item)
     return item
+
+
+# ---- home items (docs/features/alerts-map.md) ----
+
+# Distinctive synthetic values (inside the nature-reserve box), easy to search for in
+# logs.
+HOME_ADDRESS = "Test address qz-5521 (synthetic)"
+HOME_LAT = Decimal("1.3612")
+HOME_LNG = Decimal("103.8031")
+
+
+def put_home(
+    ddb,
+    home_id: str = HOME_A,
+    address: Any = HOME_ADDRESS,
+    lat: Any = HOME_LAT,
+    lng: Any = HOME_LNG,
+) -> None:
+    """A registry HOME item (`None` leaves an attribute out), with timestamps the route
+    never returns."""
+    item = {
+        "pk": f"HOME#{home_id}",
+        "sk": "PROFILE",
+        "home_id": home_id,
+        "address": address,
+        "lat": lat,
+        "lng": lng,
+        "created_at": ASSIGNED_AT,
+        "updated_at": ASSIGNED_AT,
+    }
+    put_raw(
+        ddb,
+        os.environ["REGISTRY_TABLE"],
+        {k: v for k, v in item.items() if v is not None},
+    )

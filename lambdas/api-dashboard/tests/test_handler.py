@@ -359,6 +359,8 @@ def test_whole_dashboard_body(aws):
                 "escalates_at": None,
             },
         ],
+        # Nurse only (alerts-map): resident A has open alerts but no HOME item.
+        "homes": [],
     }
 
 

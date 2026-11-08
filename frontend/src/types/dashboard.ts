@@ -170,6 +170,21 @@ export interface DashboardData {
   residents: Resident[]
   /** Newest first */
   alerts: ResidentAlert[]
+  /**
+   * Nurse only (`GET /dashboard`): the location of each home with an open-list alert and
+   * a valid home item (docs/features/alerts-map.md). Absent for doctors and caregivers.
+   */
+  homes?: Home[]
+  /** True when the server couldn't read home locations; `homes` is then empty. */
+  homes_error?: boolean
+}
+
+/** A home's address and map position (docs/features/alerts-map.md, criterion 4). */
+export interface Home {
+  home_id: string
+  address: string
+  lat: number
+  lng: number
 }
 
 /**
@@ -211,4 +226,8 @@ export interface ApiDashboardResponse {
   residents: ApiDashboardResident[]
   /** Newest first */
   alerts: ApiDashboardAlert[]
+  /** Nurse callers only, ordered by `home_id`; no key for doctors. */
+  homes?: Home[]
+  /** Present (true) only when the home read failed; `homes` is then `[]`. */
+  homes_error?: true
 }
