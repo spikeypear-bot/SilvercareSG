@@ -17,7 +17,10 @@ from helpers import REPO_ROOT
 TABLE = "silvercare-registry"
 NOW = datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC)
 LATER = datetime(2026, 11, 2, 4, 5, 6, tzinfo=UTC)
-TIMESTAMP_FIELDS = {"created_at", "updated_at", "assigned_at", "linked_at"}
+# Fields set to the run time. Not assigned_at: it is fixed on every run
+# (docs/features/seed-data.md, criterion 6), so a re-run must keep it unchanged.
+TIMESTAMP_FIELDS = {"created_at", "updated_at", "linked_at"}
+ASSIGNED_AT = "2026-01-31T16:00:00Z"
 # The local sub the removed test-family user had before 2026-11-04.
 OLD_FAMILY_SUB = "00000000-0000-4000-8000-000000000004"
 CAREGIVER_SUB = "00000000-0000-4000-8000-000000000003"
@@ -204,6 +207,13 @@ def test_rerun_is_identical_except_timestamps(seed, seeded, data):
     assert without_timestamps(first) == without_timestamps(second)
     profile = keyed(second)[("RESIDENT#res-0001", "PROFILE")]
     assert profile["updated_at"] == {"S": "2026-11-02T04:05:06Z"}
+
+
+def test_rerun_keeps_the_fixed_assigned_at(seed, seeded, data):
+    seed.seed_local(seeded, table=TABLE, seed=data, now=LATER, sleep=no_sleep)
+    assignments = [i for i in scan(seeded) if i["sk"]["S"] == "ASSIGNMENT"]
+    assert len(assignments) == 40
+    assert {i["assigned_at"]["S"] for i in assignments} == {ASSIGNED_AT}
 
 
 def test_rerun_resets_hand_edited_seed_items(seed, seeded, data):

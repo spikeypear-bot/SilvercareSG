@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import copy
 import string
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
 NOW = datetime(2026, 11, 1, 3, 0, 0, tzinfo=UTC)
 TS = "2026-11-01T03:00:00Z"
+ASSIGNED_AT = "2026-01-31T16:00:00Z"
 LETTERS = string.ascii_uppercase[:20]
 
 
@@ -457,10 +458,49 @@ def test_device_item_shape(items):
         "device_type": {"S": "bedroom"},
         "resident_id": {"S": "res-0002"},
         "home_id": {"S": "home-0002"},
-        "assigned_at": {"S": TS},
+        # Fixed, not the run time (docs/features/seed-data.md, criterion 6).
+        "assigned_at": {"S": ASSIGNED_AT},
         "gsi1_pk": {"S": "RESIDENT#res-0002"},
         "gsi1_sk": {"S": "DEVICE#bedroom-0002"},
     }
+
+
+def test_seed_assigned_at_constant_is_2026_02_01_midnight_singapore(seed):
+    assert seed.SEED_ASSIGNED_AT == ASSIGNED_AT
+    moment = datetime.fromisoformat(ASSIGNED_AT)
+    sgt = moment.astimezone(timezone(timedelta(hours=8)))
+    assert (sgt.date().isoformat(), sgt.hour, sgt.minute) == ("2026-02-01", 0, 0)
+
+
+@pytest.mark.parametrize(
+    "now",
+    [
+        NOW,
+        datetime(2027, 6, 30, 23, 59, 59, tzinfo=UTC),
+        datetime(2025, 1, 1, tzinfo=UTC),
+        "2026-12-25T08:00:00Z",
+    ],
+)
+def test_every_assignment_has_the_fixed_assigned_at_whatever_the_run_time(
+    seed, data, now
+):
+    items = seed.build_registry_items(data, seed.local_subs(data), now)
+    assignments = [i for i in items if i["sk"]["S"] == "ASSIGNMENT"]
+    assert len(assignments) == 40
+    assert {i["assigned_at"]["S"] for i in assignments} == {ASSIGNED_AT}
+
+
+def test_other_timestamps_still_use_the_run_time(seed, data):
+    later = datetime(2026, 12, 25, 8, 0, 0, tzinfo=UTC)
+    items = seed.build_registry_items(data, seed.local_subs(data), later)
+    stamps = {
+        (name, item[name]["S"])
+        for item in items
+        for name in ("created_at", "updated_at", "linked_at")
+        if name in item
+    }
+    assert {name for name, _ in stamps} == {"created_at", "updated_at", "linked_at"}
+    assert {value for _, value in stamps} == {"2026-12-25T08:00:00Z"}
 
 
 def test_link_item_shape_uses_the_given_sub(seed, data):

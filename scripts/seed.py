@@ -86,6 +86,10 @@ TABLE = "silvercare-registry"
 USER_POOL_NAME = "silvercare-users"
 DEFAULT_LOCAL_ENDPOINT = "http://dynamodb-local:8000"
 SEED_MARKER = "seed"  # updated_by / linked_by on every seeded item that has one
+# Every seeded device assignment's assigned_at, on every run (2026-02-01 00:00 SGT;
+# docs/features/seed-data.md criterion 6): summaries count readings only from
+# assigned_at, so backfilled history from earlier months is counted.
+SEED_ASSIGNED_AT = "2026-01-31T16:00:00Z"
 
 GROUPS = ("doctor", "nurse", "caregiver")
 LINK_GROUPS = ("caregiver",)
@@ -682,7 +686,7 @@ def build_registry_items(
                     "device_type": device["device_type"],
                     "resident_id": resident_id,
                     "home_id": homes[resident_id],
-                    "assigned_at": ts,
+                    "assigned_at": SEED_ASSIGNED_AT,
                     "gsi1_pk": f"RESIDENT#{resident_id}",
                     "gsi1_sk": f"DEVICE#{device_id}",
                 }

@@ -18,6 +18,15 @@ vi.mock('./useDashboardData', async (importOriginal) => {
   }
 })
 
+// The "Last night" section (docs/features/nightly-overview.md) is mocked at the API
+// boundary so this file never reaches the real client or Amplify; its own tests are in
+// LastNightSection.test.tsx.
+vi.mock('../../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/api')>()
+  const { testOverview } = await import('../../test/nightlyFixtures')
+  return { ...actual, getNightlyOverview: vi.fn(async () => testOverview()) }
+})
+
 
 beforeEach(() => {
   resetDashboardLoader()

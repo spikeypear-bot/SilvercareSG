@@ -256,6 +256,11 @@ class Engine:
             delay = routine.next_change_delay_ms(self.start_routine_ms, state.offset_ms)
             self._push(delay, "routine", resident_id)
 
+    def offset_ms(self, device_id: str) -> int:
+        """The routine offset of the resident a device of this run belongs to (read
+        only; the backfill places falls with it)."""
+        return self._owner[device_id].offset_ms
+
     def next_time_ms(self) -> int | None:
         return self._heap[0].elapsed_ms if self._heap else None
 
