@@ -20,7 +20,9 @@ with the resident pages feature:
 
 DynamoDB holds the **live state** the portal and the backend Lambdas read: the device
 registry, the latest 5 messages per device and message type, and alerts. It does not
-keep history. Every message and alert also goes to S3 for analysis; see
+keep history, with one exception (user's decision 2026-11-07): the
+[`silvercare-results`](#silvercare-results) table keeps about 30 nights of each
+resident's daily summary for the doctors' portal, then items expire. Every message and alert also goes to S3 for analysis; see
 [S3 history](#s3-history).
 
 Built from `docs/metrics.md` and `docs/decisions/0001-iot-rule-routing.md`. Change this
@@ -49,6 +51,7 @@ doc first, then the Terraform.
 | `silvercare-registry` | residents, device assignments, user ↔ resident links, threshold changes *(proposed)* | `pk`, `sk` | `by-type`, `by-resident` | no | no; *(proposed)* `expires_at`, set only on threshold changes once a date of death is recorded |
 | `silvercare-latest` | latest 5 messages per device and message type | `pk`, `sk` | `by-message` (sparse) | no | no |
 | `silvercare-alerts` | alerts | `pk`, `sk` | `open` (sparse) | no | `expires_at` |
+| `silvercare-results` | about 30 nights of each resident's daily summary (docs/features/nightly-results.md) | `pk`, `sk` | none | no | `expires_at` |
 
 All keys are strings. Key values use opaque IDs only (`res-0003`, `wearable-0007`, a
 Cognito `sub`), never names or other personal data.
@@ -138,6 +141,8 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 28 | backend: `watchdog` | `worn_false_since` of the wearables whose newest `status` has `worn = false` (docs/features/watchdog.md, criterion 2) | latest | BatchGetItem `pk = DEVICE#<device_id>`, `sk = MSG#status` (up to 100 keys per call, `UnprocessedKeys` retried), eventually consistent, projecting `pk`, `worn_false_since` | every 5 min, only for wearables off the wrist |
 | 27 | backend: `watchdog` (docs/features/possible-fall.md, criterion 3a) | Bedroom units in possible-fall test mode | registry `by-type` | Query `entity_type = TEST_MODE` (as pattern 4), eventually consistent, paginated, projecting `pk`, `sk`; usually returns nothing | every 5 min |
 | 29 | backend: `summaries` (docs/features/curated-layer.md, criteria 6-8) | Every assigned device's `assigned_at` (which `by-type` doesn't project), and each assigned resident's thresholds | registry | BatchGetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` (projecting `pk`, `resident_id`, `device_type`, `assigned_at`), then `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` (projecting `pk`, `hr_bpm`, `spo2_pct`, `skin_temp_c`); eventually consistent, up to 100 keys per call, `UnprocessedKeys` retried with back-off. IAM limits the role to `DEVICE#*` and `THRESHOLDS#*` partitions (`dynamodb:LeadingKeys`) | once a day (after the clean job) |
+| 30 | backend: `results` (docs/features/nightly-results.md, criteria 2, 6) | Write one resident's night | results | PutItem `pk = RESIDENT#<resident_id>`, `sk = NIGHT#<date>`, unconditional (a re-run overwrites the same key) | about 20 a day, after `summaries` (about 2 WCU each, within burst capacity) |
+| 31 | Doctor only: resident page, "Nightly summary" (docs/features/nightly-results.md, criteria 16-18) | This resident's stored nights, newest first | results | Query `pk = RESIDENT#<resident_id>`, `begins_with(sk, "NIGHT#")`, descending, eventually consistent, paginated, projecting `pk`, `sk`, `summary`. Returns per night `date` (from `sk`) and every field of `summary`; drops `resident_id`, `schema_version`, `loaded_at`, `expires_at`, and nights older than 30 days before today's Singapore date | per page view (route throttled to 0.1/s, burst 2) |
 
 No pattern uses `Scan`.
 
@@ -1116,6 +1121,59 @@ the index.
   script (up to 500 characters at 3 bytes each) is about 1.5 KB, so 2 WCU. That is a
   few a day, within the index's 1 WCU plus burst capacity.
 
+## `silvercare-results`
+
+About 30 nights of each resident's daily summary, copied from S3 `summaries/` (see
+[S3 history](#s3-history)) for the doctors' "Nightly summary" section on the resident
+page (docs/features/nightly-results.md). The S3 summaries stay the record; this is a
+copy for the portal and the one exception to "live state only".
+
+| Attribute | Example | Notes |
+|---|---|---|
+| `pk` | `RESIDENT#res-0003` | |
+| `sk` | `NIGHT#2026-11-18` | the summary's Singapore `date` |
+| `resident_id` | `res-0003` | |
+| `date` | `2026-11-18` | |
+| `summary` | map | every field of the curated-layer summary (curated-layer.md criterion 11) except `resident_id`, `date`, `generated_at`, `schema_version`: numbers as DynamoDB numbers, nulls as NULL, `thresholds` as a map (`{"hr_bpm": {"min": 50, "max": 120}, "spo2_pct": {"min": 92}, "skin_temp_c": {"min": 30.0, "max": 38.0}}`) |
+| `schema_version` | `1` | the summary's |
+| `loaded_at` | `2026-11-19T00:41:07.512Z` | when `results` wrote it (ISO 8601 UTC, milliseconds) |
+| `expires_at` | `1797609600` | epoch seconds: 00:00 SGT on `date` + 31 days (here 2026-12-19T00:00+08:00), so the item lives for 30 nights after its own |
+
+- **Keys:** `pk`, `sk` (strings); no indexes, no stream. 1 RCU / 1 WCU.
+- **Writer:** the `results` Lambda (`silvercare-results`, pattern 30), after every
+  successful asynchronous `summaries` run (summaries' on-success destination) or by
+  hand with `{"date": "yyyy-mm-dd"}`. It lists `summaries/date=<D>/`, loads each object
+  that is one JSON object with the summary's fields, `schema_version` 1, a valid
+  `resident_id`, and `date` = D, and writes it with an unconditional PutItem
+  (idempotent: a re-run overwrites the same key). Invalid objects are skipped (logged by
+  key only) and the run then fails, so `silvercare-results-errors` emails ops. Its role
+  may only `s3:ListBucket` (prefix `summaries/*`) and `s3:GetObject` on `summaries/*`,
+  and `dynamodb:PutItem` on this table.
+- **Reader:** `GET /residents/{resident_id}/nightly` (`silvercare-api-nightly`, pattern
+  31), doctors only. Its role may only `dynamodb:Query` this table (`RESIDENT#*`
+  partitions). A resident with no items (or an unknown resident) returns no nights.
+- **TTL:** `expires_at`. DynamoDB deletes expired items typically within two days, so
+  the API also hides nights older than 30 days before today's Singapore date.
+- **Point-in-time recovery:** on, as every table, so a deleted or expired item stays
+  restorable for 35 days. Deletion protection on.
+- **Erasure of one resident:** Query `pk = RESIDENT#<resident_id>` and delete those
+  items (no tool yet); they stay recoverable through point-in-time recovery for 35 days.
+  The S3 summaries are erased separately (by their `resident_id` tag).
+- **A night no longer in S3** after a summaries re-run (e.g. a resident unassigned
+  since) isn't deleted here; it expires with TTL.
+- **Backfill** (manual, the owner, after merge; nightly-results criterion 13): after the
+  summaries backfill (see [S3 history](#s3-history)), run `results` for each of the last
+  30 Singapore nights, **oldest first**. A manual synchronous `summaries` run doesn't
+  hand off to `results`, so after any manual summaries run also run `results` for the
+  same date:
+
+  ```sh
+  aws lambda invoke --function-name silvercare-results --cli-binary-format raw-in-base64-out     --payload '{"date": "2026-10-25"}' results-out.json
+  ```
+
+  The output file holds only the date and the number loaded. A run that skipped objects
+  fails after loading the valid ones; its log lists the skipped keys.
+
 ## S3 history
 
 Every device message, as received, for later cleaning and analysis with Lake Formation
@@ -1225,7 +1283,9 @@ and Athena (docs/features/ingest-history.md; the History path in
   only, no write or delete), e.g. `scripts/ingest-check.py --history`. The `clean`
   Lambda, through Athena, reads `telemetry/` only (see [S3 clean layer](#s3-clean-layer)).
   Through Athena, `summaries/` is the `daily_summaries` table (developers: `DESCRIBE`
-  and `SELECT`); the `summaries` Lambda never reads it back.
+  and `SELECT`); the `summaries` Lambda never reads it back. The `results` Lambda lists
+  and reads `summaries/` only (no write or delete) to fill
+  [`silvercare-results`](#silvercare-results).
 
 ## S3 clean layer
 
@@ -1344,6 +1404,8 @@ read of up to 4 KB per second, or two eventually consistent ones.
 | registry reads | cached in Lambdas; dashboards ≈ **< 1 RCU** |
 | `watchdog` (every 5 min) | eventually consistent Queries of `by-type` (~40 devices, plus `TEST_MODE`, normally empty), `by-message` `status` (~40 items, a few KB), `bed` and `motion` (~20 items each), and `open`, plus one BatchGetItem for wearables off the wrist: a few RCU per run, about 1 run per 300 s ≈ **< 0.1 RCU** on average |
 | `summaries` (once a day) | an eventually consistent Query of `by-type` (~40 devices), then BatchGetItem of ~40 ASSIGNMENT and ~20 THRESHOLDS items (pattern 29): about 60 items × 0.5 RCU = **30 RCU at once** on the 3-RCU registry, absorbed by burst capacity; throttled keys come back as `UnprocessedKeys` and are retried with back-off. ≈ **0 RCU** on average |
+| `results` (once a day) | about 20 PutItems of about 1-2 KB (pattern 30) in a few seconds: up to about 40 WCU at once on the 1 WCU table, absorbed by burst capacity, with adaptive retries for throttled writes. ≈ **0 WCU** on average |
+| `api-nightly` | one eventually consistent Query of up to about 30 items (about 6 RCU) per doctor page view (pattern 31), throttled to 0.1/s with a burst of 2 ≈ **< 0.1 RCU** on average |
 | alerts | rare writes (plus up to two escalation UpdateItems per alert: `escalated_at` at once for critical and unassigned alerts, or `escalation_queued_at` and `escalated_at` for warnings; and two per alert a status update changes); one strongly consistent Query per non-fall alert (repeat check) and per `alert_cancel` (pattern 24, rare), one strongly consistent GetItem per escalation check, per acknowledge, and per caregiver cancel; dashboard polling ≈ **< 1 RCU** |
 
 Provisioned (fixed, no auto scaling):
@@ -1357,9 +1419,10 @@ Provisioned (fixed, no auto scaling):
 | `silvercare-registry` / `by-resident` | 2 | 1 |
 | `silvercare-alerts` | 3 | 2 |
 | `silvercare-alerts` / `open` | 2 | 1 |
-| **Total** | **19 of 25** | **18 of 25** |
+| `silvercare-results` | 1 | 1 |
+| **Total** | **20 of 25** | **19 of 25** |
 
-This leaves headroom in the free tier for one more table or index.
+This leaves headroom in the free tier for a few more tables or indexes.
 
 **Bursts:** if all 20 wearables publish vitals in the same second, that is about 40 WCU
 for one second. DynamoDB keeps up to 5 minutes of unused capacity as burst capacity,
@@ -1392,7 +1455,7 @@ critical-alert and `silvercare-iot-rules`.
 | Point-in-time recovery | on | billed per GB-month; KB of data ≈ US$0 |
 | Deletion protection | on | free |
 | Streams | none | |
-| TTL | alerts table, `expires_at` | deletes are free and use no write capacity |
+| TTL | alerts and results tables, `expires_at` | deletes are free and use no write capacity |
 
 ## Retention
 
@@ -1408,6 +1471,7 @@ critical-alert and `silvercare-iot-rules`.
 | Clean tables (S3 `silvercare-clean-<account_id>`, `tables/`, `rejected` included) | 365 days after a file is written *(proposed)*, matching raw; re-running a date restarts its clock | S3 lifecycle expiry on `tables/` |
 | Athena results and query history | result files 7 days; query text 45 days (AWS's fixed limit) | S3 lifecycle expiry; AWS ages out the history |
 | Alert copies, alert final records (`<alert_id>.final.json`, with `ack_note` and `resolve_note`), and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; summaries can be found by their `resident_id` tag, alert copies can't yet, and there is no date of death or deletion tool (gaps, see [S3 history](#s3-history)); no expiry rule. A re-run of a date replaces its summaries |
+| Nightly results (`silvercare-results`) | 30 nights after the night's own date (`expires_at` = 00:00 SGT on `date` + 31 days); DynamoDB deletes them typically within two days of that, and the API hides older nights; restorable through point-in-time recovery for 35 days. The S3 summaries stay the record | TTL `expires_at` |
 | Failed fall and `vitals_alert` events (SQS `silvercare-critical-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
 | Latest device `vitals_alert`s | 5 per device | write rule |
 | Latest `alert_cancel`s ("I'm OK" presses) | 5 per wearable | write rule |
