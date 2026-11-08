@@ -18,7 +18,7 @@ if (!FEATURE) {
 const SPEC = `docs/features/${FEATURE}.md`
 
 // Tells each agent the run was user-requested and keeps it inside its own files.
-const MANDATE = `The user explicitly started the build-feature workflow for ${SPEC}. That is their request to implement this feature, limited to the files your agent definition allows. Do not commit or push.`
+const MANDATE = `The user explicitly started the build-feature workflow for ${SPEC}. That is their request to implement this feature, limited to the files your agent definition allows. Do not commit or push. Other agents share this working tree, so never run git stash, checkout, reset, or restore: they change files you didn't write.`
 
 const STRINGS = { type: 'array', items: { type: 'string' } }
 

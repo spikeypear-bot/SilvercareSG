@@ -25,6 +25,7 @@ from events import (
     CAREGIVER_NAME,
     DETAILS_SENTINEL,
     ESCALATES_AT,
+    HOME_ADDRESS,
     MESSAGE_ID,
     NAME_A,
     NOTIFIED_AT,
@@ -40,6 +41,7 @@ from events import (
     put_alert,
     put_bed_and_motion,
     put_device,
+    put_home,
     put_resident,
     put_status,
     put_thresholds,
@@ -215,3 +217,27 @@ def test_thresholds_batch_get_on_dynamodb_local(local):
 
     assert set(found) == {RESIDENT_B}
     assert set(found[RESIDENT_B]) == {"pk", "spo2_pct"}
+
+
+def test_homes_on_dynamodb_local(local):
+    import handler
+
+    client, _ = local
+    _seed(client)
+    put_home(client, "home-0001")
+    put_home(client, "home-0002")  # resident B has no open alert
+
+    found = handler.batch_get_homes(["home-0001", "home-0009"])
+    resp = handler.handle(api_event(groups=["nurse"]), NOW)
+
+    assert set(found) == {"home-0001"}
+    assert set(found["home-0001"]) == {"pk", "address", "lat", "lng"}
+    body = json.loads(resp["body"])
+    assert body["homes"] == [
+        {
+            "home_id": "home-0001",
+            "address": HOME_ADDRESS,
+            "lat": 1.3612,
+            "lng": 103.8031,
+        }
+    ]

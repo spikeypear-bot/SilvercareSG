@@ -240,7 +240,15 @@ export function toThresholdChange(c: ApiThresholdChange): ThresholdChangeEntry {
 export async function loadDashboardData(view: DashboardView): Promise<DashboardData> {
   if (view === 'staff') {
     const body = await getDashboard()
-    return { residents: body.residents.map(toResident), alerts: body.alerts.map(toResidentAlert) }
+    return {
+      residents: body.residents.map(toResident),
+      alerts: body.alerts.map(toResidentAlert),
+      // Nurse only; copied by field name like the rest, so nothing else passes through.
+      ...(body.homes && {
+        homes: body.homes.map((h) => ({ home_id: h.home_id, address: h.address, lat: h.lat, lng: h.lng })),
+      }),
+      ...(body.homes_error && { homes_error: true }),
+    }
   }
   const body = await getMyResidents()
   return { residents: body.residents.map(toLinkedResident), alerts: body.alerts.map(toHistoryAlert) }

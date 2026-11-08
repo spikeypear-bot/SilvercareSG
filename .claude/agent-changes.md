@@ -5,6 +5,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **Problem:** during the alerts-map build, backend-builder ran `git stash` / `git stash
+  pop` for a baseline test run, which reverted the frontend agents' files on disk for a
+  few minutes while they worked in parallel. **Changed:**
+  `.claude/workflows/build-feature.js` (`MANDATE`, sent to every agent): never run git
+  stash, checkout, reset, or restore, because other agents share the working tree.
 - **Problem:** the nightly-overview spec didn't say what happens to a Results item with
   unreadable thresholds; the build counted the whole night as "no summary", hiding a
   fall (the lambda tester flagged it; the user chose to flag it with `thresholds: null`).

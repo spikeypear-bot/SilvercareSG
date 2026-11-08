@@ -24,12 +24,19 @@ Steps (the api-route skill):
    reading (no open alert).
 6. Caregiver names from Cognito (AdminGetUser, actors.py) only for caregivers who acknowledged a
    device problem.
-7. The response is built field by field (dashboard.py), never from raw items.
-8. Errors are {"error": {"code", "message"}} with no internal details.
+7. Nurse callers only (docs/features/alerts-map.md): `homes`, the address and position
+   of each home with an open-index alert (BatchGetItem `HOME#<home_id>` / `PROFILE`,
+   projected, eventually consistent, cached 5 minutes per container per home_id,
+   including "no item"). A failed home read gives `"homes": []` and
+   `"homes_error": true`; the rest of the response is unaffected. Doctors (not in
+   `nurse`) get no `homes` key and cause no home read.
+8. The response is built field by field (dashboard.py), never from raw items.
+9. Errors are {"error": {"code", "message"}} with no internal details.
 
 Logs: outcome, counts, API Gateway's request ID, the caller's `sub` and, on a 403,
-`cognito:groups`; resident IDs and field names (never values) for invalid thresholds.
-Never the request, the response, other claims, names, notes, or readings.
+`cognito:groups`; resident and home IDs and field names (never values) for invalid
+thresholds and home items; for nurses, the sorted `home_id`s returned in `homes`. Never the request, the response, other claims, names, notes,
+readings, addresses, or coordinates.
 """
 
 from __future__ import annotations
@@ -64,6 +71,7 @@ GROUP_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9=+/_-]{1,64}\Z")
 
 THRESHOLDS_CACHE_TTL_S = 300.0
+HOMES_CACHE_TTL_S = 300.0
 BATCH_GET_MAX_KEYS = 100
 BATCH_GET_MAX_ATTEMPTS = 4
 
@@ -73,10 +81,13 @@ _deserializer = TypeDeserializer()
 
 # resident_id -> (resolved limits, monotonic expiry)
 _thresholds_cache: dict[str, tuple[dict[str, thresholds.Limits], float]] = {}
+# home_id -> (`homes` entry, or None for no item / invalid item; monotonic expiry)
+_homes_cache: dict[str, tuple[dict[str, Any] | None, float]] = {}
 
 
 def clear_caches() -> None:
     _thresholds_cache.clear()
+    _homes_cache.clear()
     actors.clear_cache()
 
 
@@ -299,27 +310,23 @@ def read_vitals() -> list[dict[str, Any]]:
     )
 
 
-def batch_get_thresholds(resident_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """{resident_id: THRESHOLDS item} for those that have one (eventually consistent,
-    UnprocessedKeys retried). Raises if keys stay unprocessed."""
+def _batch_get(
+    prefix: str, sk: str, ids: list[str], attributes: list[str]
+) -> dict[str, dict[str, Any]]:
+    """{id: item} for keys `<prefix><id>` / `sk` that have an item, projecting `pk` and
+    `attributes` (eventually consistent, chunks of 100, UnprocessedKeys retried with
+    backoff). Raises if keys stay unprocessed."""
     client = dynamodb_client()
     table = os.environ["REGISTRY_TABLE"]
+    names = {"#pk": "pk"} | {f"#a{i}": a for i, a in enumerate(attributes)}
     found: dict[str, dict[str, Any]] = {}
-    for start in range(0, len(resident_ids), BATCH_GET_MAX_KEYS):
-        chunk = resident_ids[start : start + BATCH_GET_MAX_KEYS]
+    for start in range(0, len(ids), BATCH_GET_MAX_KEYS):
+        chunk = ids[start : start + BATCH_GET_MAX_KEYS]
         request: dict[str, Any] = {
             table: {
-                "Keys": [
-                    {"pk": {"S": f"THRESHOLDS#{r}"}, "sk": {"S": "THRESHOLDS"}}
-                    for r in chunk
-                ],
-                "ProjectionExpression": "#pk, #hr, #spo2, #skin",
-                "ExpressionAttributeNames": {
-                    "#pk": "pk",
-                    "#hr": "hr_bpm",
-                    "#spo2": "spo2_pct",
-                    "#skin": "skin_temp_c",
-                },
+                "Keys": [{"pk": {"S": prefix + i}, "sk": {"S": sk}} for i in chunk],
+                "ProjectionExpression": ", ".join(names),
+                "ExpressionAttributeNames": names,
             }
         }
         for attempt in range(BATCH_GET_MAX_ATTEMPTS):
@@ -327,8 +334,8 @@ def batch_get_thresholds(resident_ids: list[str]) -> dict[str, dict[str, Any]]:
             for raw in result.get("Responses", {}).get(table, []):
                 item = _deserialize(raw)
                 pk = item.get("pk")
-                if isinstance(pk, str) and pk.startswith("THRESHOLDS#"):
-                    found[pk.removeprefix("THRESHOLDS#")] = item
+                if isinstance(pk, str) and pk.startswith(prefix):
+                    found[pk.removeprefix(prefix)] = item
             request = result.get("UnprocessedKeys") or {}
             if not request:
                 break
@@ -336,6 +343,18 @@ def batch_get_thresholds(resident_ids: list[str]) -> dict[str, dict[str, Any]]:
         else:
             raise RuntimeError("UnprocessedKeys")
     return found
+
+
+def batch_get_thresholds(resident_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """{resident_id: THRESHOLDS item} for those that have one."""
+    return _batch_get(
+        "THRESHOLDS#", "THRESHOLDS", resident_ids, ["hr_bpm", "spo2_pct", "skin_temp_c"]
+    )
+
+
+def batch_get_homes(home_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """{home_id: HOME item (pk, address, lat, lng)} for those that have one."""
+    return _batch_get("HOME#", "PROFILE", home_ids, ["address", "lat", "lng"])
 
 
 def thresholds_loader(
@@ -365,6 +384,27 @@ def thresholds_loader(
         return cached[0] if cached else dict(thresholds.DEFAULTS)
 
     return limits_of
+
+
+def load_homes(
+    home_ids: list[str], clock: Callable[[], float] = time.monotonic
+) -> tuple[list[dict[str, Any]], int]:
+    """(`homes` entries sorted by home_id, count of homes with no valid item), read or
+    taken from the cache. Raises on a failed read (nothing is cached then)."""
+    now = clock()
+    missing = [h for h in home_ids if (c := _homes_cache.get(h)) is None or c[1] <= now]
+    if missing:
+        items = batch_get_homes(missing)
+        for home_id in missing:
+            view, invalid = dashboard.home_view(home_id, items.get(home_id))
+            if invalid:
+                logger.warning(
+                    "invalid home", extra={"home_id": home_id, "fields": invalid}
+                )
+            _homes_cache[home_id] = (view, now + HOMES_CACHE_TTL_S)
+    views = [_homes_cache[h][0] for h in sorted(home_ids)]
+    homes = [dict(v) for v in views if v is not None]
+    return homes, len(views) - len(homes)
 
 
 # ---- handler ----
@@ -404,18 +444,31 @@ def handle(event: Any, now: datetime) -> dict[str, Any]:
         cognito_client, os.environ["USER_POOL_ID"], parsed.caregiver_subs()
     )
     result = dashboard.build_dashboard(parsed, limits_of, names, now)
-    logger.info(
-        LOG_MESSAGE,
-        extra={
-            "outcome": "ok",
-            "sub": sub,
-            "residents": len(result.residents),
-            "alerts": len(result.alerts),
-            "skipped": result.skipped,
-            "name_lookup_failures": name_failures,
-        },
-    )
-    return response(200, {"residents": result.residents, "alerts": result.alerts})
+    body: dict[str, Any] = {"residents": result.residents, "alerts": result.alerts}
+    log: dict[str, Any] = {
+        "outcome": "ok",
+        "sub": sub,
+        "residents": len(result.residents),
+        "alerts": len(result.alerts),
+        "skipped": result.skipped,
+        "name_lookup_failures": name_failures,
+    }
+    # The nurse view wins for a user in both groups (CLAUDE.md), so it gets `homes`.
+    if "nurse" in groups:
+        try:
+            body["homes"], log["homes_missing"] = load_homes(parsed.alert_home_ids())
+        except Exception as exc:  # noqa: BLE001 - the map is optional; the list still works
+            logger.warning(
+                "home read failed",
+                extra={"homes_error": True, "error": _error_code(exc)},
+            )
+            body["homes"], body["homes_error"] = [], True
+            log["homes_error"] = True
+        log["homes"] = len(body["homes"])
+        # Opaque, format-checked IDs (sorted), to audit which addresses a session got.
+        log["home_ids"] = [home["home_id"] for home in body["homes"]]
+    logger.info(LOG_MESSAGE, extra=log)
+    return response(200, body)
 
 
 def lambda_handler(event: Any, context: Any) -> dict[str, Any]:

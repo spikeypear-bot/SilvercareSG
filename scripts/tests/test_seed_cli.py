@@ -506,7 +506,7 @@ def test_links_use_the_cognito_subs(seed, clients, pool_id, cog, db, pwfile):
         (f"USER#{caregiver_sub}", "RESIDENT#res-0002"),
         (f"USER#{caregiver_sub}", "RESIDENT#res-0003"),
     }
-    assert len(scan(db)) == 83
+    assert len(scan(db)) == 103
 
 
 # ---- criterion 9: finding the pool ----
@@ -655,7 +655,7 @@ def test_delete_prompt_refuses_anything_but_delete(
     assert code == 1
     assert "nothing was written" in out
     assert all_clients_untouched_by_writes(clients)
-    assert len(scan(db)) == 83
+    assert len(scan(db)) == 103
     assert all(user_exists(cog, pool_id, e) for e in EMAILS.values())
     assert pwfile.read_text() == before
 
@@ -1464,7 +1464,7 @@ def test_output_has_counts_and_ids_only(seed, clients, pwfile):
     code, out, err = run(seed, seed_args(pwfile), clients=clients)
     assert code == 0
     assert err == ""
-    assert "registry: 83 items written" in out
+    assert "registry: 103 items written" in out
     assert "registry: 0 old seed links removed" in out
     for marker in CONTENT_MARKERS:
         assert marker not in out
@@ -1542,9 +1542,9 @@ def test_local_skips_cognito_sts_and_prompt(seed, moto, pwfile):
     assert code == 0, err
     assert factory.calls == [("dynamodb", True)]
     assert f"registry: table {TABLE} created" in out
-    assert "registry: 83 items written" in out
+    assert "registry: 103 items written" in out
     assert "registry: 0 old seed links removed" in out
-    assert len(scan(client)) == 83
+    assert len(scan(client)) == 103
 
 
 def test_local_links_use_fixed_synthetic_subs(seed, moto):
@@ -1567,7 +1567,7 @@ def test_local_rerun_and_delete(seed, moto):
     code, out, _ = run(seed, ["--local"], client_factory=factory)
     assert code == 0
     assert "created" not in out
-    assert len(scan(client)) == 83
+    assert len(scan(client)) == 103
     code, out, _ = run(seed, ["--local", "--delete"], client_factory=factory)
     assert code == 0
     assert "registry: 3 seed links deleted" in out
@@ -1635,5 +1635,5 @@ def test_full_live_run_with_real_factory_lands_in_singapore(
         monkeypatch.setenv("AWS_REGION", "us-west-2")
         code, _out, err = run(seed, seed_args(pwfile))
         assert code == 0, err
-        assert len(scan(sg_ddb)) == 83
+        assert len(scan(sg_ddb)) == 103
         assert boto_client("dynamodb", "us-west-2").list_tables()["TableNames"] == []

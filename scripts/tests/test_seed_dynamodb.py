@@ -117,7 +117,7 @@ def data(seed):
 @pytest.fixture
 def seeded(seed, ddb, data):
     count = seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep)
-    assert count == 83
+    assert count == 103
     return ddb
 
 
@@ -203,7 +203,7 @@ def test_rerun_is_identical_except_timestamps(seed, seeded, data):
     first = scan(seeded)
     seed.seed_local(seeded, table=TABLE, seed=data, now=LATER, sleep=no_sleep)
     second = scan(seeded)
-    assert len(second) == 83
+    assert len(second) == 103
     assert without_timestamps(first) == without_timestamps(second)
     profile = keyed(second)[("RESIDENT#res-0001", "PROFILE")]
     assert profile["updated_at"] == {"S": "2026-11-02T04:05:06Z"}
@@ -237,7 +237,7 @@ def test_seed_never_touches_foreign_items(seed, ddb, data):
     stored = keyed(scan(ddb))
     for item in FOREIGN_ITEMS:
         assert stored[(item["pk"]["S"], item["sk"]["S"])] == item
-    assert len(stored) == 83 + len(FOREIGN_ITEMS)
+    assert len(stored) == 103 + len(FOREIGN_ITEMS)
 
 
 # ---- criterion 15a: clean-up of seed links the seed file no longer has ----
@@ -290,13 +290,13 @@ def test_seed_removes_old_family_seed_links(seed, ddb, data):
     assert link_set(ddb) == {
         (f"USER#{CAREGIVER_SUB}", f"RESIDENT#res-000{n}") for n in (1, 2, 3)
     }
-    assert len(scan(ddb)) == 83
+    assert len(scan(ddb)) == 103
 
 
 def test_seed_local_count_does_not_include_removed_links(seed, ddb, data):
     seed.ensure_table(ddb, TABLE, sleep=no_sleep)
     put_items(ddb, OLD_FAMILY_LINKS)
-    assert seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep) == 83
+    assert seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep) == 103
 
 
 def test_prune_returns_the_number_of_old_seed_links_removed(seed, seeded, data):
@@ -337,7 +337,7 @@ def test_prune_keeps_foreign_items(seed, seeded, data):
     stored = keyed(scan(seeded))
     for item in FOREIGN_ITEMS:
         assert stored[key_of(item)] == item
-    assert len(stored) == 83 + len(FOREIGN_ITEMS)
+    assert len(stored) == 103 + len(FOREIGN_ITEMS)
 
 
 def test_rerun_prunes_nothing(seed, seeded, data):
@@ -385,7 +385,7 @@ def test_prune_runs_after_the_new_links_are_written(seed, ddb, data):
         for request in kw["RequestItems"][TABLE]
     ]
     assert all(set(request) == {"PutRequest"} for request in puts)
-    assert len(puts) == 83
+    assert len(puts) == 103
     deletes = [i for i, op in enumerate(ops) if op == "delete_item"]
     assert len(deletes) == 3
     last_write = max(i for i, op in enumerate(ops) if op == "batch_write_item")
@@ -492,7 +492,7 @@ def test_seed_assigns_unassigned_spares(seed, ddb, data):
     put_device(ddb, "wearable-0004")
     put_device(ddb, "bedroom-0020")
     assert seed.foreign_devices(ddb, data, table=TABLE, sleep=no_sleep) == []
-    assert seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep) == 83
+    assert seed.seed_local(ddb, table=TABLE, seed=data, now=NOW, sleep=no_sleep) == 103
     assert device_resident(ddb, "wearable-0004") == "res-0004"
     assert device_resident(ddb, "bedroom-0020") == "res-0020"
 
@@ -529,7 +529,7 @@ def test_delete_removes_unassigned_seed_device(seed, seeded, data):
 
 def test_delete_removes_everything_the_seed_owns(seed, seeded, data):
     links, others = seed.delete_seed(seeded, data, table=TABLE, sleep=no_sleep)
-    assert (links, others) == (3, 80)
+    assert (links, others) == (3, 100)
     assert scan(seeded) == []
 
 
@@ -554,7 +554,7 @@ def test_delete_on_partly_deleted_seed_succeeds(seed, seeded, data):
 
 def test_delete_twice_succeeds(seed, seeded, data):
     seed.delete_seed(seeded, data, table=TABLE, sleep=no_sleep)
-    assert seed.delete_seed(seeded, data, table=TABLE, sleep=no_sleep) == (0, 80)
+    assert seed.delete_seed(seeded, data, table=TABLE, sleep=no_sleep) == (0, 100)
     assert scan(seeded) == []
 
 
@@ -680,7 +680,7 @@ def test_ensure_table_creates_missing_table(seed, moto):
 
 def test_ensure_table_keeps_existing_table(seed, seeded):
     assert seed.ensure_table(seeded, TABLE, sleep=no_sleep) is False
-    assert len(scan(seeded)) == 83
+    assert len(scan(seeded)) == 103
 
 
 def test_seed_local_creates_table_and_writes(seed, moto, data):
@@ -688,16 +688,17 @@ def test_seed_local_creates_table_and_writes(seed, moto, data):
 
     client = boto_client("dynamodb")
     assert (
-        seed.seed_local(client, table="fresh", seed=data, now=NOW, sleep=no_sleep) == 83
+        seed.seed_local(client, table="fresh", seed=data, now=NOW, sleep=no_sleep)
+        == 103
     )
-    assert len(scan(client, "fresh")) == 83
+    assert len(scan(client, "fresh")) == 103
 
 
 def test_seed_local_default_seed_is_the_committed_file(seed, moto):
     from conftest import boto_client
 
     client = boto_client("dynamodb")
-    assert seed.seed_local(client, table="fresh", sleep=no_sleep) == 83
+    assert seed.seed_local(client, table="fresh", sleep=no_sleep) == 103
 
 
 # ---- criterion 21: batching and retries (fake client, no moto) ----
