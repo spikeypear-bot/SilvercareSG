@@ -5,6 +5,16 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **Problem:** the nightly-overview spec didn't say what happens to a Results item with
+  unreadable thresholds; the build counted the whole night as "no summary", hiding a
+  fall (the lambda tester flagged it; the user chose to flag it with `thresholds: null`).
+  **Changed:** `.claude/skills/feature-spec/SKILL.md` (Alerting inputs): a list that
+  surfaces residents needing attention says how it treats a partly unreadable item.
+- **Problem:** the nightly-overview spec and build limited the new role's `by-type`
+  Query to `pk`, `entity_type`, leaving out `sk`, which a second page's
+  `ExclusiveStartKey` holds (the backend builder flagged it). **Changed:**
+  `.claude/skills/iam-policy/SKILL.md` (DynamoDB attribute lists): for a paginated index
+  Query, the allowed keys include the base table's `pk` and `sk`.
 - **Problem:** the curated-layer go-live checklist said to clean only D−1 and D before a
   manual summaries run, but summaries also needs D−2 for `bed` and `vitals_alert`; the
   run failed with "clean partition missing". **Changed:**

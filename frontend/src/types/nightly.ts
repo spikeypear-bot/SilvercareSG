@@ -52,3 +52,39 @@ export interface NightlyResponse {
   /** Newest first. */
   nights: Night[]
 }
+
+/**
+ * `GET /nightly/overview` (doctor only; docs/features/nightly-overview.md, API contract):
+ * last night's flags for every resident, from the `silvercare-results` table.
+ */
+
+/** One flagged resident's night: the seven flag counts and that night's limits (as stored). */
+export interface NightlyOverviewFlagged {
+  resident_id: string
+  falls: number
+  vitals_alert_episodes: number
+  hr_bpm_above: number
+  hr_bpm_below: number
+  spo2_pct_below: number
+  skin_temp_c_above: number
+  skin_temp_c_below: number
+  /** Sum of the five out-of-limit counts. */
+  out_of_limit: number
+  /** That night's limits, or null when the stored limits couldn't be read. */
+  thresholds: NightThresholds | null
+}
+
+export interface NightlyOverviewResponse {
+  /** Yesterday's Singapore date, `yyyy-mm-dd`. */
+  expected_date: string
+  /** true when at least one resident has a stored night for `expected_date`. */
+  available: boolean
+  /** true only when `available` is false and it is 09:30 SGT or later. */
+  not_ready: boolean
+  /** Priority order (falls, then alert episodes, then out-of-limit readings). Empty when not available. */
+  flagged: NightlyOverviewFlagged[]
+  /** Residents whose night has nothing flagged. */
+  clear_count: number
+  /** Residents with no stored night for `expected_date`. */
+  no_summary_count: number
+}
