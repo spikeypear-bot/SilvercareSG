@@ -8,6 +8,7 @@ Run on the host with your own AWS credentials (region ap-southeast-1):
     python scripts/seed-registry.py --dry-run     # print what it would write
     python scripts/seed-registry.py               # write
     python scripts/seed-registry.py --link-caregiver <cognito-sub>   # also link
+    python scripts/seed-registry.py --link-caregiver <cognito-sub> --residents res-0004,res-0005
 
 Creates:
 
@@ -21,11 +22,14 @@ Creates:
   assigned to res-000N (resident_id, home_id, assigned_at, gsi1_pk, gsi1_sk); the
   rest are unassigned spares.
 - With --link-caregiver <sub> (a caregiver user's Cognito `sub`, lowercase UUID):
-  USER#<sub> / RESIDENT#res-000N for each of the three residents, exactly as
+  USER#<sub> / RESIDENT#<id> for each of the three residents (or, with
+  --residents <id>,<id>,..., for each listed resident_id instead), exactly as
   docs/data-model.md, "User <-> resident link": relationship "caregiver", linked_at,
   linked_by "seed" (the seed marker, docs/data-model.md, Seed data), gsi1_pk
-  RESIDENT#res-000N, gsi1_sk USER#<sub>. The script can't check the user's Cognito
-  group: put the user in `caregiver` (the API checks the current group anyway).
+  RESIDENT#<id>, gsi1_sk USER#<sub>. The script can't check the user's Cognito
+  group: put the user in `caregiver` (the API checks the current group anyway). Nor
+  does it check that a listed resident exists: a link to a missing resident is
+  written anyway.
   Note: scripts/seed.py deletes, on every run, seed links to its residents that are
   not in seed-data.json, so it removes these links unless <sub> is its test
   caregiver's (which seed.py links to the same three residents itself).
@@ -56,6 +60,7 @@ DEFAULT_DEVICES_FILE = (
 
 DEVICE_ID_RE = re.compile(r"^(wearable|bedroom)-[0-9]{4}\Z")
 TABLE_RE = re.compile(r"^[A-Za-z0-9_.-]{3,255}\Z")
+RESIDENT_ID_RE = re.compile(r"^res-[0-9]{4}\Z")
 SUB_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 # The retired family test user's local sub: reserved, never linked (docs/data-model.md,
 # Seed data).
@@ -180,11 +185,38 @@ def valid_sub(value: str) -> bool:
     return bool(SUB_RE.match(value)) and value != RETIRED_SUB
 
 
-def link_items(sub: str, now: datetime) -> list[dict[str, str]]:
-    """USER#<sub> / RESIDENT#<id> for each seeded resident (the link item's shape in
-    docs/data-model.md). Raises ValueError for an invalid sub."""
+def default_link_residents() -> list[str]:
+    """The residents --link-caregiver links when --residents is omitted."""
+    return [resident_id for resident_id, _, _ in RESIDENTS]
+
+
+def parse_resident_ids(value: str) -> list[str]:
+    """res-NNNN,res-NNNN,... -> resident ids in the given order. Raises ValueError for
+    an empty list, an invalid id, or a duplicate."""
+    ids = value.split(",")
+    if not ids or any(not part for part in ids):
+        raise ValueError("--residents must be a comma-separated list of resident ids")
+    for resident_id in ids:
+        if not RESIDENT_ID_RE.match(resident_id):
+            raise ValueError("every --residents id must match ^res-[0-9]{4}$")
+    if len(set(ids)) != len(ids):
+        raise ValueError("--residents lists a resident twice")
+    return ids
+
+
+def link_items(
+    sub: str, now: datetime, resident_ids: list[str] | None = None
+) -> list[dict[str, str]]:
+    """USER#<sub> / RESIDENT#<id> for each of resident_ids (default: the seeded
+    residents), the link item's shape in docs/data-model.md. Raises ValueError for an
+    invalid sub or resident id."""
     if not valid_sub(sub):
         raise ValueError("--link-caregiver must be a Cognito sub (lowercase UUID)")
+    if resident_ids is None:
+        resident_ids = default_link_residents()
+    for resident_id in resident_ids:
+        if not RESIDENT_ID_RE.match(resident_id):
+            raise ValueError("every resident id must match ^res-[0-9]{4}$")
     stamp = iso_now(now)
     return [
         {
@@ -196,18 +228,22 @@ def link_items(sub: str, now: datetime) -> list[dict[str, str]]:
             "gsi1_pk": f"RESIDENT#{resident_id}",
             "gsi1_sk": f"USER#{sub}",
         }
-        for resident_id, _, _ in RESIDENTS
+        for resident_id in resident_ids
     ]
 
 
 def build_items(
-    devices: list[dict[str, str]], now: datetime, caregiver_sub: str | None = None
+    devices: list[dict[str, str]],
+    now: datetime,
+    caregiver_sub: str | None = None,
+    link_residents: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Every item to write: residents, then thresholds, then devices in devices.json
-    order, then (with a caregiver sub) the links."""
+    order, then (with a caregiver sub) the links to link_residents (default: the
+    seeded residents)."""
     items = resident_items(now) + threshold_items(now) + device_items(devices, now)
     if caregiver_sub is not None:
-        items += link_items(caregiver_sub, now)
+        items += link_items(caregiver_sub, now, link_residents)
     return items
 
 
@@ -298,7 +334,14 @@ def main(
     parser.add_argument(
         "--link-caregiver",
         metavar="SUB",
-        help="also link this caregiver's Cognito sub to res-0001, res-0002, res-0003",
+        help="also link this caregiver's Cognito sub to res-0001, res-0002, res-0003"
+        " (or to --residents)",
+    )
+    parser.add_argument(
+        "--residents",
+        metavar="IDS",
+        help="with --link-caregiver: comma-separated resident ids to link instead,"
+        " e.g. res-0004,res-0005",
     )
     args = parser.parse_args(argv)
 
@@ -310,13 +353,25 @@ def main(
             "error: --link-caregiver must be a Cognito sub (lowercase UUID)", file=out
         )
         return 2
+    link_residents = None
+    if args.residents is not None:
+        if args.link_caregiver is None:
+            print("error: --residents needs --link-caregiver", file=out)
+            return 2
+        try:
+            link_residents = parse_resident_ids(args.residents)
+        except ValueError as exc:
+            print(f"error: {exc}", file=out)
+            return 2
     try:
         devices = load_devices(args.devices_file)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=out)
         return 2
 
-    items = build_items(devices, now or datetime.now(UTC), args.link_caregiver)
+    items = build_items(
+        devices, now or datetime.now(UTC), args.link_caregiver, link_residents
+    )
 
     if not args.dry_run and client is None:
         import boto3  # only when run for real, never at import
