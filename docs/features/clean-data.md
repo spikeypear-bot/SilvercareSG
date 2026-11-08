@@ -178,7 +178,8 @@ review it with the shared user before any real resident data arrives.
 
 ### Lake Formation and Athena
 
-18. Lake Formation data lake settings: `silvercare-cicd` (looked up by name) is the admin,
+18. Lake Formation data lake settings: `silvercare-cicd` and the IAM user `silvercare-kakis`
+    (both looked up by name; `silvercare-kakis` added 2026-11-07) are the admins,
     `silvercare-cicd-plan` (looked up by name) is the only read-only admin, and new databases and tables get no `IAMAllowedPrincipals` permissions.
 19. `s3://silvercare-history-<account_id>/telemetry/` and
     `s3://silvercare-clean-<account_id>/tables/` are registered with Lake Formation using

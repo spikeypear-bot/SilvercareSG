@@ -17,6 +17,7 @@ import type {
   VitalsThresholds,
 } from '../types/resident'
 import type { ApiDevice, DevicesResponse } from '../types/devices'
+import type { NightlyResponse } from '../types/nightly'
 import type { DeviceProblem, DeviceProblemsResponse } from '../types/ops'
 import { getApiToken } from './auth'
 
@@ -276,4 +277,33 @@ export async function getThresholdHistory(residentId: string): Promise<ApiThresh
     throw new ApiError(200, 'invalid_response')
   }
   return (body as { history: ApiThresholdChange[] }).history
+}
+
+function isNightlyResponse(value: unknown): value is NightlyResponse {
+  if (typeof value !== 'object' || value === null) return false
+  const body = value as { resident_id?: unknown; expected_date?: unknown; not_ready?: unknown; nights?: unknown }
+  return (
+    typeof body.resident_id === 'string' &&
+    typeof body.expected_date === 'string' &&
+    typeof body.not_ready === 'boolean' &&
+    Array.isArray(body.nights) &&
+    body.nights.every(
+      (night: unknown) =>
+        typeof night === 'object' &&
+        night !== null &&
+        typeof (night as { date?: unknown }).date === 'string' &&
+        typeof (night as { thresholds?: unknown }).thresholds === 'object' &&
+        (night as { thresholds?: unknown }).thresholds !== null,
+    )
+  )
+}
+
+/**
+ * `GET /residents/{resident_id}/nightly` (doctor only): the resident's stored nights
+ * (up to 30), newest first, and whether last night's summary is still missing.
+ */
+export async function getNightly(residentId: string): Promise<NightlyResponse> {
+  const body = await apiGet(`/residents/${encodeURIComponent(residentId)}/nightly`)
+  if (!isNightlyResponse(body)) throw new ApiError(200, 'invalid_response')
+  return body
 }

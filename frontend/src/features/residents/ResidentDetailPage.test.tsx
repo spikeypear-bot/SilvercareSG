@@ -18,6 +18,21 @@ vi.mock('../dashboard/useDashboardData', async (importOriginal) => {
   }
 })
 
+// The doctor view's Nightly summary section calls getNightly (NightlySummary.test.tsx
+// covers it). Here it resolves with no nights, so it never reaches the real API.
+vi.mock('../../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/api')>()
+  return {
+    ...actual,
+    getNightly: vi.fn(async (residentId: string) => ({
+      resident_id: residentId,
+      expected_date: '2026-11-06',
+      not_ready: false,
+      nights: [],
+    })),
+  }
+})
+
 beforeEach(() => {
   resetResidentDetailLoader()
 })
@@ -54,7 +69,12 @@ const historyEntries = () => {
   const list = changeHistory().querySelector('ol')
   return list ? (Array.from(list.children) as HTMLElement[]) : []
 }
-const announcer = () => screen.getByRole('status')
+/** The page's one aria-live announcer (other sections, e.g. Nightly summary, have their own statuses). */
+const announcer = () => {
+  const live = screen.getAllByRole('status').filter((el) => el.getAttribute('aria-live') === 'polite')
+  expect(live).toHaveLength(1)
+  return live[0]
+}
 const RESOLVE_NOTE = 'Synthetic note: checked, false alarm.'
 /** Resolve opens the closing-note form; type the required note and submit (same name). */
 async function resolveWithNote(user: ReturnType<typeof userEvent.setup>, context: string, note = RESOLVE_NOTE) {

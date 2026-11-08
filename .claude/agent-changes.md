@@ -5,6 +5,19 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **Problem:** the curated-layer go-live checklist said to clean only D−1 and D before a
+  manual summaries run, but summaries also needs D−2 for `bed` and `vitals_alert`; the
+  run failed with "clean partition missing". **Changed:**
+  `.claude/skills/recap/SKILL.md` (To do → You): manual commands and checklists take
+  their inputs and prerequisites from the defining code or doc, covering every
+  precondition the job checks.
+- **Problem:** the tableau-access spec said a live Tableau connection stores no data on
+  the laptop (Tableau caches query results; a .twb can hold values), from memory; the
+  privacy reviewer caught it. **Changed:** `.claude/skills/feature-spec/SKILL.md`
+  (readiness checklist): check a third-party tool's behaviour in its own docs.
+- **Problem:** the Tableau IAM user had a `path`, but its ARN is a Lake Formation
+  principal; iac-reviewer flagged it. **Changed:** `.claude/skills/iam-policy/SKILL.md`:
+  no path on users or roles that get Lake Formation grants.
 - **Problem:** with polling added, an acknowledge followed by a resolve showed the alert
   as open again (the second action's override replaced the first's starting status);
   the resident page tests caught it. **Changed:** `.claude/skills/frontend/SKILL.md`
@@ -13,6 +26,10 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-07
 
+- **Problem:** the nightly-results section added a second `role="status"` to the
+  resident page, breaking a test that found the page's announcer as the only status
+  region; frontend-tester fixed the helper. **Changed:**
+  `.claude/skills/frontend/SKILL.md`: find the announcer by text or container.
 - **Problem:** frontend-tester saved raw zero-width and bidi characters into
   `ackNote.test.ts` and `ResolveNoteForm.test.tsx` instead of `\u` escapes (oxlint
   doesn't flag them). **Changed:** `.claude/agents/frontend-tester.md`: write them as

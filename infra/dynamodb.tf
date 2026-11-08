@@ -1,7 +1,7 @@
 # DynamoDB tables from docs/data-model.md. Change the doc first, then this file.
 #
 # Capacity is fixed and must stay within the always-free 25 RCU / 25 WCU for all tables
-# and indexes together (see "Capacity" in the doc). Current total: 19 RCU / 18 WCU.
+# and indexes together (see "Capacity" in the doc). Current total: 20 RCU / 19 WCU.
 #
 # Changing a table's name, hash key, or range key destroys the table.
 
@@ -104,4 +104,20 @@ module "alerts_table" {
       write_capacity = 1
     },
   ]
+}
+
+# Results: about 30 nights of each resident's daily summary, copied from S3 summaries/
+# by the results Lambda for the doctors' nightly section (docs/features/nightly-results.md;
+# patterns 30 and 31). The one exception to "live state only": items expire 30 nights
+# after their own (expires_at = 00:00 SGT on the night's date + 31 days). No indexes.
+module "results_table" {
+  source = "./modules/dynamodb-table"
+
+  name           = "silvercare-results"
+  hash_key       = "pk"
+  range_key      = "sk"
+  read_capacity  = 1
+  write_capacity = 1
+
+  ttl_attribute = "expires_at"
 }

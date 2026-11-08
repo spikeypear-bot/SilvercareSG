@@ -75,7 +75,11 @@ Split into two lists:
 
 - **You:** actions only the user can take: commit and open the PR, read the plan
   comment, merge, run things that need real AWS (console steps, `terraform output`,
-  build uploads), answer open questions. Give exact commands where there are any.
+  build uploads), answer open questions. Give exact commands where there are any, and
+  the same for go-live or manual test checklists: take each step's inputs and
+  prerequisites from the code or doc that defines them, not from a spec summary, and
+  cover every precondition the job checks before it runs (e.g. every date partition
+  `summaries` requires: `READ_DAYS` in its `sql.py`, not just D−1 and D).
 - **Next with Claude:** follow-up work, open questions in specs, open decisions in
   `CLAUDE.md` this work touches, and the suggested next feature or step.
 

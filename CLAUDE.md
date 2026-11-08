@@ -39,7 +39,10 @@ structure, not code that exists yet. Update this file as decisions land.
 - **Compute:** AWS Lambda, Python (`python3.13` runtime).
 - **API:** API Gateway HTTP API → Lambda, protected by a Cognito JWT authorizer.
 - **Database:** DynamoDB for live state only: the device registry, the latest 5
-  messages per device and message type, and alerts. Provisioned capacity with fixed
+  messages per device and message type, and alerts. One agreed exception (2026-11-07):
+  `silvercare-results` keeps the last 30 nights of each resident's daily summary for
+  the doctors' portal, a copy of the S3 record (`docs/features/nightly-results.md`).
+  Provisioned capacity with fixed
   limits inside the always-free tier (25 RCU / 25 WCU across all tables and indexes),
   no auto scaling. Tables, keys, and access patterns are in `docs/data-model.md`.
 - **History and analytics:** every telemetry message and alert also goes to S3 for

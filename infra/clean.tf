@@ -62,10 +62,12 @@ locals {
   }
 
   # summaries: docs/features/curated-layer.md, criterion 21 (its Lambda is in summaries.tf).
+  # tableau: docs/features/tableau-access.md, criterion 8 (its users are in tableau.tf).
   athena_workgroups = {
     clean     = { name = "silvercare-clean", prefix = "clean" }
     analysis  = { name = "silvercare-analysis", prefix = "analysis" }
     summaries = { name = "silvercare-summaries", prefix = "summaries" }
+    tableau   = { name = "silvercare-tableau", prefix = "tableau" }
   }
 
   # Keys are a hash of the stable user ID, because resource addresses appear in the
@@ -85,6 +87,11 @@ data "aws_iam_role" "cicd" {
 
 data "aws_iam_role" "cicd_plan" {
   name = "silvercare-cicd-plan"
+}
+
+# Hand-made admin IAM user (not in Terraform), made a Lake Formation admin by team decision.
+data "aws_iam_user" "kakis" {
+  user_name = "silvercare-kakis"
 }
 
 # AWS's list of Lake Formation principals has IAM users and roles but not IAM groups, so
@@ -230,13 +237,13 @@ resource "aws_s3_bucket_policy" "lake" {
 # Lake Formation settings and locations (criteria 18, 19)
 # ---------------------------------------------------------------------------------------
 
-# silvercare-cicd is the only admin, and silvercare-cicd-plan the only read-only admin (view
-# only, so PR plans can read these resources; criterion 18). The
+# silvercare-cicd and silvercare-kakis are the admins, and silvercare-cicd-plan the only
+# read-only admin (view only, so PR plans can read these resources; criterion 18). The
 # create_*_default_permissions blocks are left out on purpose: the provider documents that
 # this clears them, so new databases and tables get no IAMAllowedPrincipals permissions.
 # These settings are account-wide.
 resource "aws_lakeformation_data_lake_settings" "this" {
-  admins           = [data.aws_iam_role.cicd.arn]
+  admins           = [data.aws_iam_role.cicd.arn, data.aws_iam_user.kakis.arn]
   read_only_admins = [data.aws_iam_role.cicd_plan.arn]
 }
 

@@ -63,7 +63,9 @@ accessibility matters.
   focus styles.
 - Use an `aria-live` region for new alerts, rendered once per page and fed from the
   data, not from list rows that a tab or filter can unmount. Don't put lists with
-  ticking times or countdowns inside a live region.
+  ticking times or countdowns inside a live region. A page can hold other
+  `role="status"` regions too (a section's loading state or banner), so tests find the
+  page's announcer by its text or container, never as the only `getByRole('status')`.
 
 ## Privacy
 
