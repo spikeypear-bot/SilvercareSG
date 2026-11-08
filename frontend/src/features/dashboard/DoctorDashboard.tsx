@@ -5,7 +5,8 @@ import { useNow } from '../../lib/useNow'
 import type { DashboardData, Resident, ResidentAlert } from '../../types/dashboard'
 import { AlertAnnouncer } from './AlertAnnouncer'
 import { AlertRow } from './AlertRow'
-import { DashboardError, LoadingStatus } from './DashboardStates'
+import { DashboardError, LoadingStatus, RefreshFailedNotice } from './DashboardStates'
+import { LastNightSection } from './LastNightSection'
 import { MainLayout } from './MainLayout'
 import { ResidentsPanel } from './ResidentsPanel'
 import { StaffNav } from './StaffNav'
@@ -14,22 +15,27 @@ import { dashboardStats, openListAlerts, sortAlertsForInbox } from './stats'
 import { describeAlert, useAlertAnnouncer } from './useAlertAnnouncer'
 import { useDashboardData } from './useDashboardData'
 import { useEscalationWatcher } from './useEscalationWatcher'
+import { useLastNight, type LastNightState } from './useLastNight'
 
 /** How many of the most urgent open alerts the doctor's summary shows. */
 const SUMMARY_ALERTS = 3
 
 /** Doctor view: clinical review. Residents with vitals trends; alerts as a compact summary. */
 export function DoctorDashboard() {
-  const { data, loading, error, retry } = useDashboardData('staff')
+  const { data, loading, error, retry, refreshFailed, polling } = useDashboardData('staff')
+  // Loaded once when the dashboard opens, apart from the 30 s polling: its failure
+  // doesn't affect the other sections (docs/features/nightly-overview.md, criterion 18).
+  const lastNight = useLastNight()
 
   return (
     <MainLayout title="Doctor dashboard" before={<StaffNav />}>
+      {refreshFailed && data && <RefreshFailedNotice polling={polling} />}
       {error ? (
         <DashboardError onRetry={retry} />
       ) : loading || !data ? (
         <DoctorSkeleton />
       ) : (
-        <DoctorContent data={data} />
+        <DoctorContent data={data} lastNight={lastNight.state} onLastNightRetry={lastNight.retry} />
       )}
     </MainLayout>
   )
@@ -37,12 +43,20 @@ export function DoctorDashboard() {
 
 // ---------------------------------------------------------------------------
 
-function DoctorContent({ data }: { data: DashboardData }) {
+function DoctorContent({
+  data,
+  lastNight,
+  onLastNightRetry,
+}: {
+  data: DashboardData
+  lastNight: LastNightState
+  onLastNightRetry: () => void
+}) {
   const residentsById = useMemo(
     () => new Map(data.residents.map((r) => [r.resident_id, r])),
     [data.residents],
   )
-  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById)
+  const { message, announce } = useAlertAnnouncer(data.alerts, residentsById, { openListOnly: true })
   useEscalationWatcher(data.alerts, (alert) =>
     announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )
@@ -52,6 +66,7 @@ function DoctorContent({ data }: { data: DashboardData }) {
       <AlertAnnouncer message={message} />
       <StatTiles stats={dashboardStats(data)} />
       <AlertSummary alerts={data.alerts} residentsById={residentsById} />
+      <LastNightSection state={lastNight} onRetry={onLastNightRetry} residentsById={residentsById} />
       <ResidentsPanel residents={data.residents} showTrends />
     </>
   )

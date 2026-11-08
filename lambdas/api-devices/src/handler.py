@@ -1,25 +1,31 @@
-"""GET /devices: the staff devices view (docs/data-model.md, Devices view; patterns 4, 5,
-and 8). Behind the HTTP API's Cognito JWT authorizer (infra/api.tf), payload 2.0.
+"""GET /devices: the devices view for staff and ops (docs/data-model.md, Devices view;
+patterns 4, 5, and 8). Behind the HTTP API's Cognito JWT authorizer (infra/api.tf), payload 2.0.
 
 Steps (the api-route skill):
 
 1. Read `sub` and `cognito:groups` from the JWT claims (never from headers or body).
-2. Staff only: `doctor` or `nurse`, else 403. Staff see every resident, so there is no
-   resident link check.
+2. `doctor` or `nurse` (staff), or `ops`, else 403. Both see every device, so there is
+   no resident link check. A user in a staff group and `ops` is answered as staff
+   (view precedence nurse > doctor > ops). ops get `403` on pattern 8 (the ops
+   paragraph of Access patterns), so for ops the resident Query is never sent and
+   `home_id` is never read: `assigned_to` keeps only `resident_id`, with
+   `display_name` and `home_id` null (user's decision 2026-11-08 to give ops the
+   devices tab).
 3. The route takes no query string and no body: either gives 400.
 4. Three eventually consistent, paginated Queries, as the watchdog's (reference code):
    - registry `by-type` `entity_type = DEVICE` (pattern 4): pk, device_type,
-     resident_id, home_id;
+     resident_id, and (staff only) home_id;
    - latest `by-message` `watch_type = status` (pattern 5): pk and only latest.ts,
      latest.battery_pct, latest.charging, latest.fw_version, so `worn`, `received_at`,
      `clock_skew`, and `message_id` are never read;
-   - registry `by-type` `entity_type = RESIDENT` (pattern 8): pk and display_name, never
-     `photo_key` (IAM allows only these attributes on by-type, infra/api.tf).
+   - staff only: registry `by-type` `entity_type = RESIDENT` (pattern 8): pk and
+     display_name, never `photo_key` (IAM allows only these attributes on by-type,
+     infra/api.tf).
 5. The response is built field by field (fleet.py), never from raw items.
 6. Errors are {"error": {"code", "message"}} with no internal details.
 
-Logs: outcome, counts, API Gateway's request ID, the caller's `sub` and, on a 403,
-`cognito:groups`. Never the
+Logs: outcome, counts, the caller kind (`staff` or `ops`), API Gateway's request ID,
+the caller's `sub` and, on a 403, `cognito:groups`. Never the
 request, the response, other claims, names, or readings.
 """
 
@@ -45,6 +51,7 @@ LOG_MESSAGE = "get devices"
 REGISTRY_INDEX = "by-type"
 LATEST_INDEX = "by-message"
 STAFF_GROUPS = frozenset({"doctor", "nurse"})
+OPS_GROUP = "ops"
 SUB_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 GROUP_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
 # API Gateway request IDs (e.g. "JpvNMgAbSQ0EJcQ="): logged so a Lambda log line can be
@@ -150,23 +157,28 @@ def query_all(request: dict[str, Any]) -> list[dict[str, Any]]:
         request["ExclusiveStartKey"] = last_key
 
 
-def read_devices() -> list[dict[str, Any]]:
-    """Pattern 4: every device, assigned or not."""
+def read_devices(*, include_home: bool = True) -> list[dict[str, Any]]:
+    """Pattern 4: every device, assigned or not. `include_home` False (ops) leaves
+    `home_id` out of the projection, so it is never read."""
+    names = {
+        "#type": "entity_type",
+        "#pk": "pk",
+        "#device_type": "device_type",
+        "#resident": "resident_id",
+    }
+    projection = "#pk, #device_type, #resident"
+    if include_home:
+        names["#home"] = "home_id"
+        projection += ", #home"
     return query_all(
         {
             "TableName": os.environ["REGISTRY_TABLE"],
             "IndexName": REGISTRY_INDEX,
             "Select": "SPECIFIC_ATTRIBUTES",
             "KeyConditionExpression": "#type = :device",
-            "ExpressionAttributeNames": {
-                "#type": "entity_type",
-                "#pk": "pk",
-                "#device_type": "device_type",
-                "#resident": "resident_id",
-                "#home": "home_id",
-            },
+            "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": {":device": {"S": "DEVICE"}},
-            "ProjectionExpression": "#pk, #device_type, #resident, #home",
+            "ProjectionExpression": projection,
         }
     )
 
@@ -229,22 +241,37 @@ def handle(event: Any, now: datetime) -> dict[str, Any]:
 
     sub = safe_sub(claims)
     groups = parse_groups(claims.get("cognito:groups"))
-    if not groups & STAFF_GROUPS:
+    if groups & STAFF_GROUPS:
+        caller = "staff"
+    elif OPS_GROUP in groups:
+        caller = "ops"
+    else:
         logger.warning(
             LOG_MESSAGE,
             extra={"outcome": "forbidden", "sub": sub, "groups": sorted(groups)},
         )
-        return error(403, "forbidden", "Only staff can see the devices.")
+        return error(403, "forbidden", "Only staff and ops can see the devices.")
 
     if event.get("queryStringParameters") or event.get("body"):
-        logger.warning(LOG_MESSAGE, extra={"outcome": "bad_request", "sub": sub})
+        logger.warning(
+            LOG_MESSAGE, extra={"outcome": "bad_request", "caller": caller, "sub": sub}
+        )
         return error(400, "bad_request", "This request takes no parameters or body.")
 
-    result = fleet.build_fleet(read_devices(), read_statuses(), read_residents(), now)
+    if caller == "staff":
+        result = fleet.build_fleet(
+            read_devices(), read_statuses(), read_residents(), now
+        )
+    else:
+        # ops: no pattern 8 (names) and no home_id; resident IDs only.
+        result = fleet.build_fleet(
+            read_devices(include_home=False), read_statuses(), [], now
+        )
     logger.info(
         LOG_MESSAGE,
         extra={
             "outcome": "ok",
+            "caller": caller,
             "sub": sub,
             "devices": len(result.devices),
             "skipped": result.skipped,

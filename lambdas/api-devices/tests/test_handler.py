@@ -445,7 +445,7 @@ def test_other_watch_types_are_not_read_as_status(aws):
 
 @pytest.mark.parametrize(
     "groups",
-    [["caregiver"], ["ops"], ["family"], [], "", "caregiver", "[ops family]", None, 7],
+    [["caregiver"], ["family"], [], "", "caregiver", "[caregiver family]", None, 7],
 )
 def test_non_staff_callers_get_403(aws, groups):
     seed_fleet(aws.ddb)
@@ -489,7 +489,9 @@ def test_staff_in_any_group_claim_shape_get_200(aws, groups):
 
 
 def test_group_names_are_matched_exactly(aws):
-    status, _, _ = call(api_event(groups=["Doctor", "nurses", "doctor-x"]))
+    status, _, _ = call(
+        api_event(groups=["Doctor", "nurses", "doctor-x", "Ops", "ops-x"])
+    )
 
     assert status == 403
 
@@ -732,8 +734,10 @@ def test_ok_log_has_sub_and_counts_and_no_names_or_readings(aws, logs):
     assert record["sub"] == SUB
     assert record["devices"] == 3
     assert record["skipped"] == 0
+    assert record["caller"] == "staff"
     assert set(record) - POWERTOOLS_KEYS == {
         "outcome",
+        "caller",
         "sub",
         "devices",
         "skipped",
@@ -754,12 +758,12 @@ def test_ok_log_has_sub_and_counts_and_no_names_or_readings(aws, logs):
 
 
 def test_forbidden_log_has_sub_and_groups(aws, logs):
-    call(api_event(groups=["caregiver", "ops"]))
+    call(api_event(groups=["caregiver", "family"]))
 
     (record,) = logs()
     assert record["outcome"] == "forbidden"
     assert record["sub"] == SUB
-    assert record["groups"] == ["caregiver", "ops"]
+    assert record["groups"] == ["caregiver", "family"]
     assert record["level"] == "WARNING"
     text = _log_text(logs())
     assert EMAIL not in text
@@ -926,3 +930,63 @@ def test_queries_use_the_configured_table_names(aws):
         ("silvercare-registry", "by-type"),
         ("silvercare-latest", "by-message"),
     }
+
+
+# ---- 7b. ops (user's decision 2026-11-08: ops get the devices tab, without pattern 8) ----
+
+ASSIGNED_A_FOR_OPS = {"resident_id": RESIDENT_A, "display_name": None, "home_id": None}
+
+
+@pytest.mark.parametrize(
+    "groups", [["ops"], "[ops]", "ops", ["caregiver", "ops"], "[ops family]"]
+)
+def test_ops_get_every_device_without_names_or_home(aws, groups):
+    seed_fleet(aws.ddb)
+
+    status, body, _ = call(api_event(groups=groups))
+
+    assert status == 200
+    assert [d["device_id"] for d in body["devices"]] == [BEDROOM, WEARABLE, WEARABLE_2]
+    assigned = [d["assigned_to"] for d in body["devices"]]
+    assert assigned == [ASSIGNED_A_FOR_OPS, ASSIGNED_A_FOR_OPS, None]
+    for device in body["devices"]:
+        assert set(device) == DEVICE_KEYS
+    assert NAME_A not in json.dumps(body)
+    assert HOME_A not in json.dumps(body)
+
+
+def test_ops_never_query_residents_or_read_home_id(aws):
+    seed_fleet(aws.ddb)
+
+    call(api_event(groups=["ops"]))
+
+    queries = aws.queries()
+    assert len(queries) == 2
+    for request in queries:
+        values = json.dumps(request["ExpressionAttributeValues"])
+        assert "RESIDENT" not in values
+        assert "home_id" not in request["ExpressionAttributeNames"].values()
+        assert "display_name" not in request["ExpressionAttributeNames"].values()
+
+
+@pytest.mark.parametrize(
+    "groups", [["ops", "nurse"], ["ops", "doctor"], "[ops doctor]"]
+)
+def test_staff_who_are_also_ops_get_the_staff_response(aws, groups):
+    seed_fleet(aws.ddb)
+
+    status, body, _ = call(api_event(groups=groups))
+
+    assert status == 200
+    assert body["devices"][0]["assigned_to"] == ASSIGNED_A
+
+
+def test_ops_ok_log_says_ops_and_has_no_names(aws, logs):
+    seed_fleet(aws.ddb)
+
+    call(api_event(groups=["ops"]))
+
+    (record,) = logs()
+    assert record["outcome"] == "ok"
+    assert record["caller"] == "ops"
+    assert NAME_A not in json.dumps(record)

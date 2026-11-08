@@ -18,7 +18,15 @@ vi.mock('./useDashboardData', async (importOriginal) => {
   }
 })
 
-const BANNER = 'You are viewing synthetic demo data. No real resident information is shown.'
+// The "Last night" section (docs/features/nightly-overview.md) is mocked at the API
+// boundary so this file never reaches the real client or Amplify; its own tests are in
+// LastNightSection.test.tsx.
+vi.mock('../../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/api')>()
+  const { testOverview } = await import('../../test/nightlyFixtures')
+  return { ...actual, getNightlyOverview: vi.fn(async () => testOverview()) }
+})
+
 
 beforeEach(() => {
   resetDashboardLoader()
@@ -86,14 +94,11 @@ describe('view by group (Users and access, criterion 10)', () => {
     ['caregiver', 'My residents'],
     ['doctor', 'Doctor dashboard'],
     ['nurse', 'Nurse dashboard'],
-  ] as const)('the demo banner is shown for a %s user in "%s" (criterion 20)', async (key, heading) => {
+  ] as const)('no demo banner for a %s user in "%s": every view reads the API', async (key, heading) => {
     renderWithAuth(<MainPage />, { user: TEST_USERS[key] })
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
-    const banner = screen.getByRole('note', { name: 'Demo data' })
-    expect(banner).toHaveTextContent('Demo data')
-    expect(banner).toHaveTextContent(BANNER)
-    expect(banner.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
     await screen.findAllByText(/Test Resident/)
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
   })
 })
 

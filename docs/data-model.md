@@ -109,16 +109,31 @@ resident profile, photo, and latest-readings patterns (8, 10, 11, 12 for health 
 18, 19) unless Track B later agrees otherwise. Nurses see device problems in the portal
 through pattern 9 (staff already read every alert); they get no device-problem email.
 
+**Ops view** (built 2026-11-08 as `GET /ops/device-problems`, `lambdas/api-ops/`, at the
+user's request; the `ops` group is in `infra/cognito.tf`). `ops` only (any other group
+`403`, also nurses and doctors, who use `GET /dashboard`). It returns exactly
+`{"alerts": [...]}` with the fields listed above, newest first. *(proposed, builder's
+choices, for the user to confirm)*: the route path; the base-table read for `details`
+is a BatchGetItem of only the device problems' keys (projecting `alert_type`,
+`details`, `resolved_at`, `resolved_by_role`), and an item is dropped if either the
+index or the base copy isn't a device problem, so the FilterExpression is not the only
+check; `details` keeps only each type's documented keys; a caregiver name that fails to
+load is `null`; throttled to one load per 20 s (burst 2), because 40 offline devices
+would read about 20 RCU of the alerts base table's 3. Not built: pattern 12 for one
+resident (the ops view doesn't need it). A device fleet for ops was added 2026-11-08
+(user's decision): `GET /devices` without pattern 8, see Devices view. The ops
+acknowledge was already built in `lambdas/api-alert-actions/`.
+
 | # | Who / what | Query | Table / index | Key condition | Frequency |
 |---|---|---|---|---|---|
 | 1 | `telemetry`, `critical-alert` | Which resident is this device assigned to? | registry | GetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` | `critical-alert`: every `fall` / `vitals_alert` / `alert_cancel`; `telemetry`: every `vitals` whose newest two entries are at most 3 min apart (cached 5 min per Lambda container; `alert_cancel` always reads it uncached, docs/features/possible-fall.md). `device-health` reads no registry |
 | 2 | `telemetry` | This resident's vitals thresholds | registry | GetItem `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` | as pattern 1 for `vitals`, assigned devices only (cached 5 min, including "no item") |
 | 3 | `telemetry`, `device-health`, `critical-alert` | Add a message to the latest 5 for its device and type | latest | GetItem + conditional PutItem `pk = DEVICE#<device_id>`, `sk = MSG#<message>` | ~0.5 / s |
-| 4 | backend: `watchdog` (docs/features/watchdog.md), `summaries` (docs/features/curated-layer.md); staff only: devices view, nurse and doctor dashboards (`GET /dashboard`: `pk`, `resident_id`) | Every device, assigned or not (the watchdog and summaries keep only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog, summaries: eventually consistent, paginated; summaries projects `pk`, `resident_id`) | every 5 min; once a day (summaries); per devices-view load |
-| 5 | backend: `watchdog`; staff only: nurse and doctor dashboards, devices view (`status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: `vitals` and `status`, see Dashboard) | every 5 min; every 30 s per open dashboard (polling) |
+| 4 | backend: `watchdog` (docs/features/watchdog.md), `summaries` (docs/features/curated-layer.md); devices view (staff and ops), nurse and doctor dashboards (`GET /dashboard`: `pk`, `resident_id`) | Every device, assigned or not (the watchdog and summaries keep only assigned ones: `resident_id` present) | registry `by-type` | Query `entity_type = DEVICE` (watchdog, summaries: eventually consistent, paginated; summaries projects `pk`, `resident_id`) | every 5 min; once a day (summaries); per devices-view load |
+| 5 | backend: `watchdog`; nurse and doctor dashboards, devices view (staff and ops; `status` only) | Newest `vitals` / `status` / `bed` / `motion` of every device | latest `by-message` | Query `watch_type = <message>`, paginated (watchdog: `status` for device problems; `bed`, `motion` with the possible-fall check, A4b; dashboard: `vitals` and `status`, see Dashboard) | every 5 min; every 30 s per open dashboard (polling) |
 | 6 | backend: `alert-processor` | Write an alert exactly once | alerts | PutItem with `attribute_not_exists(pk)` | per alert |
 | 7 | backend: `alert-processor` | This resident's recent alerts, to hold back a repeat (same `alert_type` and `severity`, and for `unassigned` the same `device_id`, within 30 min; never falls) | alerts | Query `pk = RESIDENT#<resident_id>`, `sk BETWEEN "ALERT#<event_ts − 30 min>" AND "ALERT#<event_ts>#~"` (`~` sorts after every `alert_id`, so alerts at the same `event_ts`, including this alert's own item on a retry, are returned), strongly consistent | per non-fall alert message |
-| 8 | Staff only: nurse and doctor dashboards, devices view (names for assigned devices) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard |
+| 8 | Staff only: nurse and doctor dashboards, devices view (names for assigned devices); doctor dashboard "Last night" (`GET /nightly/overview`, docs/features/nightly-overview.md: eventually consistent, paginated, `Select = SPECIFIC_ATTRIBUTES`, projecting `pk` only; drops `display_name`, `home_id`, `photo_key`) | All residents | registry `by-type` | Query `entity_type = RESIDENT` | every 30 s per open dashboard; per doctor dashboard open for `GET /nightly/overview` (reused 10 minutes, route throttled to 0.1/s, burst 2) |
 | 9 | Staff only: nurse and doctor dashboards; backend: `watchdog` | All open alerts (and acknowledged ones, which keep `open_pk`), newest first | alerts `open` | Query `open_pk = OPEN`, descending. The index projects what the dashboards' alert rows need (`severity`, `acknowledged_at`, `ack_note`, `acknowledged_by_role` and `acknowledged_by` for who acknowledged a device problem, `escalated_at`, and `notified_at` for the computed `escalates_at`; see [Index](#index-1)), so the API needs no base-table read per alert. Watchdog: eventually consistent, paginated, and its role may read only `pk`, `sk`, `open_pk`, `alert_type`, and `device_id` through the index (IAM `dynamodb:Attributes`, so never `ack_note`); it uses only the three device-problem types and `possible_fall`, to keep one open alert per device and type and to find the ones to resolve | every 30 s per open dashboard; every 5 min |
 | 10 | Resident page: staff, or caregiver after 13 | This resident's devices | registry `by-resident` | Query `gsi1_pk = RESIDENT#<resident_id>`, `begins_with(gsi1_sk, "DEVICE#")` | per page view |
 | 11 | Resident page: staff, or caregiver after 13 | Latest 5 of every message type for those devices | latest | BatchGetItem (per device: wearable `vitals`, `vitals_alert`, `fall`, `status`; bedroom `motion`, `bed`, `status`) | per page view |
@@ -143,6 +158,7 @@ through pattern 9 (staff already read every alert); they get no device-problem e
 | 29 | backend: `summaries` (docs/features/curated-layer.md, criteria 6-8) | Every assigned device's `assigned_at` (which `by-type` doesn't project), and each assigned resident's thresholds | registry | BatchGetItem `pk = DEVICE#<device_id>`, `sk = ASSIGNMENT` (projecting `pk`, `resident_id`, `device_type`, `assigned_at`), then `pk = THRESHOLDS#<resident_id>`, `sk = THRESHOLDS` (projecting `pk`, `hr_bpm`, `spo2_pct`, `skin_temp_c`); eventually consistent, up to 100 keys per call, `UnprocessedKeys` retried with back-off. IAM limits the role to `DEVICE#*` and `THRESHOLDS#*` partitions (`dynamodb:LeadingKeys`) | once a day (after the clean job) |
 | 30 | backend: `results` (docs/features/nightly-results.md, criteria 2, 6) | Write one resident's night | results | PutItem `pk = RESIDENT#<resident_id>`, `sk = NIGHT#<date>`, unconditional (a re-run overwrites the same key) | about 20 a day, after `summaries` (about 2 WCU each, within burst capacity) |
 | 31 | Doctor only: resident page, "Nightly summary" (docs/features/nightly-results.md, criteria 16-18) | This resident's stored nights, newest first | results | Query `pk = RESIDENT#<resident_id>`, `begins_with(sk, "NIGHT#")`, descending, eventually consistent, paginated, projecting `pk`, `sk`, `summary`. Returns per night `date` (from `sk`) and every field of `summary`; drops `resident_id`, `schema_version`, `loaded_at`, `expires_at`, and nights older than 30 days before today's Singapore date | per page view (route throttled to 0.1/s, burst 2) |
+| 32 | Doctor only: doctor dashboard, "Last night" (`GET /nightly/overview`, docs/features/nightly-overview.md, criteria 4-10) | Every resident's item for yesterday's Singapore date | results | After pattern 8 (`pk` only): BatchGetItem `pk = RESIDENT#<resident_id>`, `sk = NIGHT#<date>` for every resident, up to 100 keys per call, eventually consistent, `UnprocessedKeys` retried with exponential back-off (5 attempts, then `500`), projecting `pk`, `summary.falls`, `summary.vitals_alert_episodes`, `summary.hr_bpm_above`, `summary.hr_bpm_below`, `summary.spo2_pct_below`, `summary.skin_temp_c_above`, `summary.skin_temp_c_below`, `summary.thresholds`. Returns per flagged resident `resident_id`, the seven counts, `out_of_limit`, and `thresholds`, plus `clear_count` and `no_summary_count`; drops every other summary field, `resident_id`, `date`, `schema_version`, `loaded_at`, `expires_at`, and residents with nothing flagged | per doctor dashboard open (reused 10 minutes, route throttled to 0.1/s, burst 2); about 20 items, about 10 RCU per call |
 
 No pattern uses `Scan`.
 
@@ -156,8 +172,13 @@ longer a direct UpdateItem), which only updates an `open` (or, for a cancel or r
 `acknowledged`) alert (pattern 25), so a resolve for a mistyped or expired alert can't
 create an item.
 
-**Devices view** (patterns 4, 5, and 8, staff only; built 2026-11-07 as `GET /devices`,
-`lambdas/api-devices/`, at the user's request): the route returns
+**Devices view** (patterns 4, 5, and 8 for staff; 4 and 5 for ops; built 2026-11-07 as
+`GET /devices`, `lambdas/api-devices/`, at the user's request; ops added 2026-11-08 at
+the user's request): `doctor`, `nurse`, or `ops` (anyone else `403`; staff and ops
+in one user is answered as staff). For **ops** the ops rule above holds: pattern 8 is
+never queried and `home_id` is not projected, so `assigned_to` is `resident_id` with
+`display_name` and `home_id` null, and the portal shows "Resident res-0003" with no
+link to the resident page (which answers ops `403`). The route returns
 exactly, per device, `device_id`, `device_type`, `online`, `last_seen` (the newest
 `status` `ts`), `battery_pct`, `charging`, `fw_version`, and `assigned_to`
 (`resident_id`, `display_name`, `home_id`, or null for a spare). It looks up names only
@@ -221,9 +242,20 @@ and no group get `403`. It returns exactly `{"residents": [...], "alerts": [...]
 - **Throttling:** the stage limits `GET /dashboard` and `GET /devices` to 0.5 requests/s
   each (burst 2), because they share `by-type` (2 RCU) and `by-message` (3 RCU) with the
   watchdog; that still serves about 15 dashboards polling every 30 s.
-- The dashboard is loaded once per page view: the 30-second polling in patterns 5, 8,
-  and 9 is not built yet, because the alert actions are still local-only and a reload
-  would undo them on screen.
+- **Polling** (built 2026-11-08): the nurse and doctor dashboards, the devices view
+  (staff and ops), and the ops view refetch every 30 s while the browser tab is visible,
+  and when the tab comes back into view. The caregiver view (`GET /me/residents`) and
+  the resident page are **not** polled: patterns 10-14 are sized per page view, and
+  their routes are throttled for that (`GET /me/residents` 0.2/s for all caregivers
+  together; about 5 RCU per linked resident, mostly on the latest table that ingest's
+  write rule reads). They refetch on focus and after an action only (the resident
+  page's Nightly summary, pattern 31, still loads once per page view). Polling either
+  needs a decision on capacity first. No refresh runs while a note or thresholds form
+  is open. After an acknowledge, cancel, or resolve (`202`), the view refetches; the
+  change stays on screen until a load returns the new status (at most 2 minutes), since
+  `alert-processor` applies it asynchronously. A second ops user polling at the same
+  time can exceed `GET /ops/device-problems`' one load per 20 s: the page keeps its
+  data and says it couldn't refresh.
 
 **Resident page and caregiver view** (patterns 10, 11, 12, 13, 14, 18; built 2026-11-07
 as `GET /residents/{resident_id}` and `GET /me/residents`, `lambdas/api-residents/`, at
@@ -449,6 +481,10 @@ assignments, and links for the test caregiver user.
   stops before writing anything, and `--delete` keeps that item. Unassigned devices (no
   `resident_id`, e.g. the spares `scripts/seed-registry.py` writes) hold no resident's
   data, so the seed may assign them.
+- `scripts/seed-registry.py --link-caregiver <sub>` (added 2026-11-08) writes links of
+  this shape from that `sub` to `res-0001`-`res-0003`, with `linked_by = "seed"` and
+  only if absent. `seed.py` prunes them on its next run unless `<sub>` is its test
+  caregiver's (seed.py links that user to the same three residents itself).
 - Before real resident data arrives, delete the seed (`python scripts/seed.py --delete`):
   the test users' passwords are shared among the team.
 
@@ -487,7 +523,7 @@ its fields, and its tests check that.
 
 | Index | Hash | Range | Projection | Serves |
 |---|---|---|---|---|
-| `by-type` | `entity_type` | `pk` | INCLUDE `display_name`, `home_id`, `photo_key`, `device_type`, `resident_id` | 4 (also `summaries`), 8, 27, photo cleanup |
+| `by-type` | `entity_type` | `pk` | INCLUDE `display_name`, `home_id`, `photo_key`, `device_type`, `resident_id` | 4 (also `summaries`), 8 (also `GET /nightly/overview`, `pk` only), 27, photo cleanup |
 | `by-resident` | `gsi1_pk` | `gsi1_sk` | INCLUDE `device_type`, `relationship` | 10, 15 |
 
 ## Photos
@@ -1155,6 +1191,13 @@ copy for the portal and the one exception to "live state only".
 - **Reader:** `GET /residents/{resident_id}/nightly` (`silvercare-api-nightly`, pattern
   31), doctors only. Its role may only `dynamodb:Query` this table (`RESIDENT#*`
   partitions). A resident with no items (or an unknown resident) returns no nights.
+- **Reader:** `GET /nightly/overview` (`silvercare-api-nightly-overview`, pattern 32),
+  doctors only: last night's item for every resident (IDs from pattern 8, `pk` only),
+  projecting `pk` and the seven flag counts and `thresholds` of `summary`. Its role may
+  only `dynamodb:BatchGetItem` this table, and `dynamodb:Query` the registry `by-type`
+  index for `pk` and `entity_type` (`Select = SPECIFIC_ATTRIBUTES`). A resident with no
+  item counts towards `no_summary_count`; an item that can't be read counts the same way
+  (logged as a count only).
 - **TTL:** `expires_at`. DynamoDB deletes expired items typically within two days, so
   the API also hides nights older than 30 days before today's Singapore date.
 - **Point-in-time recovery:** on, as every table, so a deleted or expired item stays

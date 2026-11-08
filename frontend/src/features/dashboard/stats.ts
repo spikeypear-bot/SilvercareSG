@@ -20,7 +20,7 @@ export function isDeviceProblem(alert: Pick<ResidentAlert, 'alert_type'>): boole
 }
 
 /** Open or acknowledged: still on the open list (pattern 9). Cancel and resolve take it off. */
-export function isOnOpenList(alert: ResidentAlert): boolean {
+export function isOnOpenList(alert: { status: string | null }): boolean {
   return alert.status === 'open' || alert.status === 'acknowledged'
 }
 

@@ -5,6 +5,16 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **Problem:** the nightly-overview spec didn't say what happens to a Results item with
+  unreadable thresholds; the build counted the whole night as "no summary", hiding a
+  fall (the lambda tester flagged it; the user chose to flag it with `thresholds: null`).
+  **Changed:** `.claude/skills/feature-spec/SKILL.md` (Alerting inputs): a list that
+  surfaces residents needing attention says how it treats a partly unreadable item.
+- **Problem:** the nightly-overview spec and build limited the new role's `by-type`
+  Query to `pk`, `entity_type`, leaving out `sk`, which a second page's
+  `ExclusiveStartKey` holds (the backend builder flagged it). **Changed:**
+  `.claude/skills/iam-policy/SKILL.md` (DynamoDB attribute lists): for a paginated index
+  Query, the allowed keys include the base table's `pk` and `sk`.
 - **Problem:** the `simulator-backfill` spec (written by Claude) said generated history
   would flow into the daily summaries, but summaries drop readings before each device's
   `assigned_at` (the seed's run time), so loading it would have written months of empty,
@@ -12,7 +22,6 @@ a wasted step. Newest first. Review these in the diff before committing.
   `.claude/skills/feature-spec/SKILL.md` (readiness checklist): data made for another
   component is checked against that component's filters and what can't be undone once
   loaded. (Fix: seed's fixed `assigned_at`, load steps re-seed and check overlap.)
-
 - **Problem:** the curated-layer go-live checklist said to clean only D−1 and D before a
   manual summaries run, but summaries also needs D−2 for `bed` and `vitals_alert`; the
   run failed with "clean partition missing". **Changed:**
@@ -26,6 +35,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 - **Problem:** the Tableau IAM user had a `path`, but its ARN is a Lake Formation
   principal; iac-reviewer flagged it. **Changed:** `.claude/skills/iam-policy/SKILL.md`:
   no path on users or roles that get Lake Formation grants.
+- **Problem:** with polling added, an acknowledge followed by a resolve showed the alert
+  as open again (the second action's override replaced the first's starting status);
+  the resident page tests caught it. **Changed:** `.claude/skills/frontend/SKILL.md`
+  (Rules): show action results through the data hooks' overrides, never by writing
+  into polled data, and hold refreshes while a form is open.
 
 ## 2026-11-07
 

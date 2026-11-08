@@ -173,3 +173,83 @@ def api_event(
     }
     event.update(top)
     return event
+
+
+# ---- GET /nightly/overview (docs/features/nightly-overview.md) ----
+
+# The seven flag counts, all zero: a night with nothing flagged.
+CLEAR_COUNTS: dict[str, Any] = {
+    "falls": Decimal(0),
+    "vitals_alert_episodes": Decimal(0),
+    "hr_bpm_above": Decimal(0),
+    "hr_bpm_below": Decimal(0),
+    "spo2_pct_below": Decimal(0),
+    "skin_temp_c_above": Decimal(0),
+    "skin_temp_c_below": Decimal(0),
+}
+
+EXPECTED_THRESHOLDS: dict[str, Any] = {
+    "hr_bpm": {"min": 50, "max": 120},
+    "spo2_pct": {"min": 92},
+    "skin_temp_c": {"min": 30.0, "max": 38.0},
+}
+
+
+def resident_profile(resident_id: str, name: str = "Test Resident A") -> dict[str, Any]:
+    """A registry RESIDENT profile item (deserialized form), synthetic only."""
+    return {
+        "pk": f"RESIDENT#{resident_id}",
+        "sk": "PROFILE",
+        "entity_type": "RESIDENT",
+        "resident_id": resident_id,
+        "display_name": name,
+        "home_id": "home-0011",
+        "photo_key": "photos/00000000-0000-4000-8000-000000000003.jpg",
+        "medical_notes": "Synthetic note: test only.",
+    }
+
+
+def put_resident(ddb, resident_id: str, name: str = "Test Resident A") -> None:
+    put_raw(ddb, resident_profile(resident_id, name), os.environ["REGISTRY_TABLE"])
+
+
+def put_counts(ddb, resident_id: str, date: str = YESTERDAY, **counts: Any) -> None:
+    """Last night's Results item for `resident_id`, all seven counts 0 except `counts`
+    (plain ints are stored as Decimal; `None` stores a null)."""
+    values = {k: (Decimal(v) if isinstance(v, int) else v) for k, v in counts.items()}
+    put_night(ddb, resident_id, date, **{**CLEAR_COUNTS, **values})
+
+
+def overview_event(
+    groups: Any = ("doctor",),
+    claims: dict[str, Any] | None = None,
+    query: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """GET /nightly/overview with a Cognito JWT (payload 2.0)."""
+    jwt_claims: dict[str, Any] = {
+        "sub": SUB,
+        "email": EMAIL,
+        "name": NAME,
+        "cognito:groups": list(groups) if isinstance(groups, tuple) else groups,
+        "token_use": "id",
+    }
+    jwt_claims.update(claims or {})
+    event: dict[str, Any] = {
+        "version": "2.0",
+        "routeKey": "GET /nightly/overview",
+        "rawPath": "/nightly/overview",
+        "rawQueryString": "",
+        "headers": {"authorization": "Bearer synthetic-token"},
+        "requestContext": {
+            "http": {"method": "GET", "path": "/nightly/overview"},
+            "requestId": REQUEST_ID,
+            "routeKey": "GET /nightly/overview",
+            "stage": "$default",
+            "authorizer": {"jwt": {"claims": jwt_claims, "scopes": None}},
+        },
+        "isBase64Encoded": False,
+    }
+    if query is not None:
+        event["queryStringParameters"] = query
+        event["rawQueryString"] = "&".join(f"{k}={v}" for k, v in query.items())
+    return event

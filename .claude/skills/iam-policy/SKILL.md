@@ -58,7 +58,9 @@ justified by something the code actually does.
   `Query` on an index that projects personal data (the registry's `by-type` projects
   `display_name`, `home_id`, `photo_key`; see `api_devices` in `infra/api.tf`): list
   only the attributes read plus keys, and send `Select: SPECIFIC_ATTRIBUTES` in the
-  request.
+  request. For a paginated index Query, "keys" means the index's keys **and** the base
+  table's (`pk`, `sk`): a later page's `ExclusiveStartKey` holds them, so leaving `sk`
+  out only fails once there's a second page.
 - **Lake Formation principals:** an IAM user or role that gets Lake Formation grants has
   no `path`, since its ARN is the principal and AWS documents only plain
   `user/<name>` / `role/<name>` ARNs there.

@@ -41,6 +41,12 @@ frontend/src/
 - Whether an alert is still open: use `isOnOpenList` (`features/dashboard/stats.ts`:
   `open` or `acknowledged`, the data model's open list), in app code and demo data alike.
   Never `status !== 'resolved'`: `cancelled` closes an alert too, and so may later statuses.
+- Views poll (`useLoaded` in `features/dashboard/useDashboardData.ts`), and alert actions
+  are applied asynchronously after the `202`, so a refetch can still return the old
+  status. Show an action's result through the hooks' overrides (kept while the server
+  shows any status the alert had before this session's actions), never by writing it
+  into the loaded data, which the next poll replaces. Forms that a poll could disturb
+  call `useHoldRefresh` (`lib/refreshHold.ts`).
 
 ## Accessibility
 

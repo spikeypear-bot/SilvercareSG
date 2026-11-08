@@ -8,7 +8,16 @@ import type { ApiDevice } from '../types/devices'
 const auth = vi.hoisted(() => ({ getApiToken: vi.fn<() => Promise<string | null>>() }))
 vi.mock('./auth', () => ({ getApiToken: auth.getApiToken }))
 
-import { ApiError, acknowledgeAlertApi, apiGet, cancelAlertApi, getDashboard, getDevices, resolveAlertApi } from './api'
+import {
+  ApiError,
+  acknowledgeAlertApi,
+  apiGet,
+  cancelAlertApi,
+  getDashboard,
+  getDeviceProblems,
+  getDevices,
+  resolveAlertApi,
+} from './api'
 
 const TEST_TOKEN = 'test-id-token-abc123'
 const BASE = 'https://api.example.test'
@@ -539,5 +548,39 @@ describe('acknowledgeAlertApi and cancelAlertApi check requested_status too', ()
       fetchMock.mockResolvedValueOnce(body202(wrong))
       expect(await apiErrorOf(cancelAlertApi(ALERT))).toMatchObject({ status: 202, code: 'invalid_response' })
     }
+  })
+})
+
+describe('getDeviceProblems (ops)', () => {
+  const problem = (alert_id: string, alert_type: string) => ({ alert_id, alert_type, resident_id: 'res-0001' })
+
+  it('GETs /ops/device-problems with the token and returns the alerts', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ alerts: [problem('a1', 'battery_low')] }))
+    const alerts = await getDeviceProblems()
+    expect(alerts.map((a) => a.alert_id)).toEqual(['a1'])
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe(`${BASE}/ops/device-problems`)
+    expect((init!.headers as Record<string, string>).Authorization).toBe(`Bearer ${TEST_TOKEN}`)
+  })
+
+  it('drops anything that is not a device problem, even if the server sent it', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        alerts: [
+          problem('a1', 'device_offline'),
+          problem('h1', 'fall'),
+          problem('h2', 'hr_high'),
+          problem('a2', 'not_worn'),
+          null,
+        ],
+      }),
+    )
+    const alerts = await getDeviceProblems()
+    expect(alerts.map((a) => a.alert_id)).toEqual(['a1', 'a2'])
+  })
+
+  it('rejects a body without an alerts list', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ residents: [] }))
+    expect((await apiErrorOf(getDeviceProblems())).code).toBe('invalid_response')
   })
 })

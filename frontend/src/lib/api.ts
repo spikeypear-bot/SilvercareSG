@@ -17,8 +17,10 @@ import type {
   VitalsThresholds,
 } from '../types/resident'
 import type { ApiDevice, DevicesResponse } from '../types/devices'
-import type { NightlyResponse } from '../types/nightly'
+import type { NightlyOverviewResponse, NightlyResponse } from '../types/nightly'
+import type { DeviceProblem, DeviceProblemsResponse } from '../types/ops'
 import { getApiToken } from './auth'
+import { SG_TIME_ZONE } from './format'
 
 const ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,63}$/
 
@@ -128,6 +130,23 @@ export async function getDashboard(): Promise<ApiDashboardResponse> {
   const body = await apiGet('/dashboard')
   if (!isDashboardResponse(body)) throw new ApiError(200, 'invalid_response')
   return body
+}
+
+const DEVICE_PROBLEM_TYPES: ReadonlySet<string> = new Set(['device_offline', 'battery_low', 'not_worn'])
+
+/**
+ * `GET /ops/device-problems` (ops only): open and acknowledged device problems for every
+ * resident, newest first. The server filters out every health alert; anything that
+ * still isn't a device problem is dropped here too (display only, not access control).
+ */
+export async function getDeviceProblems(): Promise<DeviceProblem[]> {
+  const body = await apiGet('/ops/device-problems')
+  if (typeof body !== 'object' || body === null || !Array.isArray((body as { alerts?: unknown }).alerts)) {
+    throw new ApiError(200, 'invalid_response')
+  }
+  return (body as DeviceProblemsResponse).alerts.filter(
+    (a) => typeof a === 'object' && a !== null && DEVICE_PROBLEM_TYPES.has(a.alert_type),
+  )
 }
 
 /** `202` body of the alert actions: the request is queued, not yet applied. */
@@ -288,4 +307,95 @@ export async function getNightly(residentId: string): Promise<NightlyResponse> {
   const body = await apiGet(`/residents/${encodeURIComponent(residentId)}/nightly`)
   if (!isNightlyResponse(body)) throw new ApiError(200, 'invalid_response')
   return body
+}
+
+function isNightlyOverviewResponse(value: unknown): value is NightlyOverviewResponse {
+  if (typeof value !== 'object' || value === null) return false
+  const body = value as {
+    expected_date?: unknown
+    available?: unknown
+    not_ready?: unknown
+    flagged?: unknown
+    clear_count?: unknown
+    no_summary_count?: unknown
+  }
+  return (
+    typeof body.expected_date === 'string' &&
+    typeof body.available === 'boolean' &&
+    typeof body.not_ready === 'boolean' &&
+    typeof body.clear_count === 'number' &&
+    typeof body.no_summary_count === 'number' &&
+    Array.isArray(body.flagged) &&
+    body.flagged.every(
+      (entry: unknown) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        typeof (entry as { resident_id?: unknown }).resident_id === 'string' &&
+        // An object, or null when the night's stored limits couldn't be read.
+        typeof (entry as { thresholds?: unknown }).thresholds === 'object',
+    )
+  )
+}
+
+/** How long a loaded overview is reused in this tab (docs/features/nightly-overview.md, criterion 18). */
+export const NIGHTLY_OVERVIEW_REUSE_MS = 10 * 60 * 1000
+
+const sgDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: SG_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+/** Today's Singapore date, `yyyy-mm-dd`. */
+function singaporeDate(now: number): string {
+  return sgDateFormatter.format(new Date(now))
+}
+
+/**
+ * The tab's in-memory copy of the last overview (or the request in flight). Memory only,
+ * never browser storage: it ends when the tab closes.
+ */
+let overviewCache: { promise: Promise<NightlyOverviewResponse>; loadedAt: number; sgDate: string } | null = null
+
+/** Forgets the cached overview (e.g. between tests). */
+export function clearNightlyOverviewCache(): void {
+  overviewCache = null
+}
+
+/**
+ * `GET /nightly/overview` (doctor only): last night's flagged residents in priority order
+ * and the "nothing flagged" / "no summary" counts. The answer, not-ready ones included,
+ * is reused for 10 minutes in this tab, or until the Singapore date changes; `fresh`
+ * ("Try again") skips the copy. A failed request isn't kept.
+ */
+export async function getNightlyOverview(options: { fresh?: boolean } = {}): Promise<NightlyOverviewResponse> {
+  const now = Date.now()
+  const sgDate = singaporeDate(now)
+  const cached = overviewCache
+  if (
+    !options.fresh &&
+    cached &&
+    cached.sgDate === sgDate &&
+    now - cached.loadedAt >= 0 &&
+    now - cached.loadedAt < NIGHTLY_OVERVIEW_REUSE_MS
+  ) {
+    return cached.promise
+  }
+  const promise = apiGet('/nightly/overview').then((body) => {
+    if (!isNightlyOverviewResponse(body)) throw new ApiError(200, 'invalid_response')
+    return body
+  })
+  const entry = { promise, loadedAt: now, sgDate }
+  overviewCache = entry
+  promise.then(
+    () => {
+      // Reuse counts from when the answer arrived.
+      if (overviewCache === entry) entry.loadedAt = Date.now()
+    },
+    () => {
+      if (overviewCache === entry) overviewCache = null
+    },
+  )
+  return promise
 }

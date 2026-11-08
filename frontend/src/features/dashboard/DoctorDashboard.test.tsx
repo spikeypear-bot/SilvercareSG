@@ -17,7 +17,15 @@ vi.mock('./useDashboardData', async (importOriginal) => {
   }
 })
 
-const BANNER = 'You are viewing synthetic demo data. No real resident information is shown.'
+// The "Last night" section (docs/features/nightly-overview.md) is mocked at the API
+// boundary so this file never reaches the real client or Amplify; its own tests are in
+// LastNightSection.test.tsx.
+vi.mock('../../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/api')>()
+  const { testOverview } = await import('../../test/nightlyFixtures')
+  return { ...actual, getNightlyOverview: vi.fn(async () => testOverview()) }
+})
+
 
 beforeEach(() => {
   resetDashboardLoader()
@@ -64,12 +72,12 @@ function alertFor(
 }
 
 describe('loading, error, and layout', () => {
-  it('shows skeletons with a loading status, plus header, banner, and greeting', () => {
+  it('shows skeletons with a loading status, plus header and greeting, no demo banner', () => {
     dashboardLoader.mockReturnValue(deferred<DashboardData>().promise)
     renderDoctor()
     expect(screen.getByRole('status')).toHaveTextContent('Loading dashboard')
     expect(screen.getByRole('heading', { level: 1, name: 'Doctor dashboard' })).toBeInTheDocument()
-    expect(screen.getByRole('note', { name: 'Demo data' })).toHaveTextContent(BANNER)
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
     expect(screen.getByText(/^Good (morning|afternoon|evening), Test Doctor A$/)).toBeInTheDocument()
     expect(residentCards()).toHaveLength(0)
     expect(dashboardLoader).toHaveBeenCalledWith('staff')
@@ -86,11 +94,11 @@ describe('loading, error, and layout', () => {
     expect(dashboardLoader).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps the demo banner visible in the error state', async () => {
+  it('shows no demo banner in the error state (it reads the API)', async () => {
     dashboardLoader.mockRejectedValue(new Error('boom'))
     renderDoctor()
     await screen.findByRole('alert')
-    expect(screen.getByRole('note', { name: 'Demo data' })).toHaveTextContent(BANNER)
+    expect(screen.queryByRole('note', { name: 'Demo data' })).not.toBeInTheDocument()
   })
 
   it('page title has no personal data', async () => {

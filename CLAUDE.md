@@ -68,15 +68,19 @@ structure, not code that exists yet. Update this file as decisions land.
   (clinical review: trends, editing thresholds); a user in both groups gets the nurse
   view. `caregiver` gets the family view, sees only linked residents (several caregivers
   per resident), and can cancel their alerts; the frontend gives a user still in the
-  `family` group the no-access screen. A new `ops` group (team decision 2026-11-04, added
-  by Track B) gets an ops view of device problems (offline, low battery, not worn) for
-  every resident and can acknowledge them; caregivers can acknowledge their residents'
+  `family` group the no-access screen. A new `ops` group (team decision 2026-11-04, in
+  `infra/cognito.tf` since 2026-11-08) gets the ops dashboard (`GET /ops/device-problems`):
+  device problems (offline, low battery, not worn) for every resident, never health
+  alerts, and can acknowledge them, plus the devices tab (`GET /devices` without
+  resident names or homes, since 2026-11-08). View precedence: nurse > doctor > ops > caregiver; caregivers can acknowledge their residents'
   device problems too. Sign-in is email + password, MFA (authenticator app) optional.
   Groups decide what a user can see; the API enforces it, the UI only hides things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
   caregiver/family views and the nurse and doctor dashboards, chosen by Cognito group,
-  plus staff-only pages: the resident page (`/residents/<resident_id>`) and the devices
-  view (`/devices`), a tab in the staff area. Static build
+  plus the resident page (`/residents/<resident_id>`, staff only) and the devices view
+  (`/devices`), a tab in the staff and ops areas. A notification bell in the header (all
+  roles) lists alert changes the open page's polling noticed, scoped by role, in memory
+  only. Static build
   hosted on S3 behind CloudFront (no server-side rendering).
 
 ## Repo layout *(planned)*

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronDown, LogOut, Settings } from 'lucide-react'
 import { useAuth } from '../features/auth/useAuth'
+import { NotificationBell } from '../features/notifications/NotificationBell'
 import { cx } from '../lib/cx'
 import { Logo } from './Logo'
 import { Spinner } from './Spinner'
@@ -15,7 +16,7 @@ const menuItemClass =
   'flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 text-left text-base text-slate-800 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-teal-600/40'
 
 export function AppHeader({ title }: AppHeaderProps) {
-  const { user, role, signOut } = useAuth()
+  const { user, role, view, signOut } = useAuth()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
@@ -71,6 +72,8 @@ export function AppHeader({ title }: AppHeaderProps) {
           <h1 className="truncate text-lg font-semibold text-slate-900 sm:text-xl">{title}</h1>
         </div>
 
+        <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+        {view !== 'no-access' && <NotificationBell />}
         <div ref={containerRef} className="relative">
           <button
             ref={buttonRef}
@@ -125,6 +128,7 @@ export function AppHeader({ title }: AppHeaderProps) {
               </li>
             </ul>
           </div>
+        </div>
         </div>
       </div>
     </header>

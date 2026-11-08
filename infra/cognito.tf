@@ -101,6 +101,17 @@ resource "aws_cognito_user_group" "caregiver" {
   description  = "Caregivers: family view of only the residents linked to them."
 }
 
+# Tech staff (team decision 2026-11-04, docs/features/watchdog.md): the ops view of
+# device problems (offline, low battery, not worn) for every resident, and acknowledge
+# them. Never health alerts or resident profiles: GET /ops/device-problems filters
+# server-side, and every other resident route answers ops with 403
+# (docs/data-model.md, the ops paragraph of Access patterns).
+resource "aws_cognito_user_group" "ops" {
+  user_pool_id = aws_cognito_user_pool.users.id
+  name         = "ops"
+  description  = "Ops team: device problems for every resident; no health alerts or profiles."
+}
+
 resource "aws_cognito_user_group" "family" {
   user_pool_id = aws_cognito_user_pool.users.id
   name         = "family"
