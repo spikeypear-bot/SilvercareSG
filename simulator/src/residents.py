@@ -1,5 +1,6 @@
 """Residents, their devices, and their baselines from the seed and device files
-(docs/features/simulator-core.md, criteria 4 to 6).
+(docs/features/simulator-core.md, criteria 4 to 6), and each wearable's device alert
+limits (docs/features/device-alert-limits.md, "Device limits" and "Valid limits").
 
 Problem messages name IDs only, never values from the files: a malformed "ID" or
 value could hold anything.
@@ -9,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,104 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class DeviceLimits:
+    """A wearable's on-device vitals_alert limits (the shadow's `limits`)."""
+
+    hr_min: int
+    hr_max: int
+    spo2_min: int
+
+    def to_dict(self) -> dict:
+        return {
+            "hr_bpm": {"min": self.hr_min, "max": self.hr_max},
+            "spo2_pct": {"min": self.spo2_min},
+        }
+
+
+# The loosest limits a device may use (docs/metrics.md, vitals_alert), also the limits
+# of an unassigned wearable.
+FIXED_LIMITS = DeviceLimits(hr_min=45, hr_max=130, spo2_min=88)
+# The cloud's defaults for a missing or invalid threshold, as
+# lambdas/ingest/src/thresholds.py resolves them.
+DEFAULT_HR = (50, 120)
+DEFAULT_SPO2_MIN = 92
+
+
+def _threshold(raw: Any, key: str, valid: tuple[int, int]) -> int | None:
+    """One threshold limit if present and valid (an integer in the metric's range,
+    like ingest's Decimal check: 45.0 counts as 45), else None."""
+    value = raw.get(key) if isinstance(raw, dict) else None
+    if not _is_number(value) or not float(value).is_integer():
+        return None
+    value = int(value)
+    return value if valid[0] <= value <= valid[1] else None
+
+
+def device_limits(thresholds: Any) -> DeviceLimits:
+    """A wearable's limits from its resident's thresholds: resolved like the cloud's
+    check (missing or invalid limit -> that default; min not below max -> both
+    defaults), then the stricter of each and FIXED_LIMITS. If heart rate min is not
+    below max, heart rate falls back to FIXED_LIMITS'."""
+    raw = thresholds if isinstance(thresholds, dict) else {}
+    hr_raw = raw.get("hr_bpm")
+    hr_min = _threshold(hr_raw, "min", HR_RANGE)
+    hr_max = _threshold(hr_raw, "max", HR_RANGE)
+    hr_min = DEFAULT_HR[0] if hr_min is None else hr_min
+    hr_max = DEFAULT_HR[1] if hr_max is None else hr_max
+    if hr_min >= hr_max:
+        hr_min, hr_max = DEFAULT_HR
+    spo2 = _threshold(raw.get("spo2_pct"), "min", SPO2_RANGE)
+    spo2 = DEFAULT_SPO2_MIN if spo2 is None else spo2
+    limits = DeviceLimits(
+        hr_min=max(hr_min, FIXED_LIMITS.hr_min),
+        hr_max=min(hr_max, FIXED_LIMITS.hr_max),
+        spo2_min=max(spo2, FIXED_LIMITS.spo2_min),
+    )
+    if limits.hr_min >= limits.hr_max:
+        limits = DeviceLimits(FIXED_LIMITS.hr_min, FIXED_LIMITS.hr_max, limits.spo2_min)
+    return limits
+
+
+def parse_device_limits(value: Any) -> DeviceLimits | None:
+    """Valid limits (spec "Valid limits") -> DeviceLimits, anything else -> None:
+    integers, hr_bpm.min 45-250, hr_bpm.max 20-130, min < max, spo2_pct.min 88-100,
+    no other keys."""
+    if not isinstance(value, dict) or set(value) != {"hr_bpm", "spo2_pct"}:
+        return None
+    hr, spo2 = value["hr_bpm"], value["spo2_pct"]
+    if not isinstance(hr, dict) or set(hr) != {"min", "max"}:
+        return None
+    if not isinstance(spo2, dict) or set(spo2) != {"min"}:
+        return None
+    hr_min, hr_max, spo2_min = hr["min"], hr["max"], spo2["min"]
+    if not all(_is_int(v) for v in (hr_min, hr_max, spo2_min)):
+        return None
+    if not (
+        45 <= hr_min <= 250
+        and 20 <= hr_max <= 130
+        and hr_min < hr_max
+        and 88 <= spo2_min <= 100
+    ):
+        return None
+    return DeviceLimits(hr_min, hr_max, spo2_min)
+
+
+def reading_limits(device: DeviceLimits, limits: Limits) -> Limits:
+    """The range normal readings stay in under the wearable's current device limits
+    (criterion 21): heart rate [min + 8, max - 8], or (min + max) // 2 if that is
+    empty; SpO2 at least min + 3 (at most 100); skin temperature from the seed."""
+    hr_low, hr_high = device.hr_min + HR_MARGIN, device.hr_max - HR_MARGIN
+    if hr_low > hr_high:
+        hr_low = hr_high = (device.hr_min + device.hr_max) // 2
+    return replace(
+        limits,
+        hr_min=hr_low,
+        hr_max=hr_high,
+        spo2_min=min(device.spo2_min + SPO2_MARGIN, SPO2_RANGE[1]),
+    )
+
+
+@dataclass(frozen=True)
 class Baseline:
     hr_bpm: int
     spo2_pct: int
@@ -60,6 +159,7 @@ class Resident:
     bedroom_id: str | None
     baseline: Baseline
     limits: Limits
+    device_limits: DeviceLimits = FIXED_LIMITS  # the wearable's start limits
 
 
 def _id_or(value: Any, pattern: re.Pattern[str], fallback: str) -> str:
@@ -200,7 +300,7 @@ def build_residents(seed: Any, devices_doc: Any) -> tuple[list[Resident], list[s
     if not isinstance(residents_raw, list) or not isinstance(seed_devices, list):
         raise SetupError("seed file: residents and devices must be lists")
 
-    parsed: dict[str, tuple[Baseline, Limits]] = {}
+    parsed: dict[str, tuple[Baseline, Limits, DeviceLimits]] = {}
     for index, resident in enumerate(residents_raw):
         rid = resident.get("resident_id") if isinstance(resident, dict) else None
         label = _id_or(rid, RESIDENT_ID_RE, f"#{index + 1}")
@@ -221,7 +321,7 @@ def build_residents(seed: Any, devices_doc: Any) -> tuple[list[Resident], list[s
         if baseline is None:
             continue
         _check_margins(baseline, limits, label, problems)
-        parsed[rid] = (baseline, limits)
+        parsed[rid] = (baseline, limits, device_limits(resident.get("thresholds")))
 
     # device_id -> (type, resident_id) from the seed file's assignments.
     assigned: dict[str, tuple[str, str]] = {}
@@ -268,7 +368,8 @@ def build_residents(seed: Any, devices_doc: Any) -> tuple[list[Resident], list[s
             bedroom_id=per_resident.get(rid, {}).get("bedroom"),
             baseline=baseline,
             limits=limits,
+            device_limits=wearable_limits,
         )
-        for rid, (baseline, limits) in sorted(parsed.items())
+        for rid, (baseline, limits, wearable_limits) in sorted(parsed.items())
     ]
     return residents, [device_id for device_id, _ in registry]

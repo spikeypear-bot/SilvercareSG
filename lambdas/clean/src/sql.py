@@ -155,8 +155,8 @@ def _vitals_alert_checks() -> list[str]:
         ),
         (
             (
-                f"({is_hr} AND {limit} IN ('45', '130'))"
-                f" OR (NOT {is_hr} AND {limit} = '88')"
+                f"({is_hr} AND {_range(limit, 20, 250)})"
+                f" OR (NOT {is_hr} AND {_range(limit, 50, 100)})"
             ),
             "invalid:limit",
         ),

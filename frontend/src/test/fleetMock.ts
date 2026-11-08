@@ -21,7 +21,13 @@ export function resetDeviceFleetLoader(): void {
   deviceFleetLoader.mockImplementation(async () => createDeviceFleet(new Date()))
 }
 
-/** A synthetic device; online, 80 %, assigned to Test Resident A, seen 2 min ago. */
+/** Limits as `GET /devices` sends them to staff for an in-sync wearable (45 / 130 / 88). */
+export const TEST_DEVICE_LIMITS = { hr_bpm: { min: 45, max: 130 }, spo2_pct: { min: 88 } }
+
+/**
+ * A synthetic device; online, 80 %, assigned to Test Resident A, seen 2 min ago, with
+ * in-sync alert limits (staff shape).
+ */
 export function fleetDevice(overrides: Partial<FleetDevice> = {}, now: Date = new Date()): FleetDevice {
   return {
     device_id: 'wearable-test-001',
@@ -32,6 +38,7 @@ export function fleetDevice(overrides: Partial<FleetDevice> = {}, now: Date = ne
     battery_pct: 80,
     charging: false,
     fw_version: '1.0.0',
+    alert_limits: { status: 'in_sync', desired: TEST_DEVICE_LIMITS, reported: TEST_DEVICE_LIMITS },
     ...overrides,
   }
 }
@@ -47,6 +54,7 @@ export function spareDevice(overrides: Partial<FleetDevice> = {}): FleetDevice {
     battery_pct: null,
     charging: false,
     fw_version: null,
+    alert_limits: null,
     ...overrides,
   })
 }

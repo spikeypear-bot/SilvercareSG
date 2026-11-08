@@ -21,7 +21,7 @@ they are linked to"):
 
 ## Acceptance criteria
 
-Numbered and testable. The builders implement these, and the testers test them.
+Numbered and testable. Each one is implemented and gets at least one test.
 
 1. Given ..., when ..., then ...
 2.

@@ -12,6 +12,8 @@ vi.mock('../../lib/api', async (importOriginal) => {
 import { ApiError } from '../../lib/api'
 import { loadDeviceFleet, toFleetDevice, useDeviceFleet, type DeviceFleetLoader } from './useDashboardData'
 
+const LIMITS = { hr_bpm: { min: 45, max: 130 }, spo2_pct: { min: 88 } }
+
 /** A synthetic `GET /devices` device: an online wearable assigned to Test Resident A. */
 function apiDevice(overrides: Partial<ApiDevice> = {}): ApiDevice {
   return {
@@ -23,6 +25,7 @@ function apiDevice(overrides: Partial<ApiDevice> = {}): ApiDevice {
     charging: true,
     fw_version: '1.2.3',
     assigned_to: { resident_id: 'resident-test-001', display_name: 'Test Resident A', home_id: 'home-test-001' },
+    alert_limits: { status: 'in_sync', desired: LIMITS, reported: LIMITS },
     ...overrides,
   }
 }
@@ -38,6 +41,7 @@ describe('toFleetDevice', () => {
       battery_pct: 80,
       charging: true,
       fw_version: '1.2.3',
+      alert_limits: { status: 'in_sync', desired: LIMITS, reported: LIMITS },
     })
   })
 
@@ -76,6 +80,7 @@ describe('toFleetDevice', () => {
       charging: false,
       fw_version: null,
       assigned_to: null,
+      alert_limits: null,
     })
     expect(toFleetDevice(spare)).toEqual({
       device_id: 'bedroom-test-spare-001',
@@ -86,6 +91,7 @@ describe('toFleetDevice', () => {
       battery_pct: null,
       charging: false,
       fw_version: null,
+      alert_limits: null,
     })
   })
 
@@ -105,6 +111,7 @@ describe('toFleetDevice', () => {
     expect(device.assigned_to).not.toHaveProperty('date_of_birth')
     expect(device.assigned_to).not.toHaveProperty('display_name')
     expect(Object.keys(device).sort()).toEqual([
+      'alert_limits',
       'assigned_to',
       'battery_pct',
       'charging',
@@ -115,6 +122,49 @@ describe('toFleetDevice', () => {
       'online',
     ])
     expect(Object.keys(device.assigned_to ?? {}).sort()).toEqual(['home_id', 'name', 'resident_id'])
+  })
+})
+
+describe('toFleetDevice alert_limits (criteria 13-14)', () => {
+  const desired = { hr_bpm: { min: 45, max: 110 }, spo2_pct: { min: 88 } }
+
+  it('keeps a staff pending response with desired and reported', () => {
+    const device = toFleetDevice(apiDevice({ alert_limits: { status: 'pending', desired, reported: LIMITS } }))
+    expect(device.alert_limits).toEqual({ status: 'pending', desired, reported: LIMITS })
+  })
+
+  it('keeps an ops response as status only (no desired or reported keys)', () => {
+    const device = toFleetDevice(apiDevice({ alert_limits: { status: 'pending' } }))
+    expect(device.alert_limits).toEqual({ status: 'pending' })
+    expect(device.alert_limits).not.toHaveProperty('desired')
+    expect(device.alert_limits).not.toHaveProperty('reported')
+  })
+
+  it('turns invalid limits into null and an unknown status into unknown', () => {
+    const bad = { status: 'resyncing', desired: { ...LIMITS, extra: 1 }, reported: { hr_bpm: { min: 1.5, max: 130 }, spo2_pct: { min: 88 } } }
+    const device = toFleetDevice(apiDevice({ alert_limits: bad as unknown as ApiDevice['alert_limits'] }))
+    expect(device.alert_limits).toEqual({ status: 'unknown', desired: null, reported: null })
+  })
+
+  it('maps a missing or null alert_limits on a wearable to null', () => {
+    const withoutLimits = apiDevice()
+    delete withoutLimits.alert_limits
+    expect(toFleetDevice(withoutLimits).alert_limits).toBeNull()
+    expect(toFleetDevice(apiDevice({ alert_limits: null })).alert_limits).toBeNull()
+  })
+
+  it('is always null for a bedroom sensor, even if the API sends limits', () => {
+    const device = toFleetDevice(
+      apiDevice({ device_type: 'bedroom', alert_limits: { status: 'in_sync', desired: LIMITS, reported: LIMITS } }),
+    )
+    expect(device.alert_limits).toBeNull()
+  })
+
+  it('does not share objects with the API response', () => {
+    const api = apiDevice()
+    const device = toFleetDevice(api)
+    expect(device.alert_limits).not.toBe(api.alert_limits)
+    expect(device.alert_limits?.reported).not.toBe(api.alert_limits?.reported)
   })
 })
 

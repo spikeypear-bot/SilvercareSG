@@ -270,7 +270,8 @@ data "archive_file" "api_devices" {
 }
 
 # What the function does with AWS: three eventually consistent, paginated Queries, no
-# writes and no base-table reads.
+# writes and no base-table reads, plus GetThingShadow of every wearable for its
+# alert_limits (docs/features/device-alert-limits.md, criterion 15; wearables only).
 # - registry by-type (patterns 4 and 8): only the listed attributes, with Select =
 #   SPECIFIC_ATTRIBUTES, so it can never read photo_key (the index also projects it).
 #   entity_type is the key condition; sk is in a later page's ExclusiveStartKey.
@@ -306,6 +307,13 @@ data "aws_iam_policy_document" "api_devices" {
     actions   = ["dynamodb:Query"]
     resources = ["${module.latest_table.arn}/index/by-message"]
   }
+
+  statement {
+    sid       = "WearableShadowsRead"
+    effect    = "Allow"
+    actions   = ["iot:GetThingShadow"]
+    resources = [local.wearable_things_arn]
+  }
 }
 
 module "api_devices" {
@@ -318,12 +326,14 @@ module "api_devices" {
   zip_hash      = data.archive_file.api_devices.output_base64sha256
   layers        = [local.powertools_layer_arn]
   memory_size   = 128
-  # Three small paginated Queries (40 devices, 20 residents): well under a second.
+  # Three small paginated Queries (40 devices, 20 residents) and about 20 shadow reads
+  # in parallel (2 s connect + 2 s read timeout at most): well under 10 s.
   timeout = 10
 
   environment = {
     REGISTRY_TABLE          = module.registry_table.name
     LATEST_TABLE            = module.latest_table.name
+    IOT_DATA_ENDPOINT       = data.aws_iot_endpoint.data.endpoint_address
     POWERTOOLS_SERVICE_NAME = local.api_devices_function_name
   }
 
@@ -1139,6 +1149,10 @@ data "archive_file" "api_thresholds" {
 #   items. The role can overwrite a log item (IAM can't require the handler's
 #   attribute_not_exists condition), so the log is tamper-evident only via CloudTrail.
 # - Cognito AdminGetUser: as api-residents and api-dashboard (the handler keeps `name`).
+# - After a changed save (docs/features/device-alert-limits.md, criteria 5a-5c): a
+#   by-resident Query (pattern 10) for the resident's wearables, naming only gsi1_sk
+#   and device_type (so never `relationship`), and UpdateThingShadow on wearable
+#   things only.
 data "aws_iam_policy_document" "api_thresholds" {
   statement {
     sid       = "ThresholdsRead"
@@ -1234,6 +1248,38 @@ data "aws_iam_policy_document" "api_thresholds" {
     actions   = ["cognito-idp:AdminGetUser"]
     resources = [aws_cognito_user_pool.users.arn]
   }
+
+  statement {
+    sid       = "RegistryByResidentIndex"
+    effect    = "Allow"
+    actions   = ["dynamodb:Query"]
+    resources = ["${module.registry_table.arn}/index/by-resident"]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["gsi1_pk", "gsi1_sk", "pk", "sk", "device_type"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:Attributes"
+      values   = ["false"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "dynamodb:Select"
+      values   = ["SPECIFIC_ATTRIBUTES"]
+    }
+  }
+
+  statement {
+    sid       = "WearableShadowsWrite"
+    effect    = "Allow"
+    actions   = ["iot:UpdateThingShadow"]
+    resources = [local.wearable_things_arn]
+  }
 }
 
 module "api_thresholds" {
@@ -1251,6 +1297,7 @@ module "api_thresholds" {
   environment = {
     REGISTRY_TABLE          = module.registry_table.name
     USER_POOL_ID            = aws_cognito_user_pool.users.id
+    IOT_DATA_ENDPOINT       = data.aws_iot_endpoint.data.endpoint_address
     POWERTOOLS_SERVICE_NAME = local.api_thresholds_function_name
   }
 

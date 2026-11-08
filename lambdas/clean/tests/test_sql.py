@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -225,17 +226,70 @@ def test_constants_match_ingest():
     assert set(sql._ENVELOPE_AND_RULE_FIELDS) == validation.ENVELOPE_AND_RULE_FIELDS
 
 
+def _limit_check() -> str:
+    (check,) = [c for c in sql._vitals_alert_checks() if "'invalid:limit'" in c]
+    return check
+
+
 def test_vitals_alert_limits_match_ingest():
+    # device-alert-limits.md, criterion 3: any integer limit in the metric's value
+    # range, exactly as ingest checks it (no fixed set of limits any more).
     validation = load_validation()
     checks = " ".join(sql._vitals_alert_checks())
+    limit = sql._token("limit")
     for metric, rules in validation.VITALS_ALERT_METRICS.items():
+        assert "limits" not in rules
         low, high = rules["values"]
         assert f"BETWEEN {low} AND {high}" in checks
         assert f"'\"{metric}\"'" in checks
-        for limit in rules["limits"]:
-            assert f"'{limit}'" in checks
+    hr_low, hr_high = validation.VITALS_ALERT_METRICS["hr_bpm"]["values"]
+    spo2_low, spo2_high = validation.VITALS_ALERT_METRICS["spo2_pct"]["values"]
+    check = _limit_check()
+    assert (
+        """element_at(tokens, 'metric') = '"hr_bpm"' AND """
+        + sql._range(limit, hr_low, hr_high)
+        in check
+    )
+    assert (
+        """NOT element_at(tokens, 'metric') = '"hr_bpm"' AND """
+        + sql._range(limit, spo2_low, spo2_high)
+        in check
+    )
     for direction in validation.VITALS_ALERT_DIRECTIONS:
         assert f"'\"{direction}\"'" in checks
+
+
+def test_vitals_alert_limit_check_names_no_fixed_limit():
+    check = _limit_check()
+    assert " IN (" not in check
+    for fixed in ("'45'", "'130'", "'88'"):
+        assert fixed not in check
+
+
+def test_vitals_alert_limit_check_comes_after_value_and_before_direction():
+    reasons = [
+        re.search(r"THEN '([^']+)'", c).group(1) for c in sql._vitals_alert_checks()
+    ]
+    assert reasons.index("out_of_range:value") < reasons.index("invalid:limit")
+    assert reasons.index("invalid:limit") < reasons.index("invalid:direction", 2)
+
+
+@pytest.mark.parametrize(
+    ("metric", "limit", "direction"),
+    [("hr_bpm", 110, "above"), ("spo2_pct", 92, "below")],
+)
+def test_cases_cover_a_tightened_device_limit_kept_as_valid(metric, limit, direction):
+    # criterion 3: the self-check's cases prove the SQL keeps 110 and 92 on Athena.
+    matching = [
+        case
+        for case in CASES
+        if case["raw_message"] == "vitals_alert"
+        and case["expected_clean"] == "valid"
+        and (line := json.loads(case["line"])).get("metric") == metric
+        and line.get("limit") == limit
+        and line.get("direction") == direction
+    ]
+    assert matching, f"no valid vitals_alert case with {metric} limit {limit}"
 
 
 def test_every_reason_in_the_sql_exists_in_ingest_or_the_spec():

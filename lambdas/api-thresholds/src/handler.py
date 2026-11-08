@@ -28,11 +28,20 @@ nothing writes nothing (no log item, `updated_at` unchanged) and returns 200 wit
 returned) and that user's Cognito `name` (`updated_by_name`, `changed_by_name`), read
 with AdminGetUser when the change is written.
 
+Device shadows (docs/features/device-alert-limits.md, criteria 5a-5c): after a save
+that wrote a change, a by-resident Query (pattern 10: gsi1_sk and device_type only)
+finds the resident's wearables, and each gets UpdateThingShadow with
+{"state": {"desired": {"limits": ...}}} computed from the thresholds just written
+(device_limits.py), 2 s timeout, no retry. A failed Query or shadow write never changes
+the answer (the thresholds are saved): it is logged (device IDs and error codes) and
+left to the hourly shadow-sync run.
+
 GET history: Query THRESHOLD_LOG#<id>, newest first, the newest MAX_HISTORY items,
 projected without `changed_by` (IAM enforces the projection, infra/api.tf).
 
 Logs: outcome, route, request ID, the caller's `sub`, the opaque resident ID, the names
-of changed fields, and on a 403 `cognito:groups`. Never values, names, or the body.
+of changed fields, on a 403 `cognito:groups`, and the count of shadows written and
+failed. Never values (thresholds or device limits), names, or the body.
 """
 
 from __future__ import annotations
@@ -49,6 +58,7 @@ from functools import cache
 from typing import Any
 
 import boto3
+import device_limits
 import thresholds
 from aws_lambda_powertools import Logger
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
@@ -63,6 +73,8 @@ STAFF_GROUPS = frozenset({"doctor", "nurse"})
 GROUP_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9=+/_-]{1,64}\Z")
 RESIDENT_ID_RE = re.compile(r"^res-[0-9]{4}\Z")
+WEARABLE_ID_RE = re.compile(r"^wearable-[0-9]{4}\Z")
+SHADOW_TIMEOUT_S = 2
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\Z")
 HEADERS = {"Content-Type": "application/json", "Cache-Control": "no-store"}
@@ -124,6 +136,21 @@ def dynamodb_client() -> Any:
 @cache
 def cognito_client() -> Any:
     return boto3.client("cognito-idp", config=Config(retries={"mode": "adaptive"}))
+
+
+@cache
+def iot_data_client() -> Any:
+    """The account's IoT data endpoint (iot:Data-ATS), set by Terraform. One attempt
+    with a 2 s timeout: a miss is left to the hourly shadow-sync run."""
+    return boto3.client(
+        "iot-data",
+        endpoint_url=f"https://{os.environ['IOT_DATA_ENDPOINT']}",
+        config=Config(
+            connect_timeout=SHADOW_TIMEOUT_S,
+            read_timeout=SHADOW_TIMEOUT_S,
+            retries={"total_max_attempts": 1},
+        ),
+    )
 
 
 # ---- request ----
@@ -421,6 +448,63 @@ def query_history(resident_id: str) -> list[dict[str, Any]]:
     return [_deserialize(i) for i in result.get("Items", [])]
 
 
+def query_wearables(resident_id: str) -> list[str]:
+    """Pattern 10: the IDs of this resident's wearables (gsi1_sk, device_type only).
+    One page: a resident has a handful of devices."""
+    result = dynamodb_client().query(
+        TableName=os.environ["REGISTRY_TABLE"],
+        IndexName="by-resident",
+        Select="SPECIFIC_ATTRIBUTES",
+        KeyConditionExpression="#pk = :pk AND begins_with(#sk, :device)",
+        ExpressionAttributeNames={
+            "#pk": "gsi1_pk",
+            "#sk": "gsi1_sk",
+            "#type": "device_type",
+        },
+        ExpressionAttributeValues={
+            ":pk": {"S": f"RESIDENT#{resident_id}"},
+            ":device": {"S": "DEVICE#"},
+        },
+        ProjectionExpression="#sk, #type",
+    )
+    ids = []
+    for item in map(_deserialize, result.get("Items", [])):
+        sk = item.get("gsi1_sk")
+        device_id = sk.removeprefix("DEVICE#") if isinstance(sk, str) else ""
+        if item.get("device_type") == "wearable" and WEARABLE_ID_RE.match(device_id):
+            ids.append(device_id)
+    return sorted(ids)
+
+
+def write_shadows(resident_id: str, resolved: dict[str, thresholds.Limits]) -> None:
+    """Criteria 5a-5b: the resident's wearables get the new desired limits. Never
+    raises; failures are logged and left to the hourly reconcile."""
+    try:
+        device_ids = query_wearables(resident_id)
+    except Exception as exc:  # noqa: BLE001 - never changes the API's answer
+        logger.warning(
+            "shadows", extra={"outcome": "query_failed", "error": _error_code(exc)}
+        )
+        return
+    payload = json.dumps(
+        {"state": {"desired": {"limits": device_limits.compute_limits(resolved)}}}
+    ).encode("utf-8")
+    failed = []
+    for device_id in device_ids:
+        try:
+            iot_data_client().update_thing_shadow(thingName=device_id, payload=payload)
+        except Exception as exc:  # noqa: BLE001 - never changes the API's answer
+            failed.append({"device_id": device_id, "error": _error_code(exc)})
+    extra: dict[str, Any] = {
+        "outcome": "failed" if failed else "ok",
+        "written": len(device_ids) - len(failed),
+        "failed": len(failed),
+    }
+    if failed:
+        extra["failures"] = failed
+    (logger.warning if failed else logger.info)("shadows", extra=extra)
+
+
 # ---- views ----
 
 
@@ -559,6 +643,7 @@ def put_thresholds(
         LOG_MESSAGE,
         extra={"outcome": "ok", "fields": [c["field"] for c in changes]},
     )
+    write_shadows(resident_id, resolved)
     return response(
         200,
         {"changed": True, "thresholds": thresholds_view(resolved, changed_at, name)},

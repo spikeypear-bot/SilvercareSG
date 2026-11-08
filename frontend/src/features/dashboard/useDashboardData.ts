@@ -39,6 +39,7 @@ import {
   resolveAlertApi,
 } from '../../lib/api'
 import type { ApiDevice, FleetDevice } from '../../types/devices'
+import { parseAlertLimits } from '../devices/alertLimits'
 import type {
   ApiLinkedResident,
   ApiResidentAlert,
@@ -272,6 +273,7 @@ export async function loadResidentDetail(residentId: string): Promise<ResidentDe
  * One `GET /devices` device as the devices view shows it. Copies each field by name, so
  * a field the API adds later isn't passed through. `display_name` becomes `name` (the
  * resident ID if the resident has no profile); a missing `home_id` becomes ''.
+ * `alert_limits` is checked (invalid limits become null) and is null for bedroom sensors.
  */
 export function toFleetDevice(device: ApiDevice): FleetDevice {
   const a = device.assigned_to
@@ -284,6 +286,7 @@ export function toFleetDevice(device: ApiDevice): FleetDevice {
     battery_pct: device.battery_pct,
     charging: device.charging,
     fw_version: device.fw_version,
+    alert_limits: device.device_type === 'wearable' ? parseAlertLimits(device.alert_limits) : null,
   }
 }
 

@@ -46,10 +46,10 @@ const bodyRows = () => within(table()).getAllByRole('row').slice(1)
 const rowIds = () => bodyRows().map((row) => within(row).getByRole('rowheader').textContent)
 const rowFor = (deviceId: string) =>
   within(table()).getByRole('rowheader', { name: deviceId }).closest('tr') as HTMLElement
-/** Cells after the row header: Type, Assigned to, Status, Battery, Last seen, Firmware. */
+/** Cells after the row header: Type, Assigned to, Status, Battery, Last seen, Firmware, Alert limits. */
 const cells = (deviceId: string) => {
-  const [type, assigned, status, battery, lastSeen, firmware] = within(rowFor(deviceId)).getAllByRole('cell')
-  return { type, assigned, status, battery, lastSeen, firmware }
+  const [type, assigned, status, battery, lastSeen, firmware, limits] = within(rowFor(deviceId)).getAllByRole('cell')
+  return { type, assigned, status, battery, lastSeen, firmware, limits }
 }
 const listHeading = () => screen.getAllByRole('heading', { level: 2 }).find((h) => h.id !== 'device-stats-heading')
 const location = () => screen.getByTestId('location').textContent
@@ -323,7 +323,7 @@ describe('tiles', () => {
 })
 
 describe('table', () => {
-  it('has a caption, a heading with the count, and the 7 columns with the device as row header', async () => {
+  it('has a caption, a heading with the count, and the 8 columns with the device as row header', async () => {
     await renderLoaded()
     expect(table()).toHaveAccessibleName('All devices, 40 devices')
     expect(table().querySelector('caption')).toHaveClass('sr-only')
@@ -335,13 +335,14 @@ describe('table', () => {
       'Battery',
       'Last seen',
       'Firmware',
+      'Alert limits',
     ])
     within(table())
       .getAllByRole('columnheader')
       .forEach((h) => expect(h).toHaveAttribute('scope', 'col'))
     bodyRows().forEach((row) => {
       expect(within(row).getByRole('rowheader')).toHaveAttribute('scope', 'row')
-      expect(within(row).getAllByRole('cell')).toHaveLength(6)
+      expect(within(row).getAllByRole('cell')).toHaveLength(7)
     })
   })
 
@@ -500,6 +501,155 @@ describe('table', () => {
   it('the table is not inside a live region', async () => {
     await renderLoaded()
     expect(table().closest('[aria-live]')).toBeNull()
+  })
+})
+
+describe('alert limits (criteria 16-17)', () => {
+  const IN_USE = { hr_bpm: { min: 45, max: 130 }, spo2_pct: { min: 88 } }
+  const NEW = { hr_bpm: { min: 45, max: 110 }, spo2_pct: { min: 88 } }
+  /** The Alert limits cell (the row's last cell). */
+  const limitsCell = (deviceId: string) => within(rowFor(deviceId)).getAllByRole('cell').at(-1) as HTMLElement
+  const NUMBERS = /HR|bpm|SpO|\d+ %/
+
+  const fleet = () => [
+    fleetDevice({ device_id: 'wearable-test-001', alert_limits: { status: 'in_sync', desired: IN_USE, reported: IN_USE } }),
+    fleetDevice({ device_id: 'wearable-test-002', alert_limits: { status: 'pending', desired: NEW, reported: IN_USE } }),
+    fleetDevice({ device_id: 'wearable-test-003', alert_limits: { status: 'unknown', desired: null, reported: null } }),
+    fleetDevice({ device_id: 'wearable-test-004', alert_limits: { status: 'pending', desired: NEW, reported: null } }),
+    fleetDevice({ device_id: 'wearable-test-005', alert_limits: null }),
+    fleetDevice({ device_id: 'wearable-test-006', alert_limits: undefined }),
+    spareDevice({ device_id: 'bedroom-test-001' }),
+  ]
+
+  /** What `GET /devices` sends ops: status only. */
+  const opsFleet = () => [
+    fleetDevice({ device_id: 'wearable-test-001', alert_limits: { status: 'in_sync' } }),
+    fleetDevice({ device_id: 'wearable-test-002', alert_limits: { status: 'pending' } }),
+    fleetDevice({ device_id: 'wearable-test-003', alert_limits: { status: 'unknown' } }),
+    fleetDevice({ device_id: 'wearable-test-005', alert_limits: null }),
+    spareDevice({ device_id: 'bedroom-test-001' }),
+  ]
+
+  describe.each<[string, AuthUser]>([
+    ['nurse', TEST_USERS.nurse],
+    ['doctor', TEST_USERS.doctor],
+  ])('staff (%s)', (_, user) => {
+    it('in_sync: limits in use and "Limits up to date", no New: line', async () => {
+      await renderLoaded(fleet(), user)
+      const cell = limitsCell('wearable-test-001')
+      expect(cell).toHaveTextContent(/^HR 45-130 bpm · SpO₂ ≥ 88 %\.?\s*Limits up to date$/)
+      expect(cell).not.toHaveTextContent('New:')
+    })
+
+    it('pending: limits in use, "Waiting for device", and the New: line from desired', async () => {
+      await renderLoaded(fleet(), user)
+      const cell = limitsCell('wearable-test-002')
+      expect(within(cell).getByText('HR 45-130 bpm · SpO₂ ≥ 88 %')).toBeInTheDocument()
+      expect(within(cell).getByText('Waiting for device')).toBeInTheDocument()
+      expect(within(cell).getByText('New: HR 45-110 bpm · SpO₂ ≥ 88 %')).toBeInTheDocument()
+    })
+
+    it('pending with reported null: "No limits reported" plus the New: line', async () => {
+      await renderLoaded(fleet(), user)
+      const cell = limitsCell('wearable-test-004')
+      expect(within(cell).getByText('No limits reported')).toBeInTheDocument()
+      expect(within(cell).getByText('Waiting for device')).toBeInTheDocument()
+      expect(within(cell).getByText('New: HR 45-110 bpm · SpO₂ ≥ 88 %')).toBeInTheDocument()
+    })
+
+    it('unknown with reported null: "No limits reported" and "Status unknown", no New: line', async () => {
+      await renderLoaded(fleet(), user)
+      const cell = limitsCell('wearable-test-003')
+      expect(within(cell).getByText('No limits reported')).toBeInTheDocument()
+      expect(within(cell).getByText('Status unknown')).toBeInTheDocument()
+      expect(cell).not.toHaveTextContent('New:')
+    })
+
+    it.each(['wearable-test-005', 'wearable-test-006'])(
+      'a wearable with no usable alert_limits (%s) reads "No limits reported" and "Status unknown"',
+      async (id) => {
+        await renderLoaded(fleet(), user)
+        const cell = limitsCell(id)
+        expect(within(cell).getByText('No limits reported')).toBeInTheDocument()
+        expect(within(cell).getByText('Status unknown')).toBeInTheDocument()
+      },
+    )
+
+    it('a bedroom sensor shows "—" with a screen-reader text', async () => {
+      await renderLoaded(fleet(), user)
+      const cell = limitsCell('bedroom-test-001')
+      expect(within(cell).getByText('—')).toHaveAttribute('aria-hidden', 'true')
+      expect(within(cell).getByText('No alert limits')).toHaveClass('sr-only')
+      expect(cell).not.toHaveTextContent(NUMBERS)
+      expect(cell).not.toHaveTextContent(/Limits up to date|Waiting|Status unknown/)
+    })
+
+    it('a bedroom sensor shows "—" even if limits were attached', async () => {
+      await renderLoaded(
+        [fleetDevice({ device_id: 'bedroom-test-002', device_type: 'bedroom', alert_limits: { status: 'in_sync', desired: IN_USE, reported: IN_USE } })],
+        user,
+      )
+      expect(within(limitsCell('bedroom-test-002')).getByText('—')).toBeInTheDocument()
+      expect(limitsCell('bedroom-test-002')).not.toHaveTextContent(NUMBERS)
+    })
+  })
+
+  describe('ops (criterion 17)', () => {
+    it.each([
+      ['wearable-test-001', 'Limits up to date'],
+      ['wearable-test-002', 'Waiting for device'],
+      ['wearable-test-003', 'Status unknown'],
+      ['wearable-test-005', 'Status unknown'],
+    ])('%s shows only the status text "%s"', async (id, label) => {
+      await renderLoaded(opsFleet(), TEST_USERS.ops)
+      expect(limitsCell(id)).toHaveTextContent(new RegExp(`^${label}$`))
+    })
+
+    it('never shows numbers, "No limits reported", or a New: line, even if the data has limits', async () => {
+      // Defence in depth: the API sends ops status only, but the UI must not show numbers either way.
+      await renderLoaded(fleet(), TEST_USERS.ops)
+      for (const id of ['wearable-test-001', 'wearable-test-002', 'wearable-test-003', 'wearable-test-004']) {
+        const cell = limitsCell(id)
+        expect(cell).not.toHaveTextContent(NUMBERS)
+        expect(cell).not.toHaveTextContent('New:')
+        expect(cell).not.toHaveTextContent('No limits reported')
+      }
+      expect(table()).not.toHaveTextContent(/HR \d|SpO₂ ≥/)
+      expect(screen.getByRole('columnheader', { name: 'Alert limits' })).toBeInTheDocument()
+    })
+
+    it('a bedroom sensor shows "—"', async () => {
+      await renderLoaded(opsFleet(), TEST_USERS.ops)
+      expect(within(limitsCell('bedroom-test-001')).getByText('—')).toBeInTheDocument()
+    })
+  })
+
+  it('the demo fleet shows every wearable up to date and every bedroom sensor as "—"', async () => {
+    await renderLoaded()
+    for (const row of bodyRows()) {
+      const id = within(row).getByRole('rowheader').textContent ?? ''
+      const cell = within(row).getAllByRole('cell').at(-1) as HTMLElement
+      if (id.startsWith('wearable-')) expect(cell).toHaveTextContent(/^HR 45-130 bpm · SpO₂ ≥ 88 %\.?\s*Limits up to date$/)
+      else expect(within(cell).getByText('—')).toBeInTheDocument()
+    }
+  })
+
+  it('status is text in the cell, not colour or an icon alone', async () => {
+    await renderLoaded(fleet())
+    for (const label of ['Limits up to date', 'Waiting for device', 'Status unknown']) {
+      const el = within(table()).getAllByText(label)[0]
+      expect(el).toBeVisible()
+      expect(el).not.toHaveAttribute('aria-hidden')
+      expect(el).not.toHaveClass('sr-only')
+    }
+  })
+
+  it.each<[string, AuthUser, () => FleetDevice[]]>([
+    ['staff', TEST_USERS.nurse, fleet],
+    ['ops', TEST_USERS.ops, opsFleet],
+  ])('has no axe violations with every limits state (%s)', { timeout: 30_000 }, async (_, user, data) => {
+    const { container } = await renderLoaded(data(), user)
+    expect(await axeViolations(container)).toEqual([])
   })
 })
 

@@ -50,12 +50,15 @@ DEVICE_KEYS = {
     "charging",
     "fw_version",
     "assigned_to",
+    "alert_limits",
 }
 ASSIGNED_TO_KEYS = {"resident_id", "display_name", "home_id"}
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 POWERTOOLS_KEYS = {"level", "message", "service", "sampling_rate", "xray_trace_id"}
 
 ASSIGNED_A = {"resident_id": RESIDENT_A, "display_name": NAME_A, "home_id": HOME_A}
+# No shadow in moto: the wearables' status is unknown (device-alert-limits.md, 14).
+NO_SHADOW_STAFF = {"status": "unknown", "desired": None, "reported": None}
 
 
 def call(event, now=NOW):
@@ -100,6 +103,7 @@ def test_staff_get_every_device_sorted_by_device_id(aws, group):
                 "charging": False,
                 "fw_version": "9.8.6-test",
                 "assigned_to": ASSIGNED_A,
+                "alert_limits": None,
             },
             {
                 "device_id": WEARABLE,
@@ -110,6 +114,7 @@ def test_staff_get_every_device_sorted_by_device_id(aws, group):
                 "charging": False,
                 "fw_version": "9.8.7-test",
                 "assigned_to": ASSIGNED_A,
+                "alert_limits": NO_SHADOW_STAFF,
             },
             {
                 "device_id": WEARABLE_2,
@@ -120,6 +125,7 @@ def test_staff_get_every_device_sorted_by_device_id(aws, group):
                 "charging": False,
                 "fw_version": None,
                 "assigned_to": None,
+                "alert_limits": NO_SHADOW_STAFF,
             },
         ]
     }
@@ -735,6 +741,7 @@ def test_ok_log_has_sub_and_counts_and_no_names_or_readings(aws, logs):
     assert record["devices"] == 3
     assert record["skipped"] == 0
     assert record["caller"] == "staff"
+    assert record["shadow_read_failures"] == 0
     assert set(record) - POWERTOOLS_KEYS == {
         "outcome",
         "caller",
@@ -742,6 +749,7 @@ def test_ok_log_has_sub_and_counts_and_no_names_or_readings(aws, logs):
         "devices",
         "skipped",
         "request_id",
+        "shadow_read_failures",
     }
     text = _log_text(logs())
     for value in (NAME_A, NAME_B, "63", "87", "9.8.7-test", "9.8.6-test", EMAIL, NAME):

@@ -28,6 +28,12 @@ export interface FleetDevice {
   charging: boolean
   /** null if the device has never reported. */
   fw_version: string | null
+  /**
+   * The wearable's on-device alert limits (docs/features/device-alert-limits.md), already
+   * checked by `toFleetDevice`. null for bedroom sensors; absent or null for a wearable
+   * means the API sent nothing usable, shown as "Status unknown".
+   */
+  alert_limits?: AlertLimits | null
 }
 
 /**
@@ -51,8 +57,28 @@ export interface ApiDevice {
   charging: boolean
   fw_version: string | null
   assigned_to: ApiDeviceAssignment | null
+  /** null for bedroom sensors. Optional: parsed defensively by `toFleetDevice`. */
+  alert_limits?: AlertLimits | null
 }
 
 export interface DevicesResponse {
   devices: ApiDevice[]
+}
+
+/** A wearable's on-device `vitals_alert` limits (docs/features/device-alert-limits.md, Device limits). */
+export interface DeviceLimits {
+  hr_bpm: { min: number; max: number }
+  spo2_pct: { min: number }
+}
+
+export type AlertLimitsStatus = 'in_sync' | 'pending' | 'unknown'
+
+/**
+ * `alert_limits` of a wearable in `GET /devices`. Staff get `desired` and `reported`
+ * (null when missing or invalid); ops get `status` only.
+ */
+export interface AlertLimits {
+  status: AlertLimitsStatus
+  desired?: DeviceLimits | null
+  reported?: DeviceLimits | null
 }

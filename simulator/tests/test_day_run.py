@@ -339,10 +339,14 @@ def test_bedroom_status_battery_null_and_firmware(by_device, device_id):
 
 
 def limits(resident: dict) -> dict:
+    """Normal readings' range: the device limits (stricter of the thresholds and
+    45 / 130 / 88, docs/features/device-alert-limits.md criterion 21) narrowed by the
+    margins; skin temperature from the thresholds."""
     t = resident["thresholds"]
+    hr_min, hr_max = max(t["hr_bpm"]["min"], 45), min(t["hr_bpm"]["max"], 130)
     return {
-        "hr": (t["hr_bpm"]["min"] + 8, t["hr_bpm"]["max"] - 8),
-        "spo2": (t["spo2_pct"]["min"] + 3, 100),
+        "hr": (hr_min + 8, hr_max - 8),
+        "spo2": (max(t["spo2_pct"]["min"], 88) + 3, 100),
         "temp": (
             round(t["skin_temp_c"]["min"] + 1.0, 1),
             round(t["skin_temp_c"]["max"] - 1.0, 1),
@@ -414,13 +418,14 @@ def test_hr_noise_uses_the_whole_plus_minus_4_range(by_device, offsets):
     assert deltas == set(range(-4, 5))
 
 
-def test_res_0011_heart_rate_never_below_48(by_device):
+def test_res_0011_heart_rate_never_below_53(by_device):
+    # Threshold min 40 -> device limit 45 (stricter) -> readings at least 45 + 8.
     hrs = [
         line["payload"]["hr_bpm"]
         for _, line in of_type(by_device["wearable-0011"], "vitals")
         if line["payload"]["hr_bpm"] is not None
     ]
-    assert min(hrs) == 48
+    assert min(hrs) == 53
 
 
 def test_no_reading_reaches_the_planned_vitals_alert_limits(day_run):

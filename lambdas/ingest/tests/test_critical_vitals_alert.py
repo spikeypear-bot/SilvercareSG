@@ -147,6 +147,31 @@ def test_untidy_vitals_alert_still_raises_a_critical_alert(
     assert body["severity"] == "critical"
 
 
+@pytest.mark.parametrize(
+    ("overrides", "alert_type"),
+    [
+        ({"value": 115, "limit": 110, "direction": "above"}, "hr_high"),
+        (
+            {"metric": "spo2_pct", "value": 90, "limit": 92, "direction": "below"},
+            "spo2_low",
+        ),
+    ],
+    ids=["hr_limit_110", "spo2_limit_92"],
+)
+def test_tightened_device_limit_raises_a_critical_alert_with_that_limit(
+    latest_table, alerts_queue, overrides, alert_type
+):
+    # docs/features/device-alert-limits.md, criterion 2.
+    assert handler.critical_alert_handler(vitals_alert(**overrides), None) == {
+        "outcome": "stored"
+    }
+
+    (body,) = alerts_queue.bodies()
+    assert body["alert_type"] == alert_type
+    assert body["severity"] == "critical"
+    assert body["details"]["limit"] == overrides["limit"]
+
+
 def test_unassigned_device_queues_alert_as_unassigned(latest_table, alerts_queue):
     handler.critical_alert_handler(vitals_alert(), None)
 

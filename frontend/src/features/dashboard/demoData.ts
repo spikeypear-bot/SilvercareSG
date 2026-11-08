@@ -35,6 +35,7 @@ import type {
   WearableDevice,
 } from '../../types/resident'
 import type { FleetDevice } from '../../types/devices'
+import { FIXED_DEVICE_LIMITS } from '../devices/alertLimits'
 import { isDeviceProblem, isOnOpenList } from './stats'
 
 /** The demo residents linked to every caregiver account (the caregiver view). */
@@ -660,6 +661,7 @@ export function createDeviceFleet(now: Date = new Date()): FleetDevice[] {
         battery_pct: resident.wearable.battery_pct,
         charging: resident.wearable.charging,
         fw_version: DEMO_FW_VERSION,
+        alert_limits: { status: 'in_sync', desired: FIXED_DEVICE_LIMITS, reported: FIXED_DEVICE_LIMITS },
       },
       {
         device_id: resident.bedroom.device_id,
@@ -670,6 +672,7 @@ export function createDeviceFleet(now: Date = new Date()): FleetDevice[] {
         battery_pct: bedroomBattery(i),
         charging: false,
         fw_version: DEMO_FW_VERSION,
+        alert_limits: null,
       },
     ]
   })

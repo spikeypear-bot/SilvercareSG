@@ -18,6 +18,7 @@ import { StaffNav } from '../dashboard/StaffNav'
 import { StaffOnly } from '../dashboard/StaffOnly'
 import { StatTile, StatTilesSkeleton } from '../dashboard/StatTile'
 import { useDeviceFleet } from '../dashboard/useDashboardData'
+import { ALERT_LIMITS_STATUS_LABELS, formatDeviceLimits } from './alertLimits'
 import { DEVICE_TYPE_LABELS, filterDevices, fleetStats, sortForTriage, type DeviceFilter } from './fleet'
 import { useFleetAnnouncer } from './useFleetAnnouncer'
 
@@ -204,7 +205,7 @@ function DeviceTable({
               </caption>
               <thead>
                 <tr className="border-b border-slate-200 text-sm text-slate-600">
-                  {['Device', 'Type', 'Assigned to', 'Status', 'Battery', 'Last seen', 'Firmware'].map((h) => (
+                  {['Device', 'Type', 'Assigned to', 'Status', 'Battery', 'Last seen', 'Firmware', 'Alert limits'].map((h) => (
                     <th key={h} scope="col" className="py-2 pr-4 font-medium">
                       {h}
                     </th>
@@ -272,7 +273,41 @@ function DeviceRow({ device, now, forOps }: { device: FleetDevice; now: Date; fo
         {device.last_seen ? <RelativeTime iso={device.last_seen} now={now} /> : 'Never'}
       </td>
       <td className="py-3 pr-4 text-slate-700">{device.fw_version ?? 'Unknown'}</td>
+      <td className="py-3 pr-4">
+        <AlertLimitsCell device={device} forOps={forOps} />
+      </td>
     </tr>
+  )
+}
+
+/** Criteria 16-17: limits in use and sync status; ops get the status text only. */
+function AlertLimitsCell({ device, forOps }: { device: FleetDevice; forOps: boolean }) {
+  if (device.device_type !== 'wearable') {
+    return (
+      <span className="text-slate-600">
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">No alert limits</span>
+      </span>
+    )
+  }
+  const limits = device.alert_limits
+  const status = <span className="text-slate-900">{ALERT_LIMITS_STATUS_LABELS[limits?.status ?? 'unknown']}</span>
+  if (forOps) return status
+  return (
+    <span className="flex flex-col">
+      {/* sr-only full stops so screen readers don't run the lines together */}
+      <span className="text-slate-800">
+        {limits?.reported ? formatDeviceLimits(limits.reported) : 'No limits reported'}
+        <span className="sr-only">. </span>
+      </span>
+      {status}
+      {limits?.status === 'pending' && limits.desired && (
+        <span className="text-slate-700">
+          <span className="sr-only">. </span>
+          {`New: ${formatDeviceLimits(limits.desired)}`}
+        </span>
+      )}
+    </span>
   )
 }
 

@@ -1,4 +1,8 @@
-"""The run loop shared by dry-run and live runs (criteria 15 and 17 to 20)."""
+"""The run loop shared by dry-run and live runs (criteria 15 and 17 to 20).
+
+A live run also applies each wearable's shadow messages to the engine
+(docs/features/device-alert-limits.md, criterion 20); a dry-run keeps the seed file's
+limits."""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ import threading
 from collections.abc import Callable
 from typing import TextIO
 
+import live
 import payloads
 import scenarios
 from commands import CommandSource
@@ -78,6 +83,34 @@ def handle_command(
         deliver(message)
 
 
+def handle_shadow(
+    engine: Engine,
+    links: LinkManager,
+    now_ms: int,
+    log: Callable[[str], None],
+) -> None:
+    """Apply the shadow messages received since the last call (criterion 20). Lines
+    name the device only, never limit values. Bedroom sensors ignore the content."""
+    for device_id, suffix, payload in links.take_shadow_messages():
+        if not device_id.startswith("wearable-"):
+            continue
+        action, limits = live.shadow_limits(suffix, payload, engine.limits(device_id))
+        if action == live.REJECT:
+            log(f"{device_id}: limits rejected")
+            continue
+        if action == live.IGNORE or limits is None:
+            continue
+        if action == live.APPLY and engine.set_limits(device_id, limits, now_ms):
+            log(f"{device_id}: limits updated")
+        result = links.publish(
+            device_id,
+            live.shadow_topic(device_id, live.SHADOW_UPDATE),
+            live.reported_limits_payload(limits),
+        )
+        if result != "sent":
+            log(f"{device_id}: limits report {result}")
+
+
 def run(
     engine: Engine,
     sink: DryRunSink | LiveSink,
@@ -119,6 +152,7 @@ def run(
             for device_id in links.poll(now):
                 for message in engine.startup_messages(device_id, now):
                     deliver(message)
+            handle_shadow(engine, links, now, summary_out)
             if links.none_could_connect():
                 return "no_connection"
         due_until = now if duration_ms is None else min(now, duration_ms - 1)

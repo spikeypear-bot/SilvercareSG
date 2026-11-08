@@ -208,7 +208,9 @@ None.
 - Personal data touched: none. Device IDs are opaque; smoke-test payloads are
   synthetic.
 - Retention: a thing and its certificate exist while the device is in `devices.json`.
-  Removing a device from the list and merging deletes both.
+  Removing a device from the list and merging deletes both. It does not delete the
+  thing's shadow (AWS keeps shadows after a thing is deleted;
+  `docs/features/device-alert-limits.md`), so the account owner then deletes it.
 - Must not be logged or shown: private keys, anywhere (scripts, CI, Claude). The smoke
   test does not log payloads.
 

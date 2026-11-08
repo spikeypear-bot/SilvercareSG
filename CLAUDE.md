@@ -9,20 +9,19 @@ structure, not code that exists yet. Update this file as decisions land.
 
 ## Working rules for Claude
 
-- Build for me. Use the skills, subagents, and workflows in `.claude/`, and delegate to
-  the builder, tester, and reviewer agents wherever they fit.
-- I'm new to agents and learning on this project. When you use a skill, agent, or
-  workflow, say in a line which one and why.
+- Build for me, yourself: use the skills in `.claude/`. Don't delegate to subagents or
+  run multi-agent workflows unless I ask for one (removed 2026-11-08).
+- I'm learning on this project. When you use a skill, say in a line which one and why.
 - Ask me before making product decisions: what data is collected, who can see what,
   alert thresholds, retention.
 - After fixing a bug, a reviewer finding, or a mistake I corrected, run the
-  `improve-agents` skill: fix the skill, agent, or workflow that let it happen, without
+  `improve-agents` skill: fix the skill or spec template that let it happen, without
   asking me, within that skill's guardrails. Changes are logged in
   `.claude/agent-changes.md`.
-- When you finish a task (a feature build, a fix, a workflow run, a config or docs
-  change), end with a recap using the `recap` skill: done, what I should check (including
-  the expected plan and cost), what's left to do, and how agents were used. Skip it for
-  quick questions that changed nothing.
+- When you finish a task (a feature build, a fix, a config or docs change), end with a
+  recap using the `recap` skill: done, what I should check (including the expected plan
+  and cost), what's left to do, and which skills were used. Skip it for quick questions
+  that changed nothing.
 
 ## Architecture
 
@@ -109,7 +108,7 @@ simulator/
 frontend/            the React app
 docs/metrics.md      IoT metrics contract
 docs/data-model.md   DynamoDB tables, keys, access patterns
-docs/features/       one spec per feature (input to build-feature)
+docs/features/       one spec per feature (what Claude builds from)
 docs/decisions/      decision records
 ```
 
@@ -200,24 +199,25 @@ under Singapore's PDPA. Treat it accordingly:
 
 ## Claude setup
 
-- Skills in `.claude/skills/`. Subagents in `.claude/agents/`:
-  - builders: `backend-builder`, `frontend-builder` (used by `build-feature`)
-  - testers: `lambda-tester`, `frontend-tester`
-  - reviewers (read-only): `iac-reviewer`, `privacy-reviewer`
+- Skills in `.claude/skills/`. No project subagents or workflows (the builder, tester,
+  and reviewer agents and the `build-feature` / `pre-pr-check` workflows were removed
+  2026-11-08); Claude builds, tests, and reviews itself.
 - `.claude/hooks/guard.sh` blocks, the `aws` CLI, Terraform commands
   that change infrastructure or state, anything touching `~/.aws`, and anything touching
   device private keys and local secrets (`secrets/`, `make device-keys|device-certs|smoke-test|simulate`,
   and the simulator without `--dry-run`).
   `.claude/hooks/format.sh` formats edited files.
 - `.claude/settings.json` hides AWS credentials from Claude (`AWS_SHARED_CREDENTIALS_FILE`
-  and `AWS_CONFIG_FILE` are `/dev/null`), so Claude and its agents can't reach the real
+  and `AWS_CONFIG_FILE` are `/dev/null`), so Claude can't reach the real
   AWS account. Anything that needs real AWS (bootstrap apply, debugging live resources),
   I run myself in a separate terminal.
 - Feature flow, one feature at a time:
   1. Write the spec with the `feature-spec` skill → `docs/features/<name>.md`, `status: ready`
-  2. Ask Claude to run the `build-feature` workflow with the feature name
+  2. Ask Claude to build it from the spec: code, tests for each acceptance criterion,
+     then `make check` and the frontend lint/test/build
   3. Review the diff and run it locally
-- Before a PR, ask Claude to run the `pre-pr-check` workflow.
+- Before a PR, ask Claude to check the branch: `make check`, the frontend checks, a review
+  of the Terraform changes (`tf-change`, `iam-policy`), and the `pdpa-check` skill.
 
 ## Open decisions
 

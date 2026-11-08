@@ -1,6 +1,6 @@
 ---
 name: recap
-description: Recap the work just finished - what was done, what the user needs to check, and what still needs doing. Use at the end of every task (a feature build, a fix, a workflow run, a docs or config change), or when the user asks for a recap, status, or "where are we".
+description: Recap the work just finished - what was done, what the user needs to check, and what still needs doing. Use at the end of every task (a feature build, a fix, a docs or config change), or when the user asks for a recap, status, or "where are we".
 argument-hint: [scope, e.g. "sign-in" or "since main"]
 ---
 
@@ -19,8 +19,8 @@ Read these before writing. Don't run anything that changes files.
 
 - `git branch --show-current`, `git status --short`, and `git diff --stat origin/main...` plus
   the uncommitted diff, to see every changed and new file.
-- The results of the agents and workflows that ran in this task: their deviations,
-  open questions, untested items, findings left unfixed, and checks run.
+- What this task left open: deviations from the spec, open questions, untested items,
+  review findings left unfixed, and checks run.
 - Specs touched in `docs/features/` (their `status`), and changes to `CLAUDE.md`,
   `docs/`, and `.claude/`.
 - If you're unsure whether checks still pass, re-run them: `make check` for Python and
@@ -38,8 +38,7 @@ there's genuinely nothing, and say "Nothing" rather than dropping the heading.
 - What was built or changed, grouped by area: infra, Lambdas, frontend, docs and
   decisions, Claude setup (`.claude/`). One line each, with the main files.
 - Product decisions made in this task, and where they're recorded.
-- Which skills, agents, and workflows were used, and what each did (details in
-  section 4).
+- Which skills were used, and what each did (details in section 4).
 - Checks: each command and its result (e.g. "`npm run test`: 266/266 pass").
 
 ### 2. Check
@@ -63,7 +62,7 @@ What the user should look at themselves before committing, most important first:
   expected monthly cost and how it compares with the ~US$120 of credits that must last
   until the end of November 2026 (see `CLAUDE.md`). Say where a price is from memory
   rather than checked, and point to Billing → Free Tier to confirm.
-- Deviations from the spec, and choices an agent made where the spec was silent.
+- Deviations from the spec, and choices made where the spec was silent.
 - Things no test covers, e.g. what only works in a real browser or real AWS (contrast,
   layout, the CSP, OAC, sign-in against real Cognito).
 - Review findings that weren't fixed, with their severity.
@@ -85,17 +84,13 @@ Split into two lists:
 
 ### 4. How the work was done
 
-Learning notes, because the user is learning agents. For each skill, agent, and
-workflow used in this task, one or two lines:
+Learning notes, because the user is learning on this project. For each skill used in
+this task, one or two lines:
 
-- what it is and what it did here (e.g. "`build-feature` workflow: ran 9 agents, with
-  the backend and frontend builders in parallel")
-- why it fit better than the alternatives (doing it directly, one subagent, a
-  workflow), and when the user would pick something else
-- anything that went wrong or was wasted (an agent with nothing to do, a failing step,
-  a gap in a spec that a reviewer had to catch), and what would prevent it next time
-
-If nothing was delegated, say so in one line and why it wasn't worth it.
+- what it is and what it did here (e.g. "`feature-spec`: turned the request into a
+  spec with testable criteria")
+- anything that went wrong or was wasted (a failing step, a gap in a spec that only a
+  test or review caught), and what would prevent it next time
 
 ## Rules
 

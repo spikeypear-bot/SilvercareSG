@@ -1,4 +1,5 @@
-"""MQTT connections for a live run (criteria 16 and 17).
+"""MQTT connections for a live run (criteria 16 and 17), and each device's classic
+shadow (docs/features/device-alert-limits.md, criteria 19 and 20).
 
 One MQTT/TLS connection per device (port 8883, CA verification on, client ID =
 device ID), driven by a manual `loop()` from the run loop: no paho threads and no paho
@@ -8,18 +9,26 @@ fake client.
 Importing this module opens nothing and reads no files: paho is imported, and key
 files are read, only when `paho_client_factory` builds a client in a live run.
 
-Output names device IDs and reason codes only, never payloads, key or certificate
-contents, or exception messages (which can hold file paths).
+After every accepted connection a device subscribes (QoS 1, one SUBSCRIBE) to its
+shadow's get/accepted, get/rejected, and update/delta, and once that is acknowledged
+publishes an empty message to shadow/get. Shadow messages received are handed to the
+run loop (take_shadow_messages); shadow_limits() decides what a wearable does with one.
+
+Output names device IDs and reason codes only, never payloads, limit values, key or
+certificate contents, or exception messages (which can hold file paths).
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import ssl
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+from residents import DeviceLimits, parse_device_limits
 
 PORT = 8883
 KEEPALIVE_S = 60
@@ -35,6 +44,15 @@ BACKOFF_MAX_MS = 60_000
 # connection the broker keeps closing right away still backs off to 60 s.
 STABLE_MS = 60_000
 
+# Shadow topic suffixes (after $aws/things/<device_id>/shadow/).
+SHADOW_GET = "get"
+SHADOW_UPDATE = "update"
+SHADOW_GET_ACCEPTED = "get/accepted"
+SHADOW_GET_REJECTED = "get/rejected"
+SHADOW_DELTA = "update/delta"
+SHADOW_SUBSCRIPTIONS = (SHADOW_GET_ACCEPTED, SHADOW_GET_REJECTED, SHADOW_DELTA)
+SHADOW_NOT_FOUND = 404
+
 IDLE = "idle"
 CONNECTING = "connecting"
 CONNECTED = "connected"
@@ -47,14 +65,75 @@ class MqttClient(Protocol):
 
     on_connect: Any
     on_disconnect: Any
+    on_subscribe: Any
+    on_message: Any
 
     def connect(self, host: str, port: int, keepalive: int) -> Any: ...
     def loop(self, timeout: float) -> int: ...
     def publish(self, topic: str, payload: bytes, qos: int, retain: bool) -> Any: ...
+    def subscribe(self, topic: list[tuple[str, int]]) -> Any: ...
     def disconnect(self) -> Any: ...
 
 
 ClientFactory = Callable[[str], MqttClient]
+
+
+def shadow_topic(device_id: str, suffix: str) -> str:
+    return f"$aws/things/{device_id}/shadow/{suffix}"
+
+
+# What a wearable does with a shadow message (shadow_limits).
+APPLY = "apply"  # apply and report these limits
+REPORT = "report"  # no shadow: report the limits it has
+REJECT = "reject"  # invalid limits: ignore, print "<device_id>: limits rejected"
+IGNORE = "ignore"  # nothing to do
+
+
+def _merge(current: Any, change: Any) -> Any:
+    """A delta's state over the current value: a delta holds only what differs, so
+    nested objects are merged key by key."""
+    if not isinstance(current, dict) or not isinstance(change, dict):
+        return change
+    merged = dict(current)
+    for key, value in change.items():
+        merged[key] = _merge(current.get(key), value)
+    return merged
+
+
+def shadow_limits(
+    suffix: str, payload: bytes, current: DeviceLimits
+) -> tuple[str, DeviceLimits | None]:
+    """(action, limits) for a wearable's shadow message (criterion 20):
+    get/accepted with state.desired.limits, or update/delta with state.limits ->
+    APPLY if valid, REJECT if not; get/rejected 404 -> REPORT the current limits;
+    anything else (no limits in it, another code) -> IGNORE."""
+    try:
+        doc = json.loads(payload) if payload else {}
+    except ValueError:
+        doc = None
+    if suffix == SHADOW_GET_REJECTED:
+        code = doc.get("code") if isinstance(doc, dict) else None
+        return (REPORT, current) if code == SHADOW_NOT_FOUND else (IGNORE, None)
+    if suffix not in (SHADOW_GET_ACCEPTED, SHADOW_DELTA):
+        return IGNORE, None
+    if not isinstance(doc, dict):
+        return REJECT, None
+    state = doc.get("state")
+    if suffix == SHADOW_GET_ACCEPTED:
+        state = state.get("desired") if isinstance(state, dict) else None
+    if not isinstance(state, dict) or "limits" not in state:
+        return IGNORE, None
+    raw = state["limits"]
+    if suffix == SHADOW_DELTA:
+        raw = _merge(current.to_dict(), raw)
+    limits = parse_device_limits(raw)
+    return (APPLY, limits) if limits is not None else (REJECT, None)
+
+
+def reported_limits_payload(limits: DeviceLimits) -> bytes:
+    return json.dumps(
+        {"state": {"reported": {"limits": limits.to_dict()}}}, separators=(",", ":")
+    ).encode("utf-8")
 
 
 @dataclass(frozen=True)
@@ -153,11 +232,14 @@ class LinkManager:
         self.endpoint = endpoint
         self._log = log
         self._last_start_ms: int | None = None
+        self._shadow_in: list[tuple[str, str, bytes]] = []
         self.links: dict[str, _Link] = {}
         for device_id in device_ids:
             link = _Link(device_id, client_factory(device_id))
             link.client.on_connect = self._on_connect_cb(link)
             link.client.on_disconnect = self._on_disconnect_cb(link)
+            link.client.on_subscribe = self._on_subscribe_cb(link)
+            link.client.on_message = self._on_message_cb(link)
             self.links[device_id] = link
 
     # paho VERSION2 callback signatures
@@ -176,6 +258,22 @@ class LinkManager:
             link.events.append(("disconnect", reason_code))
 
         return on_disconnect
+
+    @staticmethod
+    def _on_subscribe_cb(link: _Link) -> Callable[..., None]:
+        def on_subscribe(
+            client, userdata, mid, reason_code_list=None, properties=None
+        ) -> None:
+            link.events.append(("suback", list(reason_code_list or [])))
+
+        return on_subscribe
+
+    @staticmethod
+    def _on_message_cb(link: _Link) -> Callable[..., None]:
+        def on_message(client, userdata, message) -> None:
+            link.events.append(("message", (message.topic, message.payload)))
+
+        return on_message
 
     # ---- state ----
 
@@ -231,9 +329,44 @@ class LinkManager:
                     if not link.ever_connected:
                         link.ever_connected = True
                         newly.append(link.device_id)
+                    self._subscribe_shadow(link)
+            elif kind == "suback" and link.state == CONNECTED:
+                if any(_is_failure(rc) for rc in reason_code):
+                    self._log(f"{link.device_id}: shadow subscribe refused")
+                elif (
+                    self.publish(
+                        link.device_id, shadow_topic(link.device_id, SHADOW_GET), b""
+                    )
+                    != "sent"
+                ):
+                    self._log(f"{link.device_id}: shadow get not sent")
+            elif kind == "message" and link.state == CONNECTED:
+                topic, payload = reason_code
+                prefix = shadow_topic(link.device_id, "")
+                if isinstance(topic, str) and topic.startswith(prefix):
+                    self._shadow_in.append(
+                        (link.device_id, topic[len(prefix) :], bytes(payload or b""))
+                    )
             elif kind == "disconnect" and link.state in (CONNECTING, CONNECTED):
                 self._log(f"{link.device_id}: disconnected ({_reason(reason_code)})")
                 self._retry_later(link, now_ms)
+
+    def _subscribe_shadow(self, link: _Link) -> None:
+        """Every connection (clean session): subscribe again, then get on SUBACK."""
+        topics = [(shadow_topic(link.device_id, s), 1) for s in SHADOW_SUBSCRIPTIONS]
+        try:
+            result = link.client.subscribe(topics)
+        except (OSError, ValueError):
+            result = -1
+        rc = result[0] if isinstance(result, tuple) else result
+        if rc != MQTT_ERR_SUCCESS:
+            self._log(f"{link.device_id}: shadow subscribe failed")
+
+    def take_shadow_messages(self) -> list[tuple[str, str, bytes]]:
+        """(device_id, topic suffix, payload) of every shadow message received since
+        the last call, in order."""
+        out, self._shadow_in = self._shadow_in, []
+        return out
 
     def poll(self, now_ms: int) -> list[str]:
         """Drive every connection once. Returns the devices that just connected for

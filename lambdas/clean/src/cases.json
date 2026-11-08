@@ -49,6 +49,48 @@
    }
   },
   {
+   "id": "vitals_alert_hr_tightened_limit",
+   "raw_message": "vitals_alert",
+   "line": "{\"schema_version\":1,\"message_id\":\"00000000-0000-4000-8000-000000000900\",\"ts\":\"2026-10-18T03:12:00.000Z\",\"metric\":\"hr_bpm\",\"value\":115,\"limit\":110,\"direction\":\"above\",\"held_s\":10,\"device_id\":\"wearable-0001\",\"message\":\"vitals_alert\",\"received_at\":1792293121000}",
+   "expected_ingest": "valid",
+   "expected_clean": "valid",
+   "expected_table": "vitals_alert",
+   "expected_values": {
+    "message_id": "00000000-0000-4000-8000-000000000900",
+    "device_id": "wearable-0001",
+    "ts": "2026-10-18 03:12:00.000",
+    "received_at": "2026-10-18 03:12:01.000",
+    "schema_version": 1,
+    "clock_skew": false,
+    "metric": "hr_bpm",
+    "value": 115,
+    "limit": 110,
+    "direction": "above",
+    "held_s": 10
+   }
+  },
+  {
+   "id": "vitals_alert_spo2_tightened_limit",
+   "raw_message": "vitals_alert",
+   "line": "{\"schema_version\":1,\"message_id\":\"00000000-0000-4000-8000-000000000901\",\"ts\":\"2026-10-18T03:12:00.000Z\",\"metric\":\"spo2_pct\",\"value\":90,\"limit\":92,\"direction\":\"below\",\"held_s\":10,\"device_id\":\"wearable-0001\",\"message\":\"vitals_alert\",\"received_at\":1792293121000}",
+   "expected_ingest": "valid",
+   "expected_clean": "valid",
+   "expected_table": "vitals_alert",
+   "expected_values": {
+    "message_id": "00000000-0000-4000-8000-000000000901",
+    "device_id": "wearable-0001",
+    "ts": "2026-10-18 03:12:00.000",
+    "received_at": "2026-10-18 03:12:01.000",
+    "schema_version": 1,
+    "clock_skew": false,
+    "metric": "spo2_pct",
+    "value": 90,
+    "limit": 92,
+    "direction": "below",
+    "held_s": 10
+   }
+  },
+  {
    "id": "fall_valid",
    "raw_message": "fall",
    "line": "{\"schema_version\":1,\"message_id\":\"00000000-0000-4000-8000-000000000003\",\"ts\":\"2026-10-18T03:12:00.000Z\",\"confidence\":0.91,\"peak_g\":3.8,\"still_s\":20,\"accel_window\":{\"hz\":25,\"start_offset_ms\":-1000,\"samples\":[[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99],[0.01,-0.1,0.99]]},\"device_id\":\"wearable-0001\",\"message\":\"fall\",\"received_at\":1792293121000}",
@@ -1886,7 +1928,7 @@
   {
    "id": "alert_hr_wrong_limit",
    "raw_message": "vitals_alert",
-   "line": "{\"schema_version\":1,\"message_id\":\"00000000-0000-4000-8000-000000000097\",\"ts\":\"2026-10-18T03:12:00.000Z\",\"metric\":\"hr_bpm\",\"value\":140,\"limit\":88,\"direction\":\"above\",\"held_s\":10,\"device_id\":\"wearable-0001\",\"message\":\"vitals_alert\",\"received_at\":1792293121000}",
+   "line": "{\"schema_version\":1,\"message_id\":\"00000000-0000-4000-8000-000000000097\",\"ts\":\"2026-10-18T03:12:00.000Z\",\"metric\":\"hr_bpm\",\"value\":140,\"limit\":251,\"direction\":\"above\",\"held_s\":10,\"device_id\":\"wearable-0001\",\"message\":\"vitals_alert\",\"received_at\":1792293121000}",
    "expected_ingest": "rejected",
    "expected_clean": "rejected",
    "expected_reason": "invalid:limit"
