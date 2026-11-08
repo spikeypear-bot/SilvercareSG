@@ -580,3 +580,101 @@ def test_main_writes_links_and_a_second_run_keeps_them(
     assert link["gsi1_pk"] == {"S": "RESIDENT#res-0001"}
     assert link["gsi1_sk"] == {"S": f"USER#{LINK_SUB}"}
     assert out.getvalue().splitlines()[-1] == "done: 11 exists"
+
+
+# ---- --residents (which residents --link-caregiver links) ----
+
+
+def test_link_items_for_given_residents_keep_the_item_shape(seed):
+    items = by_key(seed.link_items(LINK_SUB, NOW, ["res-0004", "res-0005"]))
+
+    assert set(items) == {
+        (f"USER#{LINK_SUB}", "RESIDENT#res-0004"),
+        (f"USER#{LINK_SUB}", "RESIDENT#res-0005"),
+    }
+    assert items[(f"USER#{LINK_SUB}", "RESIDENT#res-0005")] == {
+        "pk": f"USER#{LINK_SUB}",
+        "sk": "RESIDENT#res-0005",
+        "relationship": "caregiver",
+        "linked_at": STAMP,
+        "linked_by": "seed",
+        "gsi1_pk": "RESIDENT#res-0005",
+        "gsi1_sk": f"USER#{LINK_SUB}",
+    }
+
+
+def test_parse_resident_ids(seed):
+    assert seed.parse_resident_ids("res-0004,res-0005") == ["res-0004", "res-0005"]
+    assert seed.parse_resident_ids("res-0007") == ["res-0007"]
+
+
+def test_main_links_only_the_given_residents(seed, moto_registry, devices_file):
+    args = [
+        "--devices-file",
+        str(devices_file),
+        "--link-caregiver",
+        LINK_SUB,
+        "--residents",
+        "res-0004,res-0005",
+    ]
+
+    assert seed.main(args, client=moto_registry, out=io.StringIO(), now=NOW) == 0
+
+    links = {key for key in scan(moto_registry) if key[0].startswith("USER#")}
+    assert links == {
+        (f"USER#{LINK_SUB}", "RESIDENT#res-0004"),
+        (f"USER#{LINK_SUB}", "RESIDENT#res-0005"),
+    }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        ",",
+        "res-0004,",
+        "res-4",
+        "RES-0004",
+        "res-0004;res-0005",
+        "res-0004,res-0004",
+        "res-0004\n",
+        "res-0004, res-0005",
+    ],
+)
+def test_invalid_residents_are_refused_before_any_write(
+    seed, moto_registry, devices_file, value
+):
+    out = io.StringIO()
+
+    rc = seed.main(
+        [
+            "--devices-file",
+            str(devices_file),
+            "--link-caregiver",
+            LINK_SUB,
+            "--residents",
+            value,
+        ],
+        client=moto_registry,
+        out=out,
+        now=NOW,
+    )
+
+    assert rc == 2
+    assert scan(moto_registry) == {}
+    assert "--residents" in out.getvalue()
+
+
+def test_residents_without_link_caregiver_is_refused(seed, moto_registry, devices_file):
+    out = io.StringIO()
+
+    rc = seed.main(
+        ["--devices-file", str(devices_file), "--residents", "res-0004"],
+        client=moto_registry,
+        out=out,
+        now=NOW,
+    )
+
+    assert rc == 2
+    assert scan(moto_registry) == {}
+    assert "--residents needs --link-caregiver" in out.getvalue()
