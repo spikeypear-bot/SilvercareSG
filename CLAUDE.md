@@ -32,6 +32,13 @@ structure, not code that exists yet. Update this file as decisions land.
 - **The one EC2 exception (agreed 2026-11-09, until 2026-11-30):** one `t4g.micro`
   instance runs the simulator 24/7 (`infra/simulator.tf`, `docs/features/simulator-ec2.md`,
   ~US$12/month). Nothing else uses EC2.
+- **Backfill reload in progress (started about 20:05 SGT on 2026-11-09):** the owner is
+  re-running `silvercare-clean`, then `silvercare-summaries`, by hand for every date from
+  2026-02-26 to 2026-10-31 (`docs/features/backfill-variation.md`, Load status); expected
+  to finish around 03:00 SGT on 2026-11-10. Until then, don't merge changes to the clean
+  or summaries Lambdas or the data lake (`lambdas/clean/`, `lambdas/summaries/`,
+  `infra/clean.tf`, `infra/summaries.tf`, `infra/results.tf`, Athena tables, Lake
+  Formation). Remove this note when the owner confirms it's done.
 - **Infrastructure as code:** Terraform. All AWS resources are defined in Terraform; do
   not create or change resources by hand in the console or with ad-hoc CLI calls.
   Exception: the device-key parameters `/silvercare/device-keys/<id>` are data written by
