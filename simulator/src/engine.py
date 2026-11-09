@@ -18,12 +18,13 @@ import heapq
 import random
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import payloads
 import routine
 import scenarios
-from residents import DeviceLimits, Resident, reading_limits
+from residents import HR_RANGE, SPO2_RANGE, DeviceLimits, Resident, reading_limits
+from variation import NOISE, Profile
 
 VITALS_PERIOD_MS = routine.MINUTE_MS
 STATUS_PERIOD_MS = 5 * routine.MINUTE_MS
@@ -94,6 +95,8 @@ class _ResidentState:
     bedroom_id: str | None
     battery: Battery | None
     wearable_rng: random.Random | None
+    # Backfill only (docs/features/backfill-variation.md); None everywhere else.
+    profile: Profile | None = None
 
 
 @dataclass(order=True)
@@ -159,6 +162,7 @@ class Engine:
         start_routine_ms: int,
         schedule_startup: bool = True,
         new_id: Callable[[], str] | None = None,
+        profiles: dict[str, Profile] | None = None,
     ) -> None:
         residents = list(residents)
         selected_set = set(selected)
@@ -179,6 +183,9 @@ class Engine:
         self._limits: dict[str, DeviceLimits] = {}
         self._episodes: dict[tuple[str, str], _Episode] = {}
         self._eid = 0
+        # Profile wearables' latest non-null normal readings, held until the next one.
+        self._held: dict[tuple[str, str], int] = {}
+        profiles = profiles or {}
 
         # Offsets for every resident (not only selected ones), so the same seed gives
         # the same offsets whichever devices run.
@@ -197,7 +204,13 @@ class Engine:
             if wearable is None and bedroom is None:
                 continue
             offset = offsets[resident.resident_id]
-            phase = routine.phase_at(self.start_routine_ms, offset)
+            profile = profiles.get(resident.resident_id)
+            if profile is not None:
+                phase = profile.phase(self.start_routine_ms, offset)
+                motion = self._motion_with(profile.phase, self.start_routine_ms, offset)
+            else:
+                phase = routine.phase_at(self.start_routine_ms, offset)
+                motion = routine.motion_on(self.start_routine_ms, offset)
             worn, charging = routine.wearable_state(phase)
             wearable_rng = device_rng(seed, wearable) if wearable else None
             battery = None
@@ -209,11 +222,12 @@ class Engine:
                 worn=worn,
                 charging=charging,
                 occupied=routine.bed_occupied(phase),
-                motion=routine.motion_on(self.start_routine_ms, offset),
+                motion=motion,
                 wearable_id=wearable,
                 bedroom_id=bedroom,
                 battery=battery,
                 wearable_rng=wearable_rng,
+                profile=profile,
             )
             self._states[resident.resident_id] = state
             if wearable:
@@ -275,13 +289,42 @@ class Engine:
                 device_id,
             )
         for resident_id, state in self._states.items():
-            delay = routine.next_change_delay_ms(self.start_routine_ms, state.offset_ms)
-            self._push(delay, "routine", resident_id)
+            self._push(self._next_change_delay(state, 0), "routine", resident_id)
 
     def offset_ms(self, device_id: str) -> int:
         """The routine offset of the resident a device of this run belongs to (read
         only; the backfill places falls with it)."""
         return self._owner[device_id].offset_ms
+
+    def phase(self, device_id: str, elapsed_ms: int) -> str:
+        """The routine phase of the resident a device belongs to (read only; the
+        backfill places falls and vitals episodes with it)."""
+        return self._phase(self._owner[device_id], elapsed_ms)
+
+    def _phase(self, state: _ResidentState, now_ms: int) -> str:
+        if state.profile is not None:
+            return state.profile.phase(self.start_routine_ms + now_ms, state.offset_ms)
+        return routine.phase_at(self.routine_ms(now_ms), state.offset_ms)
+
+    @staticmethod
+    def _motion_with(phase_of: Callable[[int, int], str], t: int, offset: int) -> bool:
+        """routine.motion_on for a phase function."""
+        return routine.BEDROOM in (
+            phase_of(t, offset),
+            phase_of(t - routine.MOTION_HOLD_MS, offset),
+        )
+
+    def _motion(self, state: _ResidentState, now_ms: int) -> bool:
+        if state.profile is not None:
+            t = self.start_routine_ms + now_ms
+            return self._motion_with(state.profile.phase, t, state.offset_ms)
+        return routine.motion_on(self.routine_ms(now_ms), state.offset_ms)
+
+    def _next_change_delay(self, state: _ResidentState, now_ms: int) -> int:
+        if state.profile is not None:
+            t = self.start_routine_ms + now_ms
+            return state.profile.next_change_ms(t, state.offset_ms) - t
+        return routine.next_change_delay_ms(self.routine_ms(now_ms), state.offset_ms)
 
     def next_time_ms(self) -> int | None:
         return self._heap[0].elapsed_ms if self._heap else None
@@ -357,17 +400,34 @@ class Engine:
 
     def _vitals(self, now_ms: int, device_id: str) -> list[Message]:
         state = self._owner[device_id]
-        phase = routine.phase_at(self.routine_ms(now_ms), state.offset_ms)
+        phase = self._phase(state, now_ms)
         if phase == routine.CHARGING:
             return []  # off the wrist: no vitals
         assert state.wearable_rng is not None
+        limits = reading_limits(self._limits[device_id], state.resident.limits)
         # Always drawn from the normal stream, so the other fields stay normal.
-        values = payloads.vitals_values(
-            state.wearable_rng,
-            state.resident.baseline,
-            reading_limits(self._limits[device_id], state.resident.limits),
-            phase,
-        )
+        if state.profile is None:
+            values = payloads.vitals_values(
+                state.wearable_rng, state.resident.baseline, limits, phase
+            )
+        else:
+            hr, spo2 = state.profile.vitals_shift(self.start_routine_ms + now_ms)
+            base = state.resident.baseline
+            base = replace(base, hr_bpm=base.hr_bpm + hr, spo2_pct=base.spo2_pct + spo2)
+            # Not clamped to the thresholds: only to the contract's valid range.
+            limits = replace(
+                limits,
+                hr_min=HR_RANGE[0],
+                hr_max=HR_RANGE[1],
+                spo2_min=SPO2_RANGE[0],
+                spo2_max=SPO2_RANGE[1],
+            )
+            values = payloads.vitals_values(
+                state.wearable_rng, base, limits, phase, noise=NOISE
+            )
+            for metric in ALERT_METRICS:
+                if values[metric] is not None:  # a null reading changes nothing
+                    self._held[(device_id, metric)] = values[metric]
         active = self._active(device_id, now_ms)
         if active is not None:
             if active.name in (scenarios.HR_SPIKE, scenarios.SPO2_DROP):
@@ -376,6 +436,8 @@ class Engine:
             values = scenarios.override_vitals(
                 active.name, values, active.rng, active.value, active.lying
             )
+        if state.profile is not None:
+            self._check_crossings(device_id, now_ms)  # a held reading past a limit
         return [
             self._msg(
                 now_ms,
@@ -388,8 +450,7 @@ class Engine:
     def _routine_change(self, now_ms: int, state: _ResidentState) -> list[Message]:
         """Publish whatever changed at one of the resident's change points."""
         out: list[Message] = []
-        routine_now = self.routine_ms(now_ms)
-        phase = routine.phase_at(routine_now, state.offset_ms)
+        phase = self._phase(state, now_ms)
         wearable, bedroom = state.wearable_id, state.bedroom_id
 
         if state.battery is not None:
@@ -414,7 +475,7 @@ class Engine:
                         lambda ts, mid: payloads.bed(ts, mid, occupied),
                     )
                 )
-        detected = routine.motion_on(routine_now, state.offset_ms)
+        detected = self._motion(state, now_ms)
         if detected != state.motion:
             state.motion = detected
             if bedroom:
@@ -463,9 +524,7 @@ class Engine:
         return active
 
     def _worn(self, device_id: str, now_ms: int) -> bool:
-        state = self._owner[device_id]
-        phase = routine.phase_at(self.routine_ms(now_ms), state.offset_ms)
-        return phase != routine.CHARGING
+        return self._phase(self._owner[device_id], now_ms) != routine.CHARGING
 
     def start_scenario(self, name: str, device_id: str, now_ms: int) -> list[Message]:
         """Start a scenario on a wearable of this run at now_ms.
@@ -579,17 +638,17 @@ class Engine:
 
     def _reading(self, device_id: str, metric: str, now_ms: int) -> int | None:
         """The wearable's current reading of metric if a scenario has moved it, else
-        None (a normal reading, inside the limits by criterion 21). No pulse is 0."""
+        a profile wearable's held normal reading, else None (a normal reading, inside
+        the limits by criterion 21). No pulse is 0."""
         active = self._active(device_id, now_ms)
-        if active is None:
-            return None
-        if active.name == scenarios.NO_PULSE:
-            return 0 if metric == "hr_bpm" else None
-        if active.name == scenarios.HR_SPIKE and metric == "hr_bpm":
-            return active.value
-        if active.name == scenarios.SPO2_DROP and metric == "spo2_pct":
-            return active.value
-        return None
+        if active is not None:
+            if active.name == scenarios.NO_PULSE:
+                return 0 if metric == "hr_bpm" else None
+            if active.name == scenarios.HR_SPIKE and metric == "hr_bpm":
+                return active.value
+            if active.name == scenarios.SPO2_DROP and metric == "spo2_pct":
+                return active.value
+        return self._held.get((device_id, metric))
 
     def _crossed(
         self, device_id: str, metric: str, now_ms: int
@@ -703,7 +762,6 @@ class Engine:
             return self._vitals(now, event.key)
         if event.kind == "routine":
             state = self._states[event.key]
-            delay = routine.next_change_delay_ms(self.routine_ms(now), state.offset_ms)
-            self._push(now + delay, "routine", event.key)
+            self._push(now + self._next_change_delay(state, now), "routine", event.key)
             return self._routine_change(now, state)
         raise AssertionError(f"unknown event kind {event.kind}")  # pragma: no cover

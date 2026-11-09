@@ -73,17 +73,20 @@ def accel_sample(rng: random.Random) -> dict:
 
 
 def vitals_values(
-    rng: random.Random, baseline: Baseline, limits: Limits, phase: str
+    rng: random.Random,
+    baseline: Baseline,
+    limits: Limits,
+    phase: str,
+    noise: tuple[int, int, int] = (HR_NOISE, SPO2_NOISE, TEMP_NOISE_TENTHS),
 ) -> dict:
     """The vitals fields for one reading while worn (phase asleep, bedroom, or out).
 
     Every value stays inside the contract's valid range and the resident's
     thresholds narrowed by the margins (residents.Limits)."""
-    hr = baseline.hr_bpm + HR_PHASE_DELTA[phase] + rng.randint(-HR_NOISE, HR_NOISE)
-    spo2 = baseline.spo2_pct + rng.randint(-SPO2_NOISE, SPO2_NOISE)
-    temp = baseline.skin_temp_tenths + rng.randint(
-        -TEMP_NOISE_TENTHS, TEMP_NOISE_TENTHS
-    )
+    hr_noise, spo2_noise, temp_noise = noise
+    hr = baseline.hr_bpm + HR_PHASE_DELTA[phase] + rng.randint(-hr_noise, hr_noise)
+    spo2 = baseline.spo2_pct + rng.randint(-spo2_noise, spo2_noise)
+    temp = baseline.skin_temp_tenths + rng.randint(-temp_noise, temp_noise)
     if phase == ASLEEP:
         temp += TEMP_ASLEEP_TENTHS
     low, high = ACTIVITY_RANGE[phase]

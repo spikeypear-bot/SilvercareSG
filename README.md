@@ -197,10 +197,38 @@ to nothing:
 make backfill ARGS="--from 2026-03-01 --to 2026-10-31 --out backfill-data"
 ```
 
-Options: `--falls N` (0–100), `--random-seed N` (same seed, identical files). It also
-writes 2 lead-in days before `--from`, which the daily summaries need. `backfill-data/`
-is git-ignored. No alerts or emails are produced; the falls show up only in the clean
-tables and the daily summaries.
+Four residents (`res-0003`, `res-0008`, `res-0014`, `res-0019`) are unusual
+(`docs/features/backfill-variation.md`): wider noise, a mild decline over the range,
+bad days, irregular sleep, readings that may cross their thresholds (and send
+`vitals_alert` like a real wearable), plus 176 heart-rate spikes and SpO2 drops that
+become more frequent over the range (about 1 per resident in the first month, about 10
+in the last).
+
+Options: `--falls N` (0–100), `--vitals-episodes N` (0–400), `--random-seed N` (same
+seed, identical files). It also writes 2 lead-in days before `--from`, which the daily
+summaries need. `backfill-data/` is git-ignored. No stored alerts or emails are
+produced; falls and `vitals_alert`s show up only in the clean tables and the daily
+summaries.
+
+**Replacing an earlier load.** File names change between versions, so uploading over
+an earlier load would keep both copies and count every day twice. Generate with the
+same `--from`/`--to` into an empty folder, skip steps 1 and 2 below (already done for
+these dates), and before step 3 delete only the earlier generated objects in the
+generated partitions:
+
+```sh
+B=silvercare-history-<acct>
+ls -d backfill-data/telemetry/*/date=* | sed 's|^backfill-data/||' > /tmp/gen-prefixes
+while read -r p; do
+  aws s3 ls "s3://$B/$p/" | awk '{print $4}' | while read -r f; do
+    src=$(aws s3api head-object --bucket "$B" --key "$p/$f" --query Metadata.source --output text)
+    [ "$src" = simulator-backfill ] && aws s3 rm "s3://$B/$p/$f"
+  done
+done < /tmp/gen-prefixes
+```
+
+Then steps 3 and 4 for every generated date: re-running clean and summaries replaces
+each date's output, including the summaries.
 
 **Loading it into AWS** needs write access to the history bucket, which the shared
 developer user doesn't have, so the account owner runs these steps from the host, in

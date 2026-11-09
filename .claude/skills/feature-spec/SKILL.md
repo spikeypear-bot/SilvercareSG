@@ -41,6 +41,10 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
       fixtures loaded live) is checked against every filter that component's code
       applies (e.g. `assigned_at`, partitions it requires, de-duplication), and against
       what can't be undone once loaded (outputs with no expiry or delete access).
+      A claim that some generated output stays unchanged names which fields still
+      change because they come from a random stream every line shares (IDs, delays).
+      Sizes for generated data (noise, drift, event rates) come with the counts they
+      give (e.g. alert episodes per month), measured on a quick run, before `ready`.
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
       **specific resident** is decided. A new group (e.g. `ops`) also lists which
       existing access patterns in `docs/data-model.md` it gets and which it's refused,

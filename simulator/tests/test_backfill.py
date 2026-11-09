@@ -37,8 +37,10 @@ TO = "2026-03-13"
 FALLS = 6  # round(6 / 4) = 2 cancels
 SEED = 1
 OTHER_SEED = 2
+# Residents 1, 2, 4, 5: none of them is unusual (docs/features/backfill-variation.md),
+# so these tests check the backfill's normal behaviour.
 SMALL_DEVICES = [
-    f"{kind}-000{i}" for kind in ("wearable", "bedroom") for i in (1, 2, 3, 4)
+    f"{kind}-000{i}" for kind in ("wearable", "bedroom") for i in (1, 2, 4, 5)
 ]
 
 SECOND_MS = 1000
@@ -122,7 +124,7 @@ def run(argv: list[str], out: Path, today: date = TODAY) -> Run:
 
 
 def small_devices_file(folder: Path) -> Path:
-    """The devices file with only residents 1-4 (8 devices)."""
+    """The devices file with only residents 1, 2, 4, 5 (8 devices)."""
     doc = json.loads(DEVICES_FILE.read_text(encoding="utf-8"))
     doc["devices"] = [d for d in doc["devices"] if d["id"] in SMALL_DEVICES]
     assert len(doc["devices"]) == len(SMALL_DEVICES)
