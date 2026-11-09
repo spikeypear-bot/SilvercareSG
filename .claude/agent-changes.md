@@ -3,8 +3,20 @@
 Changes the `improve-agents` skill made to skills, agents, and workflows after a bug or
 a wasted step. Newest first. Review these in the diff before committing.
 
+## 2026-11-10
+
+- **Problem:** live-alerts pings had a per-call timeout only; with 10 records per batch
+  an AppSync outage could exceed alert-processor's 30 s timeout (caught on re-reading
+  before commit). **Changed:** `.claude/skills/lambda-python/SKILL.md` (Errors): bound a
+  best-effort call's total time per invocation and stop after the first failure.
+
 ## 2026-11-09
 
+- **Problem:** while specifying live-alerts, two facts in questions to the user were
+  wrong or unchecked (vitals volume 28,800 instead of ~864,000 a month; "connection
+  drops within ~1 h" with no AWS source), and the user decided from them. **Changed:**
+  `.claude/skills/feature-spec/SKILL.md` (step 3): facts in questions follow the
+  checklist, with the arithmetic shown, or are marked unchecked.
 - **Problem:** the WAF spec was marked `ready` with a CloudFront web ACL in `us-east-1`
   before checking the free plan's Region rules, which may block WAF on CloudFront; the
   user paused WAF. **Changed:** `.claude/skills/tf-change/SKILL.md` (free-plan rule):

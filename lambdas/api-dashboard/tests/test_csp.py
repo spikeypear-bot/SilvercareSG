@@ -15,7 +15,11 @@ EXPECTED = {
     "style-src": "'self'",
     "img-src": "'self' data: https://www.onemap.gov.sg",
     "font-src": "'self'",
-    "connect-src": f"'self' https://cognito-idp.ap-southeast-1.amazonaws.com {API}",
+    # Live alerts (docs/features/live-alerts.md, criterion 6): the Event API's two hosts.
+    "connect-src": (
+        f"'self' https://cognito-idp.ap-southeast-1.amazonaws.com {API} "
+        "https://${local.events_http_dns} wss://${local.events_realtime_dns}"
+    ),
     "frame-ancestors": "'none'",
     "base-uri": "'self'",
     "form-action": "'self'",

@@ -134,7 +134,8 @@ jobs:
           VITE_USER_POOL_ID="$(terraform -chdir=../infra output -raw cognito_user_pool_id)"
           VITE_USER_POOL_CLIENT_ID="$(terraform -chdir=../infra output -raw cognito_user_pool_client_id)"
           VITE_API_URL="$(terraform -chdir=../infra output -raw api_url)"
-          export VITE_USER_POOL_ID VITE_USER_POOL_CLIENT_ID VITE_API_URL
+          VITE_EVENTS_URL="https://$(terraform -chdir=../infra output -raw events_http_dns)/event"
+          export VITE_USER_POOL_ID VITE_USER_POOL_CLIENT_ID VITE_API_URL VITE_EVENTS_URL
           npm ci
           npm run build
 

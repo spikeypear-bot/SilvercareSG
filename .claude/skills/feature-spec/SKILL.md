@@ -23,6 +23,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
    `docs/features/`, so the spec matches what exists.
 3. Go through the template section by section. Ask the user about anything you can't
    answer from what they've told you. Ask a few questions at a time, not all at once.
+   Facts and numbers inside a question (AWS behaviour, message counts, costs) follow the
+   readiness checklist too: checked first, with the arithmetic shown, or marked
+   unchecked. The user decides from them.
 4. Write their answers into the spec. Record anything still undecided under
    **Open questions**.
 5. Check the spec against the readiness checklist below and tell the user what's missing.

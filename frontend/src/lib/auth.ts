@@ -59,6 +59,18 @@ export function configureAuth(): void {
         loginWith: { email: true },
       },
     },
+    // Live alerts (docs/features/live-alerts.md, criterion 18): only when configured.
+    ...(import.meta.env.VITE_EVENTS_URL
+      ? {
+          API: {
+            Events: {
+              endpoint: import.meta.env.VITE_EVENTS_URL,
+              region: 'ap-southeast-1',
+              defaultAuthMode: 'userPool' as const,
+            },
+          },
+        }
+      : {}),
   })
   configured = true
 }
