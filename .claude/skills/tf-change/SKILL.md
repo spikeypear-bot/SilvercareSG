@@ -15,7 +15,10 @@ Merging to `main` runs `terraform apply` in CI. Treat every change as going live
 - The account is on AWS's free plan, which blocks some services until it is upgraded
   (e.g. Data Firehose, Kinesis, End User Messaging SMS). Before proposing a service not
   already in `infra/`, check it under "Free Tier" in
-  https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html.
+  https://docs.aws.amazon.com/accounts/latest/reference/supported-services-sign-up-new.html, and
+  anything outside `ap-southeast-1` (e.g. a CloudFront WAF in `us-east-1`) in
+  https://docs.aws.amazon.com/accounts/latest/reference/project-regions.html, which
+  can block cross-Region features. Do this before the spec is `ready`.
 - Region: ap-southeast-1
 - Encrypt every data store at rest (KMS or AWS-managed keys) and enforce TLS in transit.
   CloudWatch alarms can't publish to an SNS topic encrypted with `aws/sns`, but Lambdas

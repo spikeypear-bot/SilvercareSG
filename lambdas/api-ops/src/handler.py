@@ -276,6 +276,10 @@ def handle(event: Any) -> dict[str, Any]:
 
 
 def lambda_handler(event: Any, context: Any) -> dict[str, Any]:
+    # Keep-warm ping (docs/features/api-caching.md): API Gateway events never have a
+    # top-level `source`, so only the EventBridge rule can send this. No checks, no logs.
+    if event.get("source") == "silvercare.keep-warm":
+        return {"warm": True}
     logger.remove_keys(["request_id"])
     try:
         return handle(event)
