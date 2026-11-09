@@ -52,7 +52,7 @@ RESIDENT_ID_RE = re.compile(r"^res-[0-9]{4}\Z")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 HEADERS = {"Content-Type": "application/json", "Cache-Control": "no-store"}
 SGT = timezone(timedelta(hours=8))
-LOG_KEYS = ["request_id", "route", "sub", "resident_id", "interval", "days"]
+LOG_KEYS = ["request_id", "route", "sub", "resident_id", "interval", "days", "cache"]
 
 # Decisions (user, 2026-11-09).
 MAX_DAYS = {"day": 90, "hour": 7}
@@ -66,6 +66,13 @@ SUCCEEDED = "SUCCEEDED"
 FINAL_STATES = frozenset({SUCCEEDED, "FAILED", "CANCELLED"})
 KINDS = dict(sql.RESULT_COLUMNS)
 EVENT_COUNTS = ("motion_events", "falls", "vitals_alert_episodes", "cancels")
+
+# Results cache (docs/features/api-caching.md, criteria 5-11). Athena data only changes
+# when clean (08:30 SGT) and then summaries run; 09:30 leaves room for both, retries
+# included. Keyed by the query text, which holds the resident, devices, limits, dates.
+CACHE_REFRESH_SGT = (9, 30)
+CACHE_MAX_ENTRIES = 200
+_results: dict[str, tuple[datetime, list[dict[str, str | None]]]] = {}
 
 _deserializer = TypeDeserializer()
 
@@ -423,6 +430,35 @@ def run_query(query: str, deadline: float) -> list[dict[str, str | None]]:
     ]
 
 
+def clear_cache() -> None:
+    _results.clear()
+
+
+def cache_expiry(stored: datetime) -> datetime:
+    """The first 09:30 SGT strictly after `stored`."""
+    local = stored.astimezone(SGT)
+    hour, minute = CACHE_REFRESH_SGT
+    refresh = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return refresh if refresh > local else refresh + timedelta(days=1)
+
+
+def cached_query(
+    query: str, now: datetime, deadline: float
+) -> list[dict[str, str | None]]:
+    """run_query through the cache. A failed or timed-out query raises: nothing stored."""
+    hit = _results.get(query)
+    if hit is not None and now < hit[0]:
+        logger.append_keys(cache="hit")
+        return hit[1]
+    rows = run_query(query, deadline)
+    _results.pop(query, None)
+    while len(_results) >= CACHE_MAX_ENTRIES:
+        del _results[next(iter(_results))]  # oldest stored first
+    _results[query] = (cache_expiry(now), rows)
+    logger.append_keys(cache="miss")
+    return rows
+
+
 # ---- handler ----
 
 
@@ -456,7 +492,7 @@ def handle(event: Any, now: datetime, deadline: float) -> dict[str, Any]:
 
     if interval == "day":
         query = vitals_sql.daily_query(resident_id, start.isoformat(), end.isoformat())
-        rows, invalid = day_rows(run_query(query, deadline), start, end)
+        rows, invalid = day_rows(cached_query(query, now, deadline), start, end)
         used = None
     else:
         devices, limits = load_hourly_inputs(resident_id)
@@ -465,7 +501,7 @@ def handle(event: Any, now: datetime, deadline: float) -> dict[str, Any]:
             query = vitals_sql.hourly_query(
                 resident_id, devices, limits, start.isoformat(), end.isoformat()
             )
-            result = run_query(query, deadline)
+            result = cached_query(query, now, deadline)
         rows, invalid = hour_rows(result, start, end)
         used = thresholds.as_json(limits)
     if invalid:
