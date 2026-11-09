@@ -181,3 +181,10 @@ def fixed_now(monkeypatch):
     from events import NOW
 
     monkeypatch.setattr(handler, "now_utc", lambda: NOW)
+
+
+@pytest.fixture(autouse=True)
+def _empty_cache():
+    handler.clear_cache()
+    yield
+    handler.clear_cache()
