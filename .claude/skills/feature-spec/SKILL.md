@@ -45,6 +45,8 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
       change because they come from a random stream every line shares (IDs, delays).
       Sizes for generated data (noise, drift, event rates) come with the counts they
       give (e.g. alert episodes per month), measured on a quick run, before `ready`.
+      Replacing an earlier load deletes from every partition the earlier run could
+      have written, not only the new run's (rare events land on other days).
 - [ ] Each role's access is stated: which groups can see or do what, and how access to a
       **specific resident** is decided. A new group (e.g. `ops`) also lists which
       existing access patterns in `docs/data-model.md` it gets and which it's refused,
