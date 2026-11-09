@@ -5,6 +5,15 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-09
 
+- **Problem:** vitals-trends tests of `lambda_handler` used the real clock, so date
+  checks failed until a `now_utc()` seam was added. **Changed:**
+  `.claude/skills/lambda-test/SKILL.md` (Rules): date-dependent handlers read time
+  through a patched `now_utc()`.
+- **Problem:** the vitals-trends spec asked for a test that runs SQL, which the dev
+  image can't (no Trino/Athena); it had to become a go-live check. **Changed:**
+  `.claude/skills/feature-spec/SKILL.md` (checklist) and
+  `.claude/skills/lambda-test/SKILL.md`: SQL runs belong in go-live checks.
+
 - **Problem:** the EC2 simulator restarted every 60 s without running: tmux ran its
   command through the `simulator` user's `/sbin/nologin` shell. The template test checked
   arguments, not the environment. **Changed:** `.claude/skills/tf-change/SKILL.md`
@@ -24,6 +33,7 @@ a wasted step. Newest first. Review these in the diff before committing.
   dropped space); `make tf-check` doesn't render templates, so only a manual render
   caught it. **Changed:** `.claude/skills/tf-change/SKILL.md` (Rules): test every
   `templatefile()` by rendering it with fake values, checking commands and `bash -n`.
+
 - **Problem:** the device-alert-limits deploy failed: listing each shadow reply topic
   took both IoT device policies past AWS IoT's 2048-character limit, which no local
   check catches. **Changed:** `.claude/skills/iam-policy/SKILL.md` (IoT device policies):

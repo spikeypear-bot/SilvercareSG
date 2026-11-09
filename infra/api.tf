@@ -229,6 +229,15 @@ resource "aws_apigatewayv2_stage" "default" {
     throttling_burst_limit = 2
   }
 
+  # Vitals trends (docs/features/vitals-trends.md): an Athena query per call (each
+  # holds a Lambda for up to 28 s) and, hourly, about 3 RCU on the registry. 1/s,
+  # burst 5, lets a doctor switch ranges quickly while bounding concurrency and cost.
+  route_settings {
+    route_key              = aws_apigatewayv2_route.get_vitals.route_key
+    throttling_rate_limit  = 1
+    throttling_burst_limit = 5
+  }
+
   # Alert actions (acknowledge, cancel, resolve), per call: a strongly consistent alerts
   # GetItem (1 RCU on the alerts base table's 3 RCU, shared with alert-processor), for a
   # caregiver also an eventually consistent registry link GetItem (0.5 RCU), and one SQS

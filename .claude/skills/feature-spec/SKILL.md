@@ -30,7 +30,9 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 
 ## Readiness checklist
 
-- [ ] Every acceptance criterion is testable: a tester could write a pass/fail test for it.
+- [ ] Every acceptance criterion is testable: a tester could write a pass/fail test for it
+      in the dev image. Athena SQL can't run there (only its text is tested), so a check
+      that needs a query run is a go-live check for the owner, not a test criterion.
 - [ ] Anything the spec says about existing behaviour was checked in the code that runs it,
       not a comment or memory, and anything about AWS behaviour in AWS's docs, and
       about a third-party tool (what it stores on the user's machine, which edition

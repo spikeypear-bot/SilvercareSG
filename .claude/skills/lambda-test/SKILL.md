@@ -98,6 +98,10 @@ For alert logic: thresholds at, just below, and just above each boundary.
 - SQL that passes on local Trino isn't proven for Athena, which runs an older engine.
   `try()` and `try_cast` turn its errors into NULLs, so a difference can look like bad
   data rather than a failed query. Have the owner run new functions on real Athena
-  before merging.
+  before merging. The dev image has no Trino or Athena, so SQL tests check the query
+  text only; anything that needs the SQL run goes in the spec's go-live checks.
+- A handler whose result depends on the date reads the time through a module-level
+  `now_utc()` that the tests patch (an autouse fixture), so tests of `lambda_handler`
+  don't pass or fail with the real date.
 - One behaviour per test. Name tests after the behaviour:
   `test_duplicate_reading_is_not_written_twice`.
