@@ -281,7 +281,8 @@ function Results({
     <>
       <VitalsChart data={data} metric={metric} setMetric={setMetric} />
       <CountsChart rows={data.rows} />
-      <ResultsTable data={data} residentId={residentId} />
+      {/* A new range starts the table at page 1. */}
+      <ResultsTable key={`${data.interval}-${data.from}-${data.to}`} data={data} residentId={residentId} />
     </>
   )
 }
@@ -399,7 +400,14 @@ function CountsChart({ rows }: { rows: VitalsRow[] }) {
   )
 }
 
+/** Table rows per page: one day of hourly rows. The charts and the CSV keep every row. */
+const TABLE_PAGE_SIZE = 24
+
 function ResultsTable({ data, residentId }: { data: VitalsResponse; residentId: string }) {
+  const [page, setPage] = useState(0)
+  const pages = Math.ceil(data.rows.length / TABLE_PAGE_SIZE)
+  const first = page * TABLE_PAGE_SIZE
+  const shown = data.rows.slice(first, first + TABLE_PAGE_SIZE)
   function download() {
     const blob = new Blob([toCsv(residentId, data.interval, data.rows)], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -440,7 +448,7 @@ function ResultsTable({ data, residentId }: { data: VitalsResponse; residentId: 
             </tr>
           </thead>
           <tbody>
-            {data.rows.map((row) => (
+            {shown.map((row) => (
               <tr key={row.hour ?? row.date} className="border-b border-slate-100">
                 <th scope="row" className="whitespace-nowrap px-3 py-2 font-normal">
                   {rowLabel(row)}
@@ -456,6 +464,19 @@ function ResultsTable({ data, residentId }: { data: VitalsResponse; residentId: 
           </tbody>
         </table>
       </div>
+      {pages > 1 && (
+        <nav aria-label="Table pages" className="flex flex-wrap items-center gap-3">
+          <Button variant="secondary" onClick={() => setPage(page - 1)} disabled={page === 0}>
+            Previous
+          </Button>
+          <p aria-live="polite" className="text-base text-slate-700">
+            {`Rows ${first + 1}–${first + shown.length} of ${data.rows.length}`}
+          </p>
+          <Button variant="secondary" onClick={() => setPage(page + 1)} disabled={page === pages - 1}>
+            Next
+          </Button>
+        </nav>
+      )}
     </DetailSection>
   )
 }

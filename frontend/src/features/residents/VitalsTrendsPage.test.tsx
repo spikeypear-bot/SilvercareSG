@@ -93,6 +93,26 @@ it('loads the last 30 days daily by default and shows the table', async () => {
   expect(document.title).not.toContain('Test Resident C')
 })
 
+it('pages the table 24 rows at a time', async () => {
+  const dates = Array.from({ length: 30 }, (_, i) => `2026-10-${String(i + 1).padStart(2, '0')}`)
+  api.getVitals.mockResolvedValue(response(dates.map((d) => row(d))))
+  const { user } = renderPage()
+  const table = await screen.findByRole('table')
+  expect(within(table).getAllByRole('row')).toHaveLength(25)
+  expect(screen.getByText('Rows 1–24 of 30')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled()
+  await user.click(screen.getByRole('button', { name: 'Next' }))
+  expect(within(table).getAllByRole('row')).toHaveLength(7)
+  expect(screen.getByText('Rows 25–30 of 30')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+})
+
+it('a short range has no page buttons', async () => {
+  renderPage()
+  await screen.findByRole('table')
+  expect(screen.queryByRole('navigation', { name: 'Table pages' })).not.toBeInTheDocument()
+})
+
 it('summarises the events in text for screen readers', async () => {
   renderPage()
   expect(await screen.findByText(/2 falls, 0 vitals alert episodes, 0 "I'm OK" cancels, 4 readings outside/)).toBeInTheDocument()

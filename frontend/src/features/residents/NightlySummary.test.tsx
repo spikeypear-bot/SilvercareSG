@@ -72,18 +72,17 @@ describe('on the resident page', () => {
     return renderWithAuth(<ResidentDetailPage />, { user, path: `/residents/${id}`, route: '/residents/:id' })
   }
 
-  it('a doctor sees it between "Latest readings" and "Alert history", loaded once for this resident', async () => {
+  it('a doctor sees it right after "Latest readings" on the Overview tab, loaded once for this resident', async () => {
     renderPage(TEST_USERS.doctor)
-    await screen.findByRole('heading', { level: 2, name: /^Alert history/ })
+    await screen.findByRole('tab', { name: /^Alerts/ })
     await screen.findByRole('combobox', { name: 'Night' })
 
     const h2s = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent ?? '')
     const readings = h2s.indexOf('Latest readings')
     const nightly = h2s.indexOf('Nightly summary')
-    const history = h2s.findIndex((t) => t.startsWith('Alert history'))
     expect(readings).toBeGreaterThanOrEqual(0)
     expect(nightly).toBe(readings + 1)
-    expect(history).toBe(nightly + 1)
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
 
     expect(api.getNightly).toHaveBeenCalledTimes(1)
     expect(api.getNightly).toHaveBeenCalledWith('res-0003')
@@ -103,7 +102,7 @@ describe('on the resident page', () => {
     ['doctor + nurse (gets the nurse view)', doctorAndNurse],
   ])('a %s neither sees it nor calls the route', async (_, user) => {
     renderPage(user)
-    await screen.findByRole('heading', { level: 2, name: /^Alert history/ })
+    await screen.findByRole('tab', { name: /^Alerts/ })
     expect(screen.queryByRole('region', { name: 'Nightly summary' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Nightly summary' })).not.toBeInTheDocument()
     expect(api.getNightly).not.toHaveBeenCalled()
@@ -123,11 +122,11 @@ describe('on the resident page', () => {
   it('a failure here does not affect the rest of the page', async () => {
     api.getNightly.mockRejectedValue(new Error('synthetic failure'))
     renderPage(TEST_USERS.doctor)
-    await screen.findByRole('heading', { level: 2, name: /^Alert history/ })
+    await screen.findByRole('tab', { name: /^Alerts/ })
     expect(await screen.findByText("We couldn't load the nightly summaries.")).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Latest readings' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: /^Alert history/ })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Vitals thresholds' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: /^Alert history/, hidden: true })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Vitals thresholds', hidden: true })).toBeInTheDocument()
     expect(screen.queryByText("We couldn't load this resident.")).not.toBeInTheDocument()
     // Only this section shows an error.
     expect(screen.getAllByRole('alert')).toHaveLength(1)
@@ -135,7 +134,7 @@ describe('on the resident page', () => {
 
   it('the doctor page with the section loaded has no axe violations', async () => {
     const { container } = renderPage(TEST_USERS.doctor)
-    await screen.findByRole('heading', { level: 2, name: /^Alert history/ })
+    await screen.findByRole('tab', { name: /^Alerts/ })
     await screen.findByRole('combobox', { name: 'Night' })
     expect(await axeViolations(container)).toEqual([])
   })
