@@ -166,7 +166,9 @@ Builder-level defaults chosen by Claude, for the user to check:
     alert episodes, cancels, out-of-limit readings) per row. Values are in the table
     for screen readers; the chart has a text summary.
 18. The table below has one row per interval with every returned column, oldest first.
-19. "Download CSV" saves the rows shown, with a header row, named
+    It shows 24 rows per page with Previous and Next (added 2026-11-09 at the owner's
+    request); the charts and the CSV cover every row.
+19. "Download CSV" saves every returned row (all pages), with a header row, named
     `vitals-<resident_id>-<interval>-<from>-<to>.csv`. It contains the opaque
     `resident_id` only, no name. It is built in the browser; nothing is sent or stored.
 20. States: loading (skeleton, with "This can take a few seconds"), empty (every row

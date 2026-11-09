@@ -8,6 +8,7 @@ import { EmptyState } from '../../components/EmptyState'
 import { Notice } from '../../components/Notice'
 import { Skeleton } from '../../components/Skeleton'
 import { StatusBadge } from '../../components/StatusBadge'
+import { Tabs } from '../../components/Tabs'
 import { cx } from '../../lib/cx'
 import { useNow } from '../../lib/useNow'
 import type { Resident } from '../../types/dashboard'
@@ -18,6 +19,7 @@ import { DashboardError, LoadingStatus, RefreshFailedNotice } from '../dashboard
 import { WearableStatusText } from '../dashboard/DeviceStatus'
 import { MainLayout } from '../dashboard/MainLayout'
 import { StaffOnly, type StaffRole } from '../dashboard/StaffOnly'
+import { isOnOpenList } from '../dashboard/stats'
 import { describeAlert, useAlertAnnouncer } from '../dashboard/useAlertAnnouncer'
 import { useResidentDetail } from '../dashboard/useDashboardData'
 import { useEscalationWatcher } from '../dashboard/useEscalationWatcher'
@@ -120,6 +122,7 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
   )
   // The page's one screen-reader announcer, fed from the alert data and the actions.
   const { message, announce } = useAlertAnnouncer(detail.alerts, residentsById, { isOwnAction })
+  const openAlerts = detail.alerts.filter(isOnOpenList).length
   useEscalationWatcher(detail.alerts, (alert) =>
     announce(`Escalated to the care centre nurse: ${describeAlert(alert, residentsById)}.`),
   )
@@ -128,42 +131,70 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
     <>
       <AlertAnnouncer message={message} />
       <ResidentHeader resident={detail.resident} />
-      <DevicesSection wearable={detail.wearable} bedroom={detail.bedroom} now={now} />
-      <LatestReadings wearable={detail.wearable} bedroom={detail.bedroom} now={now} />
-      {/* Doctor view only (a doctor + nurse user gets the nurse view): the nurse view
-          neither shows it nor calls the route. The API refuses non-doctors anyway. */}
-      {role === 'doctor' && <NightlySummary residentId={detail.resident.resident_id} />}
-      {role === 'doctor' && (
-        <Link
-          to={`/residents/${encodeURIComponent(detail.resident.resident_id)}/vitals`}
-          className={cx(buttonBase, 'self-start bg-teal-700 text-white hover:bg-teal-800')}
-        >
-          <ChartLine className="size-5" aria-hidden="true" />
-          Vitals trends
-        </Link>
-      )}
-      <AlertHistory
-        alerts={detail.alerts}
-        resident={detail.resident}
-        now={now}
-        announce={announce}
-        actions={
-          role === 'nurse'
-            ? {
-                onAcknowledge,
-                onResolve: (id, resolveNote) => onResolve(id, staffName, resolveNote),
-              }
-            : undefined
-        }
+      <Tabs
+        label="Resident sections"
+        tabs={[
+          {
+            id: 'overview',
+            label: 'Overview',
+            panel: (
+              <>
+                <DevicesSection wearable={detail.wearable} bedroom={detail.bedroom} now={now} />
+                <LatestReadings wearable={detail.wearable} bedroom={detail.bedroom} now={now} />
+                {/* Doctor view only (a doctor + nurse user gets the nurse view): the nurse view
+                    neither shows it nor calls the route. The API refuses non-doctors anyway. */}
+                {role === 'doctor' && <NightlySummary residentId={detail.resident.resident_id} />}
+                {role === 'doctor' && (
+                  <Link
+                    to={`/residents/${encodeURIComponent(detail.resident.resident_id)}/vitals`}
+                    className={cx(buttonBase, 'self-start bg-teal-700 text-white hover:bg-teal-800')}
+                  >
+                    <ChartLine className="size-5" aria-hidden="true" />
+                    Vitals trends
+                  </Link>
+                )}
+              </>
+            ),
+          },
+          {
+            id: 'alerts',
+            // The open count keeps an open alert visible from any tab.
+            label: openAlerts ? `Alerts (${openAlerts} open)` : 'Alerts',
+            panel: (
+              <AlertHistory
+                alerts={detail.alerts}
+                resident={detail.resident}
+                now={now}
+                announce={announce}
+                actions={
+                  role === 'nurse'
+                    ? {
+                        onAcknowledge,
+                        onResolve: (id, resolveNote) => onResolve(id, staffName, resolveNote),
+                      }
+                    : undefined
+                }
+              />
+            ),
+          },
+          {
+            id: 'thresholds',
+            label: 'Thresholds',
+            panel: (
+              <>
+                <ThresholdsSection
+                  thresholds={detail.thresholds}
+                  canEdit={role === 'doctor'}
+                  onSave={(values) => onSaveThresholds(values, staffName)}
+                  announce={announce}
+                  now={now}
+                />
+                <ThresholdHistory history={detail.threshold_history} now={now} />
+              </>
+            ),
+          },
+        ]}
       />
-      <ThresholdsSection
-        thresholds={detail.thresholds}
-        canEdit={role === 'doctor'}
-        onSave={(values) => onSaveThresholds(values, staffName)}
-        announce={announce}
-        now={now}
-      />
-      <ThresholdHistory history={detail.threshold_history} now={now} />
     </>
   )
 }

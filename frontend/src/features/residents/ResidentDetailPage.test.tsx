@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { axeViolations } from '../../test/axe'
 import { TEST_USERS, deferred } from '../../test/fixtures'
@@ -53,13 +53,21 @@ function renderPage(id: string, user: AuthUser = TEST_USERS.nurse) {
 async function renderLoaded(id: string, user: AuthUser = TEST_USERS.nurse, detail?: ResidentDetail) {
   if (detail) residentDetailLoader.mockResolvedValue(detail)
   const ctx = renderPage(id, user)
-  await screen.findByRole('heading', { level: 2, name: /^Alert history/ })
+  await screen.findByRole('tab', { name: /^Alerts/ })
   return ctx
 }
 
 // --- queries ---------------------------------------------------------------
 
-const region = (name: string | RegExp) => screen.getByRole('region', { name })
+/** The section, after selecting the page tab it sits on (sections on other tabs are hidden). */
+const region = (name: string | RegExp) => {
+  const section = screen.getByRole('region', { name, hidden: true })
+  const panel = section.closest('[role="tabpanel"]')
+  if (panel instanceof HTMLElement && panel.hidden) {
+    fireEvent.click(document.getElementById(panel.getAttribute('aria-labelledby') ?? '') as HTMLElement)
+  }
+  return section
+}
 const devices = () => region('Devices')
 const readings = () => region('Latest readings')
 const history = () => region(/^Alert history/)
@@ -82,6 +90,8 @@ async function resolveWithNote(user: ReturnType<typeof userEvent.setup>, context
   await user.type(screen.getByRole('textbox', { name: 'Closing note (required)' }), note)
   await user.click(screen.getByRole('button', { name: `Resolve: ${context}` }))
 }
+/** Selects a page tab (sync, so plain helpers can call it). */
+const showTab = (name: string | RegExp) => fireEvent.click(screen.getByRole('tab', { name }))
 const location = () => screen.getByTestId('location').textContent
 
 const deviceBox = (name: RegExp) =>
@@ -171,6 +181,7 @@ describe('roles', () => {
     [['doctor', 'nurse']],
   ])('a user in %j gets the nurse view (actions, read-only thresholds)', async (groups) => {
     await renderLoaded('res-0003', { ...TEST_USERS.nurse, groups })
+    showTab(/^Alerts/)
     expect(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' })).toBeInTheDocument()
     expect(within(thresholds()).getByText('Only doctors can change thresholds.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit thresholds' })).not.toBeInTheDocument()
@@ -236,6 +247,20 @@ describe('page states', () => {
 })
 
 // --- header ------------------------------------------------------------------
+
+describe('tabs', () => {
+  it('opens on Overview; the Alerts tab counts open alerts, and the header stays above the tabs', async () => {
+    await renderLoaded('res-0003')
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: /^Alerts \(\d+ open\)$/ })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Test Resident C' })).toBeVisible()
+  })
+
+  it('says just "Alerts" with no open alerts (res-0014)', async () => {
+    await renderLoaded('res-0014')
+    expect(screen.getByRole('tab', { name: 'Alerts' })).toBeInTheDocument()
+  })
+})
 
 describe('resident header', () => {
   it('shows name, resident_id, home_id, status badge with icon, status_text, and wearable state', async () => {
@@ -552,6 +577,7 @@ describe('alert history (pattern 12)', () => {
     async (id) => {
       const detail = demoDetail(id)
       await renderLoaded(id, TEST_USERS.doctor, detail)
+      showTab(/^Alerts/)
       expect(screen.getByRole('heading', { level: 2, name: `Alert history (${detail.alerts.length})` })).toBeInTheDocument()
       const rows = historyRows()
       expect(rows).toHaveLength(detail.alerts.length)
@@ -627,6 +653,7 @@ describe('alert history (pattern 12)', () => {
 
   it('res-0014 shows the empty text', async () => {
     await renderLoaded('res-0014')
+    showTab(/^Alerts/)
     expect(screen.getByRole('heading', { level: 2, name: 'Alert history (0)' })).toBeInTheDocument()
     expect(within(history()).getByText('No alerts for this resident in the last 30 days.')).toBeInTheDocument()
     expect(historyRows()).toEqual([])
@@ -803,6 +830,7 @@ describe('nurse alert actions', () => {
     const row = () => historyRows()[0]
 
     // Acknowledge opens the note form; its submit button has the same name (no note).
+    showTab(/^Alerts/)
     await user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     await user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     expect(within(row()).getByText('Acknowledged')).toBeInTheDocument()
@@ -828,6 +856,7 @@ describe('nurse alert actions', () => {
 
   it('resolve straight from open moves focus to the Alert history heading', async () => {
     const { user } = await renderLoaded('res-0003', NURSE_D)
+    showTab(/^Alerts/)
     await resolveWithNote(user, 'Fall detected, Test Resident C')
     expect(historyRows()[0]).toHaveTextContent('Resolved by Test Nurse D')
     expect(historyRows()[0]).not.toHaveTextContent('Acknowledged by')
@@ -838,6 +867,7 @@ describe('nurse alert actions', () => {
   it('Resolve only opens the closing-note form: nothing changes or is announced until it is submitted', async () => {
     const { user } = await renderLoaded('res-0003', NURSE_D)
     const C = 'Fall detected, Test Resident C'
+    showTab(/^Alerts/)
     await user.click(screen.getByRole('button', { name: `Resolve: ${C}` }))
     const form = screen.getByRole('form', { name: `Resolve: ${C}` })
     expect(within(historyRows()[0]).getByText('Open')).toBeInTheDocument()
@@ -860,6 +890,7 @@ describe('nurse alert actions', () => {
 
   it('the closing note is never announced or shown on the page after the resolve', async () => {
     const { user } = await renderLoaded('res-0003', NURSE_D)
+    showTab(/^Alerts/)
     await resolveWithNote(user, 'Fall detected, Test Resident C', 'Synthetic note: ambulance called.')
     await waitFor(() => expect(announcer()).toHaveTextContent('Resolved: Fall detected, Test Resident C.'))
     expect(document.body).not.toHaveTextContent('ambulance called')
@@ -867,6 +898,7 @@ describe('nurse alert actions', () => {
 
   it('has no axe violations with the resolve form open and showing an error', async () => {
     const { user, container } = await renderLoaded('res-0003', NURSE_D)
+    showTab(/^Alerts/)
     await user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
     await user.click(screen.getByRole('button', { name: 'Resolve: Fall detected, Test Resident C' }))
     expect(screen.getByText('Add a note saying how this alert was dealt with.')).toBeInTheDocument()
@@ -964,6 +996,7 @@ describe('thresholds (pattern 18)', () => {
 
   it('Edit opens the form with the current values and focuses its first field', async () => {
     const { user } = await renderLoaded('res-0011', DOCTOR_C)
+    showTab('Thresholds')
     await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     const first = screen.getByRole('textbox', { name: 'Heart rate, lower limit (bpm)' })
     await waitFor(() => expect(first).toHaveFocus())
@@ -982,6 +1015,7 @@ describe('thresholds (pattern 18)', () => {
 
   it('Cancel returns focus to Edit without changing anything', async () => {
     const { user } = await renderLoaded('res-0001', DOCTOR_C)
+    showTab('Thresholds')
     await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     const hrMax = screen.getByRole('textbox', { name: 'Heart rate, upper limit (bpm)' })
     await user.clear(hrMax)
@@ -1001,6 +1035,7 @@ describe('thresholds (pattern 18)', () => {
 
   it('Save with valid values updates the display, the by-line, announces, and returns focus', async () => {
     const { user } = await renderLoaded('res-0001', DOCTOR_C)
+    showTab('Thresholds')
     await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     const set = async (name: string, value: string) => {
       const input = screen.getByRole('textbox', { name })
@@ -1037,6 +1072,7 @@ describe('thresholds (pattern 18)', () => {
 
   it('Enter in a field submits the form', async () => {
     const { user } = await renderLoaded('res-0001', DOCTOR_C)
+    showTab('Thresholds')
     await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     const hrMin = screen.getByRole('textbox', { name: 'Heart rate, lower limit (bpm)' })
     await user.clear(hrMin)
@@ -1046,6 +1082,7 @@ describe('thresholds (pattern 18)', () => {
 
   it('invalid values show inline errors linked by aria-describedby and focus the first invalid field', async () => {
     const { user } = await renderLoaded('res-0001', DOCTOR_C)
+    showTab('Thresholds')
     await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     const field = (name: string) => screen.getByRole('textbox', { name })
     await user.clear(field('Heart rate, lower limit (bpm)'))
@@ -1073,6 +1110,7 @@ describe('thresholds (pattern 18)', () => {
 
   it('focuses the first invalid field even when it is not the first field', async () => {
     const { user } = await renderLoaded('res-0001', DOCTOR_C)
+    showTab('Thresholds')
     await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     const tempMin = screen.getByRole('textbox', { name: 'Skin temperature, lower limit (°C)' })
     await user.clear(tempMin)
@@ -1098,6 +1136,7 @@ const entryByLine = (entry: HTMLElement) => entry.querySelector('p') as HTMLElem
 describe('threshold change history', () => {
   it('comes right after Vitals thresholds', async () => {
     await renderLoaded('res-0001')
+    showTab('Thresholds')
     const h2s = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
     expect(h2s.slice(-2)).toEqual(['Vitals thresholds', 'Change history'])
     expect(
@@ -1189,6 +1228,7 @@ describe('threshold change history', () => {
 
   it('stays read-only while the doctor has the thresholds form open', async () => {
     const { user } = await renderLoaded('res-0002', DOCTOR_C)
+    showTab('Thresholds')
     await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     expect(changeHistory().querySelectorAll('input, select, textarea, button')).toHaveLength(0)
   })
@@ -1245,6 +1285,7 @@ describe('privacy', () => {
     const log = vi.spyOn(console, 'log')
 
     const nurse = await renderLoaded('res-0003', NURSE_D)
+    showTab(/^Alerts/)
     await nurse.user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     await nurse.user.click(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }))
     await resolveWithNote(nurse.user, 'Fall detected, Test Resident C')
@@ -1252,6 +1293,7 @@ describe('privacy', () => {
     nurse.unmount()
 
     const doctor = await renderLoaded('res-0003', DOCTOR_C)
+    showTab('Thresholds')
     await doctor.user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     await doctor.user.type(screen.getByRole('textbox', { name: 'SpO2, lower limit (%)' }), '{Backspace}0{Enter}')
     expect(limit('SpO2')).toHaveTextContent('At least 90%')
@@ -1283,6 +1325,7 @@ describe('accessibility', () => {
 
   it('has no axe violations with the thresholds form open, and with errors', async () => {
     const { container, user } = await renderLoaded('res-0001', TEST_USERS.doctor)
+    showTab('Thresholds')
     await user.click(screen.getByRole('button', { name: 'Edit thresholds' }))
     expect(await axeViolations(container)).toEqual([])
     await user.clear(screen.getByRole('textbox', { name: 'Heart rate, lower limit (bpm)' }))
@@ -1316,7 +1359,8 @@ describe('accessibility', () => {
   it('headings are in order: h1 page, h2 resident and sections, h3 device subsections', async () => {
     const detail = demoDetail('res-0001')
     await renderLoaded('res-0001', TEST_USERS.nurse, detail)
-    const headings = screen.getAllByRole('heading').map((h) => [Number(h.tagName.slice(1)), h.textContent])
+    // Every tab's headings, in document order (the other tabs are hidden).
+    const headings = screen.getAllByRole('heading', { hidden: true }).map((h) => [Number(h.tagName.slice(1)), h.textContent])
     const w = detail.wearable!.device_id
     const b = detail.bedroom!.device_id
     expect(headings).toEqual([

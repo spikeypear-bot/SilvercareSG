@@ -95,7 +95,7 @@ async function renderLoaded() {
     path: '/residents/resident-test-003',
     route: '/residents/:id',
   })
-  await screen.findByRole('heading', { level: 2, name: /^Alert history/ })
+  await user.click(await screen.findByRole('tab', { name: /^Alerts/ }))
   return user
 }
 

@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AuthFlowError } from './lib/auth'
 import type { DashboardView } from './features/dashboard/useDashboardData'
@@ -171,11 +171,11 @@ describe('/residents/:id (staff only)', () => {
   ])('a user in %j gets the nurse view of the page', async (groups) => {
     authMock.getCurrentUser.mockResolvedValue({ ...TEST_USERS.doctor, groups })
     renderApp('/residents/res-0003')
-    expect(
-      await screen.findByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' }),
-    ).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('tab', { name: /^Alerts/ }))
+    expect(screen.getByRole('button', { name: 'Acknowledge: Fall detected, Test Resident C' })).toBeInTheDocument()
+    // hidden: true also searches the tabs not shown.
     expect(screen.getByText('Only doctors can change thresholds.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Edit thresholds' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit thresholds', hidden: true })).not.toBeInTheDocument()
   })
 
   it('an unknown resident shows "Resident not found" and stays on the URL', async () => {
