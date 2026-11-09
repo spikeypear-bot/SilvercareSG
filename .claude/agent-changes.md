@@ -5,6 +5,10 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-09
 
+- **Problem:** the backfill reload cleanup only looked in the new run's partitions,
+  so old fall files on other days would have been kept and counted twice (caught
+  before it was run). **Changed:** `.claude/skills/feature-spec/SKILL.md` (checklist):
+  replacing a load deletes from every partition the earlier run could have written.
 - **Problem:** backfill-variation's sizes were set without measuring their effect; the
   full run gave 100–400 alert episodes per resident per month and the user had them
   reduced. **Changed:** `.claude/skills/feature-spec/SKILL.md` (checklist): sizes for
