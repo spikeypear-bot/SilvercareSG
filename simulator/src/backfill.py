@@ -8,10 +8,13 @@ message as the IoT rules and the history Lambda would have stored it:
 
 one gzipped JSON Lines file per message type and UTC date of `received_at`, lines in
 `received_at` order. Falls (some cancelled with "I'm OK") are started with the
-engine's own `fall` and `im-ok` scenarios.
+engine's own `fall` and `im-ok` scenarios. Four fixed residents are unusual
+(docs/features/backfill-variation.md): wider noise, a decline, bad days, irregular
+sleep, readings that may cross their thresholds and alert, and `--vitals-episodes`
+heart-rate spikes and SpO2 drops.
 
   python simulator/src/backfill.py --from 2026-03-01 --to 2026-10-31 --out backfill-data
-      [--falls 12] [--random-seed 1] [--seed-file ...] [--devices-file ...]
+      [--falls 12] [--vitals-episodes 20] [--random-seed 1] [--seed-file ...] [--devices-file ...]
 
 It never connects to anything (no MQTT, no AWS) and writes only under --out. Bad flags,
 invalid seed/devices files, or falls that can't be placed exit 2 with one `error: ...`
@@ -40,6 +43,7 @@ import argparse
 import gzip
 import heapq
 import json
+import math
 import os
 import random
 import re
@@ -52,6 +56,7 @@ from typing import NoReturn, TextIO
 
 import routine
 import scenarios
+import variation
 from engine import Engine, Message
 from report import SGT
 from residents import SetupError, build_residents, load_json
@@ -72,6 +77,14 @@ MAX_RANGE_DAYS = 400
 DEFAULT_FALLS = 12
 MAX_FALLS = 100
 DEFAULT_RANDOM_SEED = 1
+# About 1 a month per unusual resident at --from, rising to about 10 by --to (8 months).
+DEFAULT_VITALS_EPISODES = 176
+MAX_VITALS_EPISODES = 400
+# Episodes are this many times as frequent at --to as at --from (linear in between).
+EPISODE_RAMP = 10
+# A vitals episode starts at least this long after, and ends at least this long
+# before, any fall or other episode on the same wearable.
+EPISODE_GAP_MS = 10 * routine.MINUTE_MS
 # Delay from ts to received_at (the IoT rule's timestamp()), in ms, inclusive.
 RECEIVED_DELAY_MS = (100, 900)
 # A cancel ("I'm OK") starts this long after its fall's start, in ms, inclusive.
@@ -129,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--falls", default=str(DEFAULT_FALLS), help="number of falls, 0 to 100"
+    )
+    parser.add_argument(
+        "--vitals-episodes",
+        default=str(DEFAULT_VITALS_EPISODES),
+        help="heart-rate spikes and SpO2 drops on the unusual residents, 0 to 400",
     )
     parser.add_argument(
         "--random-seed", default=str(DEFAULT_RANDOM_SEED), help="integer seed"
@@ -230,14 +248,14 @@ class Fall:
     cancel_at_ms: int | None  # elapsed ms of the "I'm OK", or None
 
 
-def fall_window_ok(time_of_day_ms: int, offset_ms: int) -> bool:
-    """Up and wearing the watch from time_of_day_ms until the fall's maximum time
-    down later, both included. Phases change on whole seconds, so checking every
-    second is exact."""
-    end = time_of_day_ms + scenarios.FALL_MAX_DOWN_MS
+PhaseOf = Callable[[str, int], str]  # (wearable, elapsed ms) -> routine phase
+
+
+def phases_ok(phase_of: PhaseOf, wearable: str, start_ms: int, end_ms: int, ok) -> bool:
+    """Every phase from start_ms to end_ms (both included) is in ok. Phases change on
+    whole seconds, so checking every second is exact."""
     return all(
-        routine.phase_at(t, offset_ms) in FALL_PHASES
-        for t in range(time_of_day_ms, end + 1, SECOND_MS)
+        phase_of(wearable, t) in ok for t in range(start_ms, end_ms + 1, SECOND_MS)
     )
 
 
@@ -245,7 +263,7 @@ def place_falls(
     count: int,
     window: Window,
     wearables: list[str],
-    offsets: dict[str, int],
+    phase_of: PhaseOf,
     rng: random.Random,
 ) -> list[Fall]:
     """count falls on random wearables, at most one per wearable (resident) per
@@ -266,12 +284,13 @@ def place_falls(
         wearable = rng.choice([w for w in wearables if free[w]])
         day = free[wearable].pop(rng.randrange(len(free[wearable])))
         for _attempt in range(MAX_TIME_DRAWS):
-            time_of_day = rng.randrange(DAY_MS // SECOND_MS) * SECOND_MS
-            if fall_window_ok(time_of_day, offsets[wearable]):
+            at = window.day_elapsed_ms(day) + rng.randrange(DAY_MS // SECOND_MS) * 1000
+            end = at + scenarios.FALL_MAX_DOWN_MS
+            if phases_ok(phase_of, wearable, at, end, FALL_PHASES):
                 break
         else:  # pragma: no cover - every day has hours up and worn
             raise UsageError(f"can't place a fall for {wearable}")
-        placed.append((wearable, window.day_elapsed_ms(day) + time_of_day))
+        placed.append((wearable, at))
     cancelled = set(rng.sample(range(count), round(count / 4)))
     falls = [
         Fall(
@@ -282,6 +301,96 @@ def place_falls(
         for index, (wearable, at_ms) in enumerate(placed)
     ]
     return sorted(falls, key=lambda f: (f.at_ms, f.wearable_id))
+
+
+# ---- unusual residents (docs/features/backfill-variation.md) ----
+
+
+def build_profiles(window: Window, seed: int) -> dict[str, variation.Profile]:
+    """A profile per unusual resident: a bad day with probability 1/10 and a bedtime
+    and wake-time shift for every Singapore day in [--from, --to] (not the lead-in)."""
+    rng = rng_for(seed, "variation")
+    first = (window.first - window.lead_in).days
+    last = (window.last - window.lead_in).days
+    profiles = {}
+    for resident_id in variation.UNUSUAL_RESIDENTS:
+        bad, bedtime, wake = set(), {}, {}
+        for day in range(first, last + 1):
+            if rng.random() < variation.BAD_DAY_RATE:
+                bad.add(day)
+            bedtime[day] = variation.sleep_shift_ms(rng)
+            wake[day] = variation.sleep_shift_ms(rng)
+        profiles[resident_id] = variation.Profile(
+            window.day_elapsed_ms(window.first),
+            window.stop_elapsed_ms,
+            frozenset(bad),
+            bedtime,
+            wake,
+        )
+    return profiles
+
+
+@dataclass(frozen=True)
+class Episode:
+    name: str  # hr-spike or spo2-drop
+    wearable_id: str
+    at_ms: int  # elapsed ms of its start
+
+
+def ramp_fraction(u: float) -> float:
+    """Inverse CDF of a density rising linearly from 1 to EPISODE_RAMP over [0, 1]:
+    u uniform in [0, 1) -> a fraction of the range in [0, 1)."""
+    r = EPISODE_RAMP
+    return (math.sqrt(1 + (r - 1) * (r + 1) * u) - 1) / (r - 1)
+
+
+def place_episodes(
+    count: int,
+    window: Window,
+    wearables: list[str],
+    phase_of: PhaseOf,
+    falls: list[Fall],
+    rng: random.Random,
+) -> list[Episode]:
+    """round(count / 2) hr-spikes, then spo2-drops, each on a random unusual wearable
+    at a random time (EPISODE_RAMP times as likely at --to as at --from, linear in
+    between) worn for its whole 3 minutes, at least EPISODE_GAP_MS from any
+    fall or other episode on that wearable. No unusual wearable in the run (a smaller
+    devices file): none. In time order."""
+    if not wearables:
+        return []
+    names = [scenarios.HR_SPIKE] * round(count / 2)
+    names += [scenarios.SPO2_DROP] * (count - len(names))
+    busy: dict[str, list[tuple[int, int]]] = {w: [] for w in wearables}
+    for fall in falls:
+        if fall.wearable_id in busy:
+            busy[fall.wearable_id].append(
+                (fall.at_ms, fall.at_ms + scenarios.FALL_MAX_DOWN_MS)
+            )
+    start = window.day_elapsed_ms(window.first)
+    seconds = (window.stop_elapsed_ms - start - scenarios.VITALS_DURATION_MS) // 1000
+    episodes = []
+    for name in names:
+        for _attempt in range(MAX_TIME_DRAWS):
+            wearable = rng.choice(wearables)
+            at = start + int(ramp_fraction(rng.random()) * seconds) * SECOND_MS
+            end = at + scenarios.VITALS_DURATION_MS
+            clash = any(
+                at < e + EPISODE_GAP_MS and s < end + EPISODE_GAP_MS
+                for s, e in busy[wearable]
+            )
+            if not clash and phases_ok(
+                phase_of, wearable, at, end, {routine.ASLEEP, *FALL_PHASES}
+            ):
+                break
+        else:
+            raise UsageError(
+                f"can't place {count} vitals episodes on the unusual residents in"
+                " this range"
+            )
+        busy[wearable].append((at, end))
+        episodes.append(Episode(name, wearable, at))
+    return sorted(episodes, key=lambda e: (e.at_ms, e.wearable_id))
 
 
 # ---- lines and files ----
@@ -329,6 +438,7 @@ class Output:
         self.created_dirs: list[Path] = []
         self.lines: dict[str, int] = {}
         self.dates: set[str] = set()
+        self.alerts_by_device: dict[str, int] = {}
 
     def _mkdirs(self, folder: Path) -> None:
         missing = []
@@ -419,6 +529,9 @@ class Lines:
         if received_at >= self._stop:
             return
         line["received_at"] = received_at
+        if message.message == "vitals_alert":
+            counts = self._output.alerts_by_device
+            counts[message.device_id] = counts.get(message.device_id, 0) + 1
         self._seq += 1
         heap = self._heaps.setdefault(message.message, [])
         heapq.heappush(heap, (received_at, self._seq, _encode(line)))
@@ -447,7 +560,7 @@ def _check_notices(engine: Engine) -> None:
     for notice in engine.take_notices():
         if " skipped" in notice:
             # The notice names the scenario, the wearable, and the reason only.
-            raise BackfillFailed(f"a fall or cancel was skipped ({notice})")
+            raise BackfillFailed(f"a scenario was skipped ({notice})")
 
 
 def generate(
@@ -467,12 +580,14 @@ def generate(
     output.close()
 
 
+def format_moment(at_ms: int, window: Window) -> str:
+    moment = datetime.fromtimestamp((window.start_epoch_ms + at_ms) / 1000, UTC)
+    return f"{moment.astimezone(SGT):%Y-%m-%d %H:%M} SGT"
+
+
 def format_fall(fall: Fall, window: Window) -> str:
-    moment = datetime.fromtimestamp(
-        (window.start_epoch_ms + fall.at_ms) / 1000, UTC
-    ).astimezone(SGT)
     cancelled = " (cancelled)" if fall.cancel_at_ms is not None else ""
-    return f"fall {fall.wearable_id} {moment:%Y-%m-%d %H:%M} SGT{cancelled}"
+    return f"fall {fall.wearable_id} {format_moment(fall.at_ms, window)}{cancelled}"
 
 
 def summary_lines(output: Output) -> list[str]:
@@ -496,6 +611,7 @@ def today_sgt() -> date:
 class Setup:
     window: Window
     falls_count: int
+    episodes_count: int
     seed: int
     out: Path
     residents: list
@@ -511,6 +627,11 @@ def validate(argv: list[str] | None, today: date) -> Setup:
     falls_count = parse_int(args.falls, "--falls")
     if not 0 <= falls_count <= MAX_FALLS:
         raise UsageError(f"--falls must be an integer from 0 to {MAX_FALLS}")
+    episodes_count = parse_int(args.vitals_episodes, "--vitals-episodes")
+    if not 0 <= episodes_count <= MAX_VITALS_EPISODES:
+        raise UsageError(
+            f"--vitals-episodes must be an integer from 0 to {MAX_VITALS_EPISODES}"
+        )
     seed = parse_int(args.random_seed, "--random-seed")
     out = Path(args.out)
     check_out(out)
@@ -520,7 +641,9 @@ def validate(argv: list[str] | None, today: date) -> Setup:
         residents, device_order = build_residents(seed_doc, devices_doc)
     except SetupError as exc:
         raise UsageError(str(exc)) from None
-    return Setup(window, falls_count, seed, out, residents, device_order)
+    return Setup(
+        window, falls_count, episodes_count, seed, out, residents, device_order
+    )
 
 
 def main(
@@ -538,6 +661,7 @@ def main(
     try:
         setup = validate(argv, today or today_sgt())
         window = setup.window
+        profiles = build_profiles(window, setup.seed)
         engine = Engine(
             setup.residents,
             setup.device_order,
@@ -547,14 +671,28 @@ def main(
             start_routine_ms=0,  # midnight Singapore time
             schedule_startup=True,
             new_id=seeded_uuid4(rng_for(setup.seed, "message-ids")),
+            profiles=profiles,
         )
         wearables = [d for d in engine.devices if d.startswith("wearable-")]
+        unusual = {
+            r.wearable_id: r.resident_id
+            for r in setup.residents
+            if r.resident_id in profiles and r.wearable_id in wearables
+        }
         falls = place_falls(
             setup.falls_count,
             window,
             wearables,
-            {w: engine.offset_ms(w) for w in wearables},
+            engine.phase,
             rng_for(setup.seed, "falls"),
+        )
+        episodes = place_episodes(
+            setup.episodes_count,
+            window,
+            [w for w in wearables if w in unusual],
+            engine.phase,
+            falls,
+            rng_for(setup.seed, "episodes"),
         )
     except UsageError as exc:
         err(f"error: {exc}")
@@ -566,6 +704,8 @@ def main(
             engine.schedule_scenario(
                 scenarios.IM_OK, fall.wearable_id, fall.cancel_at_ms
             )
+    for episode in episodes:
+        engine.schedule_scenario(episode.name, episode.wearable_id, episode.at_ms)
 
     err(
         f"backfill: {window.first} to {window.last} (lead-in from {window.lead_in}),"
@@ -573,6 +713,10 @@ def main(
     )
     for fall in falls:
         err(format_fall(fall, window))
+    for episode in episodes:
+        err(
+            f"{episode.name} {episode.wearable_id} {format_moment(episode.at_ms, window)}"
+        )
 
     created_out = not setup.out.exists()
     setup.out.mkdir(exist_ok=True)
@@ -583,8 +727,8 @@ def main(
         for message, count in expected.items():
             if output.lines.get(message, 0) != count:
                 raise BackfillFailed(f"wrote a different number of {message} lines")
-        if output.lines.get("vitals_alert", 0):
-            raise BackfillFailed("wrote vitals_alert lines")
+        if set(output.alerts_by_device) - set(unusual):
+            raise BackfillFailed("wrote vitals_alert lines for an ordinary resident")
     except BaseException as exc:
         output.abort()
         if created_out:
@@ -600,6 +744,10 @@ def main(
             return EXIT_INTERRUPTED
         raise
 
+    for wearable, resident_id in sorted(unusual.items(), key=lambda x: x[1]):
+        bad = len(profiles[resident_id].bad_days)
+        alerts = output.alerts_by_device.get(wearable, 0)
+        err(f"unusual {resident_id} {wearable}: {bad} bad days, {alerts} vitals_alert")
     for line in summary_lines(output):
         err(line)
     return EXIT_OK

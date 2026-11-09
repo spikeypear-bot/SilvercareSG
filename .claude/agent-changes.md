@@ -5,6 +5,15 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-09
 
+- **Problem:** backfill-variation's sizes were set without measuring their effect; the
+  full run gave 100–400 alert episodes per resident per month and the user had them
+  reduced. **Changed:** `.claude/skills/feature-spec/SKILL.md` (checklist): sizes for
+  generated data come with the counts a quick run gives, before `ready`.
+- **Problem:** the backfill-variation spec said ordinary residents' lines stay the same
+  except message IDs, but `received_at` delays also come from a stream all lines share,
+  so the test failed and the spec was corrected. **Changed:**
+  `.claude/skills/feature-spec/SKILL.md` (checklist): "unchanged output" claims name
+  the fields drawn from shared random streams.
 - **Problem:** vitals-trends tests of `lambda_handler` used the real clock, so date
   checks failed until a `now_utc()` seam was added. **Changed:**
   `.claude/skills/lambda-test/SKILL.md` (Rules): date-dependent handlers read time

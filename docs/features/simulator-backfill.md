@@ -116,7 +116,8 @@ read through the existing clean and curated access rules (docs/data-model.md).
     sends one `alert_cancel` and ends the fall. The other falls end after 10 minutes.
 11. **Every fall happens.** No fall or cancel is skipped (the engine's `skipped` notice
     must not appear for them); a test checks the output has exactly N `fall` lines and
-    `round(N / 4)` `alert_cancel` lines, and no `vitals_alert` lines.
+    `round(N / 4)` `alert_cancel` lines, and `vitals_alert` lines only from the
+    unusual residents (docs/features/backfill-variation.md; none before it).
 
 ### Output and summary
 
