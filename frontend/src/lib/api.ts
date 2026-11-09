@@ -19,6 +19,7 @@ import type {
 import type { ApiDevice, DevicesResponse } from '../types/devices'
 import type { NightlyOverviewResponse, NightlyResponse } from '../types/nightly'
 import type { DeviceProblem, DeviceProblemsResponse } from '../types/ops'
+import type { VitalsInterval, VitalsResponse } from '../types/vitals'
 import { getApiToken } from './auth'
 import { SG_TIME_ZONE } from './format'
 
@@ -398,4 +399,39 @@ export async function getNightlyOverview(options: { fresh?: boolean } = {}): Pro
     },
   )
   return promise
+}
+
+function isVitalsResponse(value: unknown): value is VitalsResponse {
+  if (typeof value !== 'object' || value === null) return false
+  const body = value as { interval?: unknown; rows?: unknown; thresholds?: unknown }
+  return (
+    (body.interval === 'hour' || body.interval === 'day') &&
+    typeof body.thresholds === 'object' &&
+    Array.isArray(body.rows) &&
+    body.rows.every(
+      (row: unknown) =>
+        typeof row === 'object' &&
+        row !== null &&
+        typeof (row as { has_data?: unknown }).has_data === 'boolean' &&
+        (typeof (row as { date?: unknown }).date === 'string' ||
+          typeof (row as { hour?: unknown }).hour === 'string'),
+    )
+  )
+}
+
+/**
+ * `GET /residents/{resident_id}/vitals` (doctor only; docs/features/vitals-trends.md):
+ * one row per Singapore hour or day of `from`..`to` (inclusive). Can take several
+ * seconds (Athena); a `504` `query_timeout` means the range was too slow.
+ */
+export async function getVitals(
+  residentId: string,
+  interval: VitalsInterval,
+  from: string,
+  to: string,
+): Promise<VitalsResponse> {
+  const query = new URLSearchParams({ interval, from, to })
+  const body = await apiGet(`/residents/${encodeURIComponent(residentId)}/vitals?${query.toString()}`)
+  if (!isVitalsResponse(body)) throw new ApiError(200, 'invalid_response')
+  return body
 }

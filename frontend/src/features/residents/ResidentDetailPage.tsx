@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type Ref } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, House } from 'lucide-react'
+import { ArrowLeft, ChartLine, House } from 'lucide-react'
 import { Avatar } from '../../components/Avatar'
 import { Button, buttonBase } from '../../components/Button'
 import { Card } from '../../components/Card'
@@ -133,6 +133,15 @@ function DetailContent({ detail, role, onAcknowledge, onResolve, onSaveThreshold
       {/* Doctor view only (a doctor + nurse user gets the nurse view): the nurse view
           neither shows it nor calls the route. The API refuses non-doctors anyway. */}
       {role === 'doctor' && <NightlySummary residentId={detail.resident.resident_id} />}
+      {role === 'doctor' && (
+        <Link
+          to={`/residents/${encodeURIComponent(detail.resident.resident_id)}/vitals`}
+          className={cx(buttonBase, 'self-start bg-teal-700 text-white hover:bg-teal-800')}
+        >
+          <ChartLine className="size-5" aria-hidden="true" />
+          Vitals trends
+        </Link>
+      )}
       <AlertHistory
         alerts={detail.alerts}
         resident={detail.resident}

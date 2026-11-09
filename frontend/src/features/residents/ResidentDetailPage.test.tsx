@@ -1366,3 +1366,15 @@ describe('accessibility', () => {
     expect(history().closest('[aria-live]')).toBeNull()
   })
 })
+
+describe('Vitals trends link (docs/features/vitals-trends.md, criterion 21)', () => {
+  it('doctors get a link to the resident’s vitals trends', async () => {
+    await renderLoaded('res-0003', DOCTOR_C)
+    expect(screen.getByRole('link', { name: 'Vitals trends' })).toHaveAttribute('href', '/residents/res-0003/vitals')
+  })
+
+  it('the nurse view has no link', async () => {
+    await renderLoaded('res-0003', TEST_USERS.nurse)
+    expect(screen.queryByRole('link', { name: 'Vitals trends' })).not.toBeInTheDocument()
+  })
+})

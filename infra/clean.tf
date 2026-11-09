@@ -68,6 +68,8 @@ locals {
     analysis  = { name = "silvercare-analysis", prefix = "analysis" }
     summaries = { name = "silvercare-summaries", prefix = "summaries" }
     tableau   = { name = "silvercare-tableau", prefix = "tableau" }
+    # vitals: docs/features/vitals-trends.md, criterion 14 (its Lambda is in vitals.tf).
+    vitals = { name = "silvercare-vitals", prefix = "vitals" }
   }
 
   # Keys are a hash of the stable user ID, because resource addresses appear in the

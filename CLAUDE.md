@@ -81,7 +81,9 @@ structure, not code that exists yet. Update this file as decisions land.
   Groups decide what a user can see; the API enforces it, the UI only hides things.
 - **Frontend:** one React + TypeScript app (Vite, Tailwind CSS) serving both the
   caregiver/family views and the nurse and doctor dashboards, chosen by Cognito group,
-  plus the resident page (`/residents/<resident_id>`, staff only) and the devices view
+  plus the resident page (`/residents/<resident_id>`, staff only), the doctors' vitals
+  trends page (`/residents/<resident_id>/vitals`, hourly or daily rows from Athena, with a
+  CSV download), and the devices view
   (`/devices`), a tab in the staff and ops areas. A notification bell in the header (all
   roles) lists alert changes the open page's polling noticed, scoped by role, in memory
   only. Static build

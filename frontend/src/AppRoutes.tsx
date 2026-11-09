@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AccountPage } from './features/account/AccountPage'
 import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
@@ -6,6 +7,11 @@ import { RequireAuth, SignedOutOnly } from './features/auth/routeGuards'
 import { MainPage } from './features/dashboard/MainPage'
 import { DevicesPage } from './features/devices/DevicesPage'
 import { ResidentDetailPage } from './features/residents/ResidentDetailPage'
+
+// Loaded on first visit: it carries the chart library, which only doctors use.
+const VitalsTrendsPage = lazy(() =>
+  import('./features/residents/VitalsTrendsPage').then((m) => ({ default: m.VitalsTrendsPage })),
+)
 
 /** Routes. Guards only decide what to show; the API enforces access. */
 export function AppRoutes() {
@@ -48,6 +54,16 @@ export function AppRoutes() {
         element={
           <RequireAuth>
             <ResidentDetailPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/residents/:id/vitals"
+        element={
+          <RequireAuth>
+            <Suspense fallback={<p className="p-6 text-base text-slate-600">Loading…</p>}>
+              <VitalsTrendsPage />
+            </Suspense>
           </RequireAuth>
         }
       />
