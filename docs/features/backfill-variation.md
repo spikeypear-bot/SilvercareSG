@@ -143,6 +143,22 @@ bucket or invoke Lambdas). The README gets these steps.
 The re-seed and overlap steps aren't needed again (seed `assigned_at` is unchanged, and
 these dates were checked at the first load).
 
+### Load status
+
+Reload of 2026-03-01 to 2026-10-31 (UTC dates 2026-02-26 to 2026-10-31, 248 days;
+1,122 generated files), run by the owner on 2026-11-09:
+
+- [x] Old generated telemetry deleted (only `source=simulator-backfill` objects).
+- [x] Overlap on 2026-10-25: 6 live test files (10:59–11:12 UTC, 2 status, 3 vitals,
+      1 fall) shared that date with the backfill; the owner deleted them.
+- [x] New files uploaded.
+- [ ] `silvercare-clean` for all 248 dates: running since about 20:05 SGT, about 1 min
+      per date (2026-03-10 took 62 s), expected done around 00:30 SGT 2026-11-10.
+- [ ] `silvercare-summaries` for 245 dates (the lead-in skipped): after clean, about
+      1.5–3 h, expected done around 03:00 SGT 2026-11-10.
+- [ ] Checked: alert episodes rise from about 1 to about 10 per month for the unusual
+      residents; ordinary residents have none.
+
 ## Data
 
 - Reads: `scripts/seed-data.json`, `infra/devices/devices.json` (as today).
