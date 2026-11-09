@@ -213,18 +213,22 @@ summaries.
 **Replacing an earlier load.** File names change between versions, so uploading over
 an earlier load would keep both copies and count every day twice. Generate with the
 same `--from`/`--to` into an empty folder, skip steps 1 and 2 below (already done for
-these dates), and before step 3 delete only the earlier generated objects in the
-generated partitions:
+these dates), and before step 3 delete only the earlier generated objects on the
+generated UTC dates, in **every** message folder: falls and cancels can land on other
+days than last time, so a folder the new run doesn't have can still hold old lines.
 
 ```sh
 B=silvercare-history-<acct>
-ls -d backfill-data/telemetry/*/date=* | sed 's|^backfill-data/||' > /tmp/gen-prefixes
-while read -r p; do
-  aws s3 ls "s3://$B/$p/" | awk '{print $4}' | while read -r f; do
-    src=$(aws s3api head-object --bucket "$B" --key "$p/$f" --query Metadata.source --output text)
-    [ "$src" = simulator-backfill ] && aws s3 rm "s3://$B/$p/$f"
-  done
-done < /tmp/gen-prefixes
+ls -d backfill-data/telemetry/*/date=* | grep -o 'date=[0-9-]*' | sort -u > /tmp/gen-dates
+for m in $(aws s3 ls "s3://$B/telemetry/" | awk '{print $2}'); do  # message=<type>/
+  while read -r d; do
+    aws s3 ls "s3://$B/telemetry/$m$d/" | awk '{print $4}' | while read -r f; do
+      k="telemetry/$m$d/$f"
+      src=$(aws s3api head-object --bucket "$B" --key "$k" --query Metadata.source --output text)
+      [ "$src" = simulator-backfill ] && aws s3 rm "s3://$B/$k"
+    done
+  done < /tmp/gen-dates
+done
 ```
 
 Then steps 3 and 4 for every generated date: re-running clean and summaries replaces
