@@ -5,6 +5,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-09
 
+- **Problem:** the WAF spec was marked `ready` with a CloudFront web ACL in `us-east-1`
+  before checking the free plan's Region rules, which may block WAF on CloudFront; the
+  user paused WAF. **Changed:** `.claude/skills/tf-change/SKILL.md` (free-plan rule):
+  also check the project Regions page for anything outside `ap-southeast-1`, before `ready`.
+
 - **Problem:** the backfill reload cleanup only looked in the new run's partitions,
   so old fall files on other days would have been kept and counted twice (caught
   before it was run). **Changed:** `.claude/skills/feature-spec/SKILL.md` (checklist):
