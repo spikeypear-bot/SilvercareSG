@@ -129,6 +129,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import cache
@@ -136,6 +137,7 @@ from typing import Any
 
 import boto3
 import email_text
+import realtime
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.metrics import EphemeralMetrics, MetricUnit
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
@@ -928,6 +930,8 @@ def handle_check(check: EscalationCheck) -> bool:
     if delay is not None:
         extra["escalation_delay_ms"] = delay
     logger.info(LOG_MESSAGE, extra=extra)
+    if outcome == ESCALATED:
+        ping_changes([(item.get("alert_type"), resident_of(item))])
     return True
 
 
@@ -1447,6 +1451,7 @@ def handle_status_update(update: StatusUpdate) -> bool:
         none = NO_OPEN_ALERTS if update.device_id is not None else NOT_OPEN
         logger.info(LOG_MESSAGE, extra={**base, "outcome": none})
         return True
+    changed: list[tuple[Any, Any]] = []
     for item in targets:
         ids = _status_item_log_ids(update, item)
         try:
@@ -1455,9 +1460,47 @@ def handle_status_update(update: StatusUpdate) -> bool:
             logger.error(
                 LOG_MESSAGE, extra={**ids, "outcome": ERROR, "error": _error_code(exc)}
             )
+            # The retry skips the alerts already changed: ping for those now.
+            ping_changes(changed)
             return False
         logger.info(LOG_MESSAGE, extra={**ids, "outcome": outcome})
+        if outcome == UPDATED:
+            changed.append((item.get("alert_type"), resident_of(item)))
+    ping_changes(changed)
     return True
+
+
+REALTIME_RESIDENT_RE = re.compile(r"^res-[0-9]{4}\Z")
+PING_OUTCOMES = frozenset({STORED, NOTIFIED})
+
+
+def resident_of(item: dict[str, Any]) -> Any:
+    """The alert's resident from its key (pk = RESIDENT#<id>): target reads don't
+    project resident_id, and the key is what the API reads by."""
+    pk = item.get("pk")
+    return pk.removeprefix("RESIDENT#") if isinstance(pk, str) else None
+
+
+def ping_changes(items: list[tuple[Any, Any]]) -> None:
+    """Live-alert pings (live-alerts criteria 13-17): one per (namespace, resident),
+    after the writes. (alert_type, resident_id) pairs; unassigned alerts are skipped.
+    A failed publish is logged by code only and never fails the record."""
+    changes = {
+        (realtime.namespace_for(alert_type, DEVICE_PROBLEM_TYPES), resident_id)
+        for alert_type, resident_id in items
+        if isinstance(resident_id, str) and REALTIME_RESIDENT_RE.match(resident_id)
+    }
+    for namespace, resident_id in sorted(changes):
+        error = realtime.publish(namespace, resident_id)
+        if error is not None:
+            logger.warning(
+                "realtime publish failed",
+                extra={
+                    "namespace": namespace,
+                    "resident_id": resident_id,
+                    "error": error,
+                },
+            )
 
 
 def handle_record(record: Any) -> bool:
@@ -1502,12 +1545,15 @@ def handle_record(record: Any) -> bool:
     if latency is not None:
         extra["dispatch_latency_ms"] = latency
     logger.info(LOG_MESSAGE, extra=extra)
+    if outcome in PING_OUTCOMES:
+        ping_changes([(result.alert_type, result.resident_id)])
     return True
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     records = (event.get("Records") or []) if isinstance(event, dict) else []
     failures: list[dict[str, str]] = []
+    realtime.start_batch()
     for record in records:
         if not handle_record(record):
             message_id = record.get("messageId") if isinstance(record, dict) else None

@@ -57,6 +57,11 @@ function from the same zip, each with its own role, log group, and failure handl
   - Invalid input: log the reason (without the data) and return without raising, so
     retries don't loop on a message that can never succeed.
   - Transient failures (throttling, timeouts): raise, so the platform retries.
+  - A best-effort call that mustn't fail the work (a notification ping, a cache warm):
+    catch it, and bound its **total** time per invocation, not just per call (a per-call
+    timeout × batch size can exceed the function timeout and turn an outage of that
+    service into retries and DLQ messages). Stop calling it for the rest of the batch
+    after the first failure.
   - Async-invoked functions get an on-failure destination or DLQ in Terraform, unless
     the spec decides against it (the ingest functions have none). Anything that raises
     alerts should have one: a dropped message there is a lost alert.

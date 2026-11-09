@@ -127,3 +127,13 @@ output "api_url" {
     error_message = "local.frontend_cloudfront_domain in infra/api.tf is not the frontend distribution's domain, so the API's CORS would block the frontend. Set it to `terraform output -raw frontend_distribution_domain`."
   }
 }
+
+output "events_http_dns" {
+  description = "Host name of the silvercare-events AppSync Event API's HTTP endpoint (frontend VITE_EVENTS_URL = https://<this>/event). Not a secret: it ships in the bundle."
+  value       = local.events_http_dns
+}
+
+output "events_realtime_dns" {
+  description = "Host name of the silvercare-events AppSync Event API's WebSocket endpoint (CSP connect-src)."
+  value       = local.events_realtime_dns
+}

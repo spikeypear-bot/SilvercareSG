@@ -48,6 +48,10 @@ structure, not code that exists yet. Update this file as decisions land.
   rates) is in `docs/metrics.md` (approved 2026-10-25); how the rules route messages is
   in `docs/decisions/0001-iot-rule-routing.md`.
 - **Compute:** AWS Lambda, Python (`python3.13` runtime).
+- **Live alerts (agreed 2026-11-09):** one AppSync Event API (`infra/realtime.tf`,
+  `docs/features/live-alerts.md`): `alert-processor` publishes a bare "resident changed"
+  ping with IAM; pages subscribe with Cognito and refetch through the HTTP API. Billed
+  per operation, no fixed fee (~US$0-0.15/month).
 - **API:** API Gateway HTTP API → Lambda, protected by a Cognito JWT authorizer.
 - **Database:** DynamoDB for live state only: the device registry, the latest 5
   messages per device and message type, and alerts. One agreed exception (2026-11-07):

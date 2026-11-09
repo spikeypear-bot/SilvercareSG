@@ -17,6 +17,7 @@ import {
   type SetStateAction,
 } from 'react'
 import { useRefreshHeld } from '../../lib/refreshHold'
+import { STAFF_CHANNELS, residentChannels, useLiveRefresh } from '../../lib/live'
 import type { DeviceProblem } from '../../types/ops'
 import type {
   ApiDashboardAlert,
@@ -823,6 +824,15 @@ export function useDashboardData(
   // Actions go to the API only when the alerts came from it (the default loader); a
   // test's own loader serves demo alerts whose IDs the API would refuse.
   const live = loader === loadDashboardData
+  // Live alerts (live-alerts criterion 19): staff hear every resident, a caregiver their
+  // linked residents (the IDs this view already loaded). Only with API data.
+  const residentIds = server?.residents.map((r) => r.resident_id).join(',') ?? ''
+  const liveChannels = useMemo(() => {
+    if (!live) return []
+    if (view === 'staff') return STAFF_CHANNELS
+    return residentIds === '' ? [] : residentIds.split(',').flatMap(residentChannels)
+  }, [live, view, residentIds])
+  useLiveRefresh(liveChannels, () => refresh(true))
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- not part of this state
   const { setActionError, ...actions } = useAlertActions(data?.alerts ?? null, setOverride, refresh, live)
   return { data, loading, error, retry, refreshFailed, polling: pollMs > 0, isOwnAction, ...actions }
@@ -851,6 +861,8 @@ export function useResidentDetail(
   const data = useWithOverrides(server, overrides)
   // As useDashboardData: the API only for data from the API loader.
   const live = loader === loadResidentDetail
+  const liveChannels = useMemo(() => (live ? residentChannels(residentId) : []), [live, residentId])
+  useLiveRefresh(liveChannels, () => refresh(true))
   const { setActionError, ...actions } = useAlertActions(data?.alerts ?? null, setOverride, refresh, live)
   const saving = useRef(false)
 

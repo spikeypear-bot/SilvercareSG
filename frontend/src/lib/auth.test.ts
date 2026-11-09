@@ -91,7 +91,8 @@ describe('configuration (criterion 8)', () => {
     expect(envExample).toMatch(/^VITE_USER_POOL_CLIENT_ID=x+$/m)
   })
 
-  it('src/lib/auth.ts is the only app module that imports aws-amplify', () => {
+  // live-alerts (criterion 18) adds src/lib/live.ts, for the Events client only.
+  it('only src/lib/auth.ts and src/lib/live.ts import aws-amplify', () => {
     const sources = import.meta.glob<string>('/src/**/*.{ts,tsx}', {
       query: '?raw',
       import: 'default',
@@ -100,16 +101,19 @@ describe('configuration (criterion 8)', () => {
     const importsAmplify = /(?:from\s+|import\s*\(\s*|import\s+)['"](aws-amplify[^'"]*)['"]/g
     const offenders: string[] = []
     let authImports: string[] = []
+    let liveImports: string[] = []
     for (const [path, source] of Object.entries(sources)) {
       if (/\.test\.tsx?$/.test(path) || path.startsWith('/src/test/')) continue
       const found = [...source.matchAll(importsAmplify)].map((m) => m[1])
       if (path === '/src/lib/auth.ts') authImports = found
+      else if (path === '/src/lib/live.ts') liveImports = found
       else if (found.length > 0) offenders.push(path)
     }
     expect(offenders).toEqual([])
     expect(authImports.length).toBeGreaterThan(0)
     // Only the core configure entry point and the auth category.
     expect(new Set(authImports)).toEqual(new Set(['aws-amplify', 'aws-amplify/auth']))
+    expect(liveImports).toEqual(['aws-amplify/data'])
   })
 })
 

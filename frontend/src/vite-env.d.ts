@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_USER_POOL_CLIENT_ID?: string
   /** Base URL of the HTTP API (`terraform output -raw api_url`). Not a secret. */
   readonly VITE_API_URL?: string
+  /** Live-alerts Event API, `https://<events_http_dns>/event`. Not a secret. Unset: no live updates. */
+  readonly VITE_EVENTS_URL?: string
 }
 
 interface ImportMeta {

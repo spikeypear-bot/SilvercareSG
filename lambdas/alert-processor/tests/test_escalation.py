@@ -1101,3 +1101,17 @@ def test_unassigned_hand_edited_device_id_prints_device_invalid(aws, device_id):
     (call,) = aws.nurse_publishes()
     assert "Resident: unassigned\nDevice: invalid\n" in call["Message"]
     assert "Test Resident" not in call["Message"]
+
+
+def test_escalation_pings_the_resident_once(aws, monkeypatch):
+    """live-alerts criterion 13: ESCALATED sends one health ping."""
+    import realtime
+
+    pings: list = []
+    monkeypatch.setattr(realtime, "publish", lambda ns, rid: pings.append((ns, rid)))
+    run(WARNING)
+    pings.clear()
+
+    run(check_body())
+
+    assert pings == [("health", RESIDENT)]

@@ -751,6 +751,14 @@ data "aws_iam_policy_document" "alert_processor" {
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.ops_devices.arn]
   }
+
+  # Live-alert pings (live-alerts criterion 4): publish to the two namespaces only.
+  statement {
+    sid       = "RealtimePublish"
+    effect    = "Allow"
+    actions   = ["appsync:EventPublish"]
+    resources = [for ns in aws_appsync_channel_namespace.alerts : ns.channel_namespace_arn]
+  }
 }
 
 module "alert_processor" {
@@ -773,6 +781,7 @@ module "alert_processor" {
     ALERTS_QUEUE_URL             = aws_sqs_queue.alerts.url
     NURSES_TOPIC_ARN             = aws_sns_topic.nurses.arn
     OPS_TOPIC_ARN                = aws_sns_topic.ops_devices.arn
+    EVENTS_HTTP_DNS              = local.events_http_dns
     PORTAL_URL                   = "https://${aws_cloudfront_distribution.frontend.domain_name}"
     POWERTOOLS_SERVICE_NAME      = local.alert_processor_function_name
     POWERTOOLS_METRICS_NAMESPACE = "SilverCare"
