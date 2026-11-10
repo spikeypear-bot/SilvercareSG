@@ -135,8 +135,7 @@ None.
 ## Out of scope
 
 - Pre-filling caches on a ping (it would use DynamoDB capacity every 5 minutes).
-- Keep-warm for `api-vitals`, `api-nightly`, `api-nightly-overview`, `api-thresholds`,
-  `api-alert-actions` (user chose the 4 busy ones).
+- Keep-warm for `api-nightly-overview` and `api-alert-actions`.
 - Pre-computing vitals results, S3 or DynamoDB caches, provisioned concurrency,
   ElastiCache, DAX, API Gateway caching.
 - Clearing the cache by hand. While the owner re-runs clean by hand (the backfill
@@ -148,3 +147,17 @@ None.
 ## Open questions
 
 None.
+
+## Change 2026-11-10
+
+User decision after use: the resident page still waited on cold starts of
+`silvercare-api-thresholds` (threshold history, loaded alongside the resident) and, for
+doctors, `silvercare-api-nightly`; and the vitals cache was lost whenever `api-vitals`
+went cold. A second rule `silvercare-api-keep-warm-2` (EventBridge allows at most 5
+targets per rule) pings those three with the same input, and each handler answers it
+the same way (criteria 3-4 apply to them too). Still ~US$0.
+
+The frontend also loads each role's main view (nurse, doctor, ops, caregiver) and the
+resident, devices, and account pages only when first opened, showing "Loading…"
+meanwhile, so sign-in and a caregiver's view don't download the nurse map or the chart
+library.

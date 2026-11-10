@@ -80,13 +80,13 @@ async function renderLoaded() {
 
 it('an ops user gets the ops dashboard on /', async () => {
   renderWithAuth(<MainPage />, { user: TEST_USERS.ops })
-  expect(screen.getByRole('heading', { level: 1, name: 'Ops dashboard' })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { level: 1, name: 'Ops dashboard' })).toBeInTheDocument()
   await screen.findByRole('heading', { level: 2, name: /^All device problems/ })
 })
 
-it('a nurse who is also in ops gets the nurse dashboard, not the ops one', () => {
+it('a nurse who is also in ops gets the nurse dashboard, not the ops one', async () => {
   renderWithAuth(<MainPage />, { user: { ...TEST_USERS.nurse, groups: ['ops', 'nurse'] } })
-  expect(screen.getByRole('heading', { level: 1, name: 'Nurse dashboard' })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { level: 1, name: 'Nurse dashboard' })).toBeInTheDocument()
   expect(api.getDeviceProblems).not.toHaveBeenCalled()
 })
 
