@@ -134,6 +134,9 @@ def test_real_overview_reads_pk_only_pages_and_projects_the_counts(local_overvie
         "skin_temp_c_below": 0,
         "out_of_limit": 15,
         "thresholds": EXPECTED_THRESHOLDS,
+        # No anomaly map on the item (docs/features/nightly-anomaly.md, criterion 17).
+        "unusual": False,
+        "anomaly_reasons": [],
     }
     assert payload["clear_count"] == 1
     assert payload["no_summary_count"] == 3
