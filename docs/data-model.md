@@ -1492,6 +1492,9 @@ curated layer. No DynamoDB access, so no RCU or WCU use.
   - decide what the PDPA requires for the doctors' CSV download of vitals trends
     (docs/features/vitals-trends.md): whether exports must be logged or limited to
     managed devices; today the file goes to the doctor's device with a warning only
+  - CloudTrail (docs/features/cloudtrail.md): add read data events on the history and
+    clean buckets (who reads health data), and alarms on the trail (logging stopped,
+    root sign-in), once developers no longer share one IAM user
 
 ## Capacity
 
@@ -1588,6 +1591,7 @@ critical-alert and `silvercare-iot-rules`.
 | Suppressed repeat alerts | not kept (log line with IDs and outcome only, 30 days) | — |
 | Home location (`HOME#<home_id>`: address, `lat`, `lng`) | while any resident of that home is in the programme; deleted 90 days after the **last** resident of that home is offboarded (user, 2026-11-08) | manual `DeleteItem` by a developer (offboarding step 5); recoverable 35 days through point-in-time recovery |
 | User accounts (Cognito) | disabled at the user's offboarding, deleted 90 days later | admin steps in the Cognito console (see `docs/features/sign-in.md`) |
+| CloudTrail audit logs (S3 `silvercare-cloudtrail-<account_id>`: management events, `silvercare-registry` write events, Terraform state object events; they hold app users' Cognito `sub` and sign-in IP addresses; docs/features/cloudtrail.md) | 365 days after a file is written (owner's decision 2026-11-10); one person's entries can't be removed on request (log file validation), they expire with the file | S3 lifecycle expiry |
 
 Point-in-time recovery keeps deleted and TTL-expired items restorable for up to 35
 days, so "deleted" data still exists in backups for that long.

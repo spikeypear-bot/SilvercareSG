@@ -5,6 +5,21 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-10
 
+- **Problem:** the CloudTrail branch was made from a local `main` 2 commits behind
+  `origin/main` (keep-warm-more), and the recap compared against the stale ref, so the
+  outdated keep-warm diagram label went unnoticed until the user asked. **Changed:**
+  `.claude/skills/recap/SKILL.md` (Gather first): `git fetch origin` before diffing, and
+  report and check any commits the branch is behind.
+- **Problem:** splitting the results table out of the main DynamoDB icon dropped the
+  API → results read and summaries → S3 → results arrows; found only when the user
+  asked for a re-check. **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md`
+  (step 1): check arrows against every function's IAM statements and triggers, again
+  after moving or splitting icons.
+- **Problem:** architecture diagram v4 had edges sharing start points or running
+  side by side, lines through icon labels and a group title, and a label on a crossing;
+  the skill also told Claude to use a subagent, which `CLAUDE.md` forbids.
+  **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md` (steps, Two-Step
+  Edit Approach): check yourself; concrete overlap checks on cropped renders.
 - **Problem:** `make check` in a git worktree exec'd into the running dev container,
   which mounts the main checkout, so it tested the wrong folder (caught mid-run, rerun).
   **Changed:** `.claude/skills/local-dev/SKILL.md` (Make targets, `make up`): check the
@@ -75,6 +90,15 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **Problem:** the architecture diagram showed an `ops` Cognito group (planned in
+  `CLAUDE.md`, not built) and a guessed `raw/` S3 prefix (the code writes `telemetry/`);
+  a verification agent caught both.
+  **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md`: take as-built facts
+  from `infra/*.tf` and Lambda source only, and verify each label with a fresh agent.
+- **Problem:** asked for an architecture diagram, Claude only wrote a local `.drawio`
+  file; the user expected it drawn live through the draw.io connector.
+  **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md`: draw live with the
+  `mcp__drawio__*` tools by default (editor at http://localhost:3000, not the desktop app).
 - **User's request:** remove the agent workflows and agents. **Changed:** deleted
   `.claude/workflows/` (`build-feature`, `pre-pr-check`) and `.claude/agents/` (2
   builders, 2 testers, 2 reviewers); `CLAUDE.md` working rules and Claude setup, and the
