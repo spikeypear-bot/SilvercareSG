@@ -1,22 +1,27 @@
 import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { AccountPage } from './features/account/AccountPage'
+import { PageLoading } from './components/PageLoading'
 import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage'
 import { LoginPage } from './features/auth/LoginPage'
 import { RequireAuth, SignedOutOnly } from './features/auth/routeGuards'
 import { MainPage } from './features/dashboard/MainPage'
-import { DevicesPage } from './features/devices/DevicesPage'
-import { ResidentDetailPage } from './features/residents/ResidentDetailPage'
 
-// Loaded on first visit: it carries the chart library, which only doctors use.
+// Loaded on first visit, so sign-in and each role's main view don't wait for pages the
+// user may never open. VitalsTrendsPage carries the chart library (doctors only).
 const VitalsTrendsPage = lazy(() =>
   import('./features/residents/VitalsTrendsPage').then((m) => ({ default: m.VitalsTrendsPage })),
 )
+const DevicesPage = lazy(() => import('./features/devices/DevicesPage').then((m) => ({ default: m.DevicesPage })))
+const ResidentDetailPage = lazy(() =>
+  import('./features/residents/ResidentDetailPage').then((m) => ({ default: m.ResidentDetailPage })),
+)
+const AccountPage = lazy(() => import('./features/account/AccountPage').then((m) => ({ default: m.AccountPage })))
 
 /** Routes. Guards only decide what to show; the API enforces access. */
 export function AppRoutes() {
   return (
-    <Routes>
+    <Suspense fallback={<PageLoading />}>
+      <Routes>
       <Route
         path="/login"
         element={
@@ -61,9 +66,7 @@ export function AppRoutes() {
         path="/residents/:id/vitals"
         element={
           <RequireAuth>
-            <Suspense fallback={<p className="p-6 text-base text-slate-600">Loading…</p>}>
-              <VitalsTrendsPage />
-            </Suspense>
+            <VitalsTrendsPage />
           </RequireAuth>
         }
       />
@@ -83,6 +86,7 @@ export function AppRoutes() {
           </RequireAuth>
         }
       />
-    </Routes>
+      </Routes>
+    </Suspense>
   )
 }

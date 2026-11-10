@@ -5,6 +5,10 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-10
 
+- **Problem:** `make check` in a git worktree exec'd into the running dev container,
+  which mounts the main checkout, so it tested the wrong folder (caught mid-run, rerun).
+  **Changed:** `.claude/skills/local-dev/SKILL.md` (Make targets, `make up`): check the
+  container's `/work` mount in a worktree and override `DEV` with a fresh `run`.
 - **Problem:** live-alerts pings had a per-call timeout only; with 10 records per batch
   an AppSync outage could exceed alert-processor's 30 s timeout (caught on re-reading
   before commit). **Changed:** `.claude/skills/lambda-python/SKILL.md` (Errors): bound a

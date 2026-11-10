@@ -118,12 +118,14 @@ describe('Staff area tabs between Dashboard and Devices', () => {
   it('a resident link on the Devices page opens the resident page, which has no Staff area nav', async () => {
     const user = userEvent.setup()
     authMock.getCurrentUser.mockResolvedValue(TEST_USERS.nurse)
+    // Lazy-loaded page: load its code first (see ResidentCard.test.tsx).
+    await import('../residents/ResidentDetailPage')
     renderApp('/devices')
     const table = await screen.findByRole('table')
     const row = within(table).getAllByRole('row').find((r) => r.textContent?.includes('Test Resident C'))
     await user.click(within(row as HTMLElement).getByRole('link', { name: 'Test Resident C' }))
-    expect(location()).toBe('/residents/res-0003')
     expect(await screen.findByRole('heading', { level: 1, name: 'Resident details' })).toBeInTheDocument()
+    expect(location()).toBe('/residents/res-0003')
     expect(screen.queryByRole('navigation', { name: 'Staff area' })).not.toBeInTheDocument()
   })
 })

@@ -40,7 +40,7 @@ describe('view by group (Users and access, criterion 10)', () => {
     ['doctor', 'Doctor dashboard', 'Doctor', 'Nurse dashboard'],
   ] as const)('%s sees "%s" with role badge "%s"', async (key, heading, role, other) => {
     renderWithAuth(<MainPage />, { user: TEST_USERS[key] })
-    expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeInTheDocument()
     expect(within(screen.getByRole('button', { name: /user menu/i })).getByText(role)).toBeInTheDocument()
     expect(screen.queryByRole('heading', { level: 1, name: other })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'My residents' })).not.toBeInTheDocument()
@@ -63,7 +63,7 @@ describe('view by group (Users and access, criterion 10)', () => {
 
   it('a caregiver sees the family view with role badge "Caregiver"', async () => {
     renderWithAuth(<MainPage />, { user: TEST_USERS.caregiver })
-    expect(screen.getByRole('heading', { level: 1, name: 'My residents' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'My residents' })).toBeInTheDocument()
     expect(within(screen.getByRole('button', { name: /user menu/i })).getByText('Caregiver')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /^(Nurse|Doctor) dashboard$/ })).not.toBeInTheDocument()
     expect(await screen.findAllByRole('article')).toHaveLength(2)

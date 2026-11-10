@@ -85,6 +85,9 @@ describe('ResidentCard link to the resident page', () => {
   it('doctor: Enter on the focused card link opens the resident page', async () => {
     const user = userEvent.setup()
     authMock.getCurrentUser.mockResolvedValue(TEST_USERS.doctor)
+    // The resident page is lazy-loaded; load its code first so a busy test run can't
+    // outlast the wait (the old page stays on screen until it's loaded).
+    await import('../residents/ResidentDetailPage')
     renderApp('/')
     const link = await screen.findByRole('link', { name: 'Test Resident C' })
     link.focus()

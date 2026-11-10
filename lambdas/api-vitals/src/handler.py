@@ -526,6 +526,10 @@ def now_utc() -> datetime:
 
 
 def lambda_handler(event: Any, context: Any) -> dict[str, Any]:
+    # Keep-warm ping (docs/features/api-caching.md): API Gateway events never have a
+    # top-level `source`, so only the EventBridge rule can send this. No checks, no logs.
+    if event.get("source") == "silvercare.keep-warm":
+        return {"warm": True}
     deadline = time.monotonic() + QUERY_DEADLINE_S
     try:
         return handle(event, now_utc(), deadline)
