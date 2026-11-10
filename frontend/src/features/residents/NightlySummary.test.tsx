@@ -474,3 +474,35 @@ describe("the night's figures", () => {
     expect(within(section()).getByText(text)).toBeInTheDocument()
   })
 })
+
+describe('anomaly check (docs/features/nightly-anomaly.md, criteria 19, 21)', () => {
+  it('an unusual night shows a warning as text, with the reasons', async () => {
+    const { container } = await renderLoaded(
+      testNightly({
+        nights: [
+          testNight({
+            anomaly: {
+              status: 'scored',
+              score: 2.84,
+              cutoff: 2.31,
+              unusual: true,
+              reasons: [{ feature: 'hr_bpm_avg', value: 78, usual: 58.2 }],
+              usable_nights: 30,
+              model_version: 'anomaly-train-20261116-a1b2c3d4',
+            },
+          }),
+        ],
+      }),
+    )
+    const s = section()
+    expect(within(s).getByText('Anomaly check')).toBeInTheDocument()
+    expect(within(s).getByText('Unusual night for this resident (score 2.84, cut-off 2.31)')).toBeInTheDocument()
+    expect(within(s).getByText('HR avg 78 (usual 58)')).toBeInTheDocument()
+    expect(await axeViolations(container)).toEqual([])
+  })
+
+  it('a night not scored yet says so', async () => {
+    await renderLoaded()
+    expect(within(section()).getByText('Not scored for this night')).toBeInTheDocument()
+  })
+})

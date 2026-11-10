@@ -59,6 +59,15 @@ data "aws_iam_policy_document" "results" {
     actions   = ["dynamodb:PutItem"]
     resources = [module.results_table.arn]
   }
+
+  # Lambda uses this role to invoke the on-success destination, silvercare-anomaly-score
+  # (nightly-anomaly.md criterion 5).
+  statement {
+    sid       = "InvokeAnomalyScore"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [module.anomaly_score.function_arn]
+  }
 }
 
 module "results" {
@@ -88,11 +97,21 @@ module "results" {
 
 # 2 retries and an hour's event age, as clean and summaries (criterion 9). No invoke
 # permission is needed for the on-success destination: Lambda uses summaries' execution
-# role, which may invoke this function (summaries.tf).
+# role, which may invoke this function (summaries.tf). Results' own on-success
+# destination is the anomaly score (nightly-anomaly.md criterion 5).
 resource "aws_lambda_function_event_invoke_config" "results" {
   function_name                = module.results.function_name
   maximum_retry_attempts       = 2
   maximum_event_age_in_seconds = 3600
+
+  destination_config {
+    on_success {
+      destination = module.anomaly_score.function_arn
+    }
+  }
+
+  # AWS checks the role may invoke the destination when the config is saved.
+  depends_on = [module.results]
 }
 
 # ---------------------------------------------------------------------------------------

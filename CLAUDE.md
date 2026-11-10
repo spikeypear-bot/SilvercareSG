@@ -29,6 +29,9 @@ structure, not code that exists yet. Update this file as decisions land.
   no always-on containers, and no services with a fixed hourly cost unless explicitly agreed.
 - **Environments:** one environment only (AWS account `753674274065`). There is no
   staging, so every merge to `main` changes the live system.
+- **SageMaker (agreed 2026-11-09):** the nightly anomaly score
+  (`docs/features/nightly-anomaly.md`) uses SageMaker training and batch transform jobs
+  only, billed per second (~US$0.50/month). No endpoints or notebooks, which bill hourly.
 - **The one EC2 exception (agreed 2026-11-09, until 2026-11-30):** one `t4g.micro`
   instance runs the simulator 24/7 (`infra/simulator.tf`, `docs/features/simulator-ec2.md`,
   ~US$12/month). Nothing else uses EC2.

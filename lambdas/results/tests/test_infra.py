@@ -65,11 +65,26 @@ def summaries_tf() -> str:
 # ---- criterion 14: IAM ----
 
 
-def test_policy_has_exactly_the_three_statements(document):
+def test_policy_has_exactly_the_four_statements(document):
+    # The fourth invokes the anomaly score (docs/features/nightly-anomaly.md, criterion 5).
     granted = sorted(a for b in statements(document) for a in actions(b))
-    assert granted == ["dynamodb:PutItem", "s3:GetObject", "s3:ListBucket"]
+    assert granted == [
+        "dynamodb:PutItem",
+        "lambda:InvokeFunction",
+        "s3:GetObject",
+        "s3:ListBucket",
+    ]
     assert "Deny" not in document
-    assert len(statements(document)) == 3
+    assert len(statements(document)) == 4
+
+
+def test_results_may_invoke_only_the_anomaly_score(document, results_tf):
+    text = statement(document, "InvokeAnomalyScore")
+    assert resources(text) == "module.anomaly_score.function_arn"
+    config = block(
+        results_tf, 'resource "aws_lambda_function_event_invoke_config" "results" {'
+    )
+    assert re.search(r"destination\s*=\s*module.anomaly_score.function_arn", config)
 
 
 def test_listing_is_limited_to_the_summaries_prefix(document):

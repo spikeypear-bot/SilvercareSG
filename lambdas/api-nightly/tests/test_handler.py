@@ -255,7 +255,7 @@ def test_query_shape(aws):
         ":night": {"S": "NIGHT#"},
     }
     projected = {names[a.strip()] for a in query["ProjectionExpression"].split(",")}
-    assert projected == {"pk", "sk", "summary"}
+    assert projected == {"pk", "sk", "summary", "anomaly"}
 
 
 def test_query_follows_last_evaluated_key(aws):

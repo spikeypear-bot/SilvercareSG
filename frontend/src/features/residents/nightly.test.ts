@@ -1,7 +1,10 @@
 /** Formatting helpers for the "Nightly summary" section (docs/features/nightly-results.md, criterion 28). */
 import { testNight } from '../../test/nightlyFixtures'
+import type { NightAnomaly } from '../../types/nightly'
 import {
+  anomalyLine,
   formatActivityAvg,
+  formatAnomalyReason,
   formatBedTime,
   formatCount,
   formatLimit,
@@ -119,5 +122,65 @@ describe('vitalFigures', () => {
   it('null statistics give null stats ("No readings")', () => {
     const [hr] = vitalFigures(testNight({ hr_bpm_min: null, hr_bpm_avg: null, hr_bpm_max: null }))
     expect(hr.stats).toBeNull()
+  })
+})
+
+describe('anomaly check (docs/features/nightly-anomaly.md)', () => {
+  const scored = (overrides: Partial<NightAnomaly> = {}): NightAnomaly => ({
+    status: 'scored',
+    score: 2.84,
+    cutoff: 2.31,
+    unusual: true,
+    reasons: [
+      { feature: 'hr_bpm_avg', value: 78, usual: 58.2 },
+      { feature: 'bed_minutes', value: 240, usual: 426 },
+    ],
+    usable_nights: 30,
+    model_version: 'anomaly-train-20261116-a1b2c3d4',
+    ...overrides,
+  })
+  const status = (s: NightAnomaly['status'], usable = 12): NightAnomaly => ({
+    status: s,
+    score: null,
+    cutoff: null,
+    unusual: null,
+    reasons: [],
+    usable_nights: usable,
+    model_version: null,
+  })
+
+  it('an unusual night shows the score, cut-off, and the two reasons', () => {
+    expect(anomalyLine(scored())).toEqual({
+      unusual: true,
+      text: 'Unusual night for this resident (score 2.84, cut-off 2.31)',
+      detail: 'HR avg 78 (usual 58) · bed 4 h 0 m (usual 7 h 6 m)',
+    })
+  })
+
+  it('a usual night shows the score without reasons', () => {
+    expect(anomalyLine(scored({ unusual: false, score: 1.2 }))).toEqual({
+      unusual: false,
+      text: 'Usual night (score 1.20, cut-off 2.31)',
+      detail: null,
+    })
+  })
+
+  it.each([
+    [status('low_wear'), 'Not scored: low wear time'],
+    [status('not_enough_history', 12), 'Anomaly check needs 20 usable nights of history (12 so far)'],
+    [status('no_model'), 'No anomaly model yet'],
+    [null, 'Not scored for this night'],
+  ])('%o reads %s', (anomaly, text) => {
+    expect(anomalyLine(anomaly)).toEqual({ unusual: false, text, detail: null })
+  })
+
+  it('formats each measure in its own unit', () => {
+    expect(formatAnomalyReason({ feature: 'spo2_pct_min', value: 89, usual: 94.4 })).toBe('SpO2 min 89% (usual 94%)')
+    expect(formatAnomalyReason({ feature: 'skin_temp_c_avg', value: 35.2, usual: 33.8 })).toBe(
+      'Skin temp avg 35.2 °C (usual 33.8 °C)',
+    )
+    expect(formatAnomalyReason({ feature: 'motion_events', value: 60, usual: 21 }, 'comma')).toBe(
+      'Motion events 60, usual 21',
+    )
   })
 })

@@ -48,6 +48,8 @@ ENTRY_KEYS = {
     *FLAG_FIELDS,
     "out_of_limit",
     "thresholds",
+    "unusual",
+    "anomaly_reasons",
 }
 
 
@@ -123,6 +125,8 @@ def test_doctor_gets_the_spec_example(aws):
                 "skin_temp_c_below": 0,
                 "out_of_limit": 12,
                 "thresholds": EXPECTED_THRESHOLDS,
+                "unusual": False,
+                "anomaly_reasons": [],
             }
         ],
         "clear_count": 1,
@@ -587,7 +591,12 @@ def test_batch_get_shape(aws):
     for part in table["ProjectionExpression"].split(","):
         paths.append(".".join(names[p] for p in part.strip().split(".")))
     assert sorted(paths) == sorted(
-        ["pk", *(f"summary.{f}" for f in FLAG_FIELDS), "summary.thresholds"]
+        [
+            "pk",
+            *(f"summary.{f}" for f in FLAG_FIELDS),
+            "summary.thresholds",
+            "anomaly",
+        ]
     )
 
 

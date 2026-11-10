@@ -95,6 +95,8 @@ EXPECTED_NIGHT: dict[str, Any] = {
     "falls": 0,
     "vitals_alert_episodes": 1,
     "cancels": 0,
+    # Not scored yet (docs/features/nightly-anomaly.md criterion 16).
+    "anomaly": None,
 }
 
 # Values the logs must never contain (criterion 20).

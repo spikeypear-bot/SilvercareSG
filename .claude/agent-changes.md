@@ -26,6 +26,11 @@ a wasted step. Newest first. Review these in the diff before committing.
   so old fall files on other days would have been kept and counted twice (caught
   before it was run). **Changed:** `.claude/skills/feature-spec/SKILL.md` (checklist):
   replacing a load deletes from every partition the earlier run could have written.
+- **Problem:** the nightly-anomaly spec's screen text "starts after 37 nights (N so
+  far)" had no response field for N (`usable_nights` counts baseline nights, not
+  history), so the wording changed during the build. **Changed:**
+  `.claude/skills/feature-spec/SKILL.md` (checklist): every number in a screen message
+  names the response field it comes from.
 - **Problem:** backfill-variation's sizes were set without measuring their effect; the
   full run gave 100–400 alert episodes per resident per month and the user had them
   reduced. **Changed:** `.claude/skills/feature-spec/SKILL.md` (checklist): sizes for

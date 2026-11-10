@@ -83,6 +83,8 @@ answers, and point out gaps. Don't fill gaps with your own product decisions.
 - [ ] Every API route has method, path, groups, a request example, a response example
       per role, and error cases.
 - [ ] Every screen lists what each role sees, plus loading, empty, and error states.
+      Each number a screen message shows ("starts after 37 nights (N so far)") names the
+      response field it comes from, and that field means exactly that number.
 - [ ] Data reads and writes map to access patterns in `docs/data-model.md` (or new ones
       are described).
 - [ ] A change to a message's validation rules names every copy of the rule: ingest's

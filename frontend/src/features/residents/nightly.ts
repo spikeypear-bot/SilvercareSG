@@ -2,7 +2,7 @@
  * Formatting for the "Nightly summary" section (docs/features/nightly-results.md,
  * criterion 28). Kept out of NightlySummary.tsx so that file exports only components.
  */
-import type { Night } from '../../types/nightly'
+import type { AnomalyReason, Night, NightAnomaly } from '../../types/nightly'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
@@ -125,4 +125,70 @@ export function vitalFigures(night: Night): VitalFigures[] {
       flags: flags(night.skin_temp_c_above, t.skin_temp_c.max, night.skin_temp_c_below, t.skin_temp_c.min),
     },
   ]
+}
+
+/** Scoring needs this many usable baseline nights (docs/features/nightly-anomaly.md). */
+export const ANOMALY_MIN_NIGHTS = 20
+
+const REASON_LABELS: Record<AnomalyReason['feature'], string> = {
+  hr_bpm_avg: 'HR avg',
+  hr_bpm_min: 'HR min',
+  hr_bpm_max: 'HR max',
+  spo2_pct_avg: 'SpO2 avg',
+  spo2_pct_min: 'SpO2 min',
+  skin_temp_c_avg: 'Skin temp avg',
+  activity_pct_avg: 'Activity avg',
+  bed_minutes: 'bed',
+  motion_events: 'Motion events',
+}
+
+function reasonValue(feature: AnomalyReason['feature'], value: number): string {
+  if (feature === 'bed_minutes') return formatBedTime(value)
+  if (feature === 'skin_temp_c_avg') return `${formatOneDecimal(value)} °C`
+  if (feature.startsWith('spo2') || feature === 'activity_pct_avg') return `${Math.round(value)}%`
+  return formatWhole(value)
+}
+
+/** "HR avg 78 (usual 58)", or with `separator` ", " as in the Last night list: "HR avg 78, usual 58". */
+export function formatAnomalyReason(reason: AnomalyReason, separator: 'brackets' | 'comma' = 'brackets'): string {
+  const label = REASON_LABELS[reason.feature]
+  const value = reasonValue(reason.feature, reason.value)
+  const usual = reasonValue(reason.feature, reason.usual)
+  return separator === 'brackets' ? `${label} ${value} (usual ${usual})` : `${label} ${value}, usual ${usual}`
+}
+
+export interface AnomalyLine {
+  /** Shown with a warning icon and text, never colour alone. */
+  unusual: boolean
+  text: string
+  /** The reasons line, only for an unusual night. */
+  detail: string | null
+}
+
+/** The "Anomaly check" row of the Nightly summary (docs/features/nightly-anomaly.md, Screens). */
+export function anomalyLine(anomaly: NightAnomaly | null): AnomalyLine {
+  if (anomaly === null) return { unusual: false, text: 'Not scored for this night', detail: null }
+  switch (anomaly.status) {
+    case 'low_wear':
+      return { unusual: false, text: 'Not scored: low wear time', detail: null }
+    case 'not_enough_history':
+      return {
+        unusual: false,
+        text: `Anomaly check needs ${ANOMALY_MIN_NIGHTS} usable nights of history (${formatCount(anomaly.usable_nights)} so far)`,
+        detail: null,
+      }
+    case 'no_model':
+      return { unusual: false, text: 'No anomaly model yet', detail: null }
+    case 'scored': {
+      const figures = `score ${(anomaly.score ?? 0).toFixed(2)}, cut-off ${(anomaly.cutoff ?? 0).toFixed(2)}`
+      if (anomaly.unusual) {
+        return {
+          unusual: true,
+          text: `Unusual night for this resident (${figures})`,
+          detail: anomaly.reasons.map((r) => formatAnomalyReason(r)).join(' · ') || null,
+        }
+      }
+      return { unusual: false, text: `Usual night (${figures})`, detail: null }
+    }
+  }
 }

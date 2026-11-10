@@ -1224,6 +1224,7 @@ copy for the portal and the one exception to "live state only".
 | `schema_version` | `1` | the summary's |
 | `loaded_at` | `2026-11-19T00:41:07.512Z` | when `results` wrote it (ISO 8601 UTC, milliseconds) |
 | `expires_at` | `1797609600` | epoch seconds: 00:00 SGT on `date` + 31 days (here 2026-12-19T00:00+08:00), so the item lives for 30 nights after its own |
+| `anomaly` | map, optional | the night's anomaly check (docs/features/nightly-anomaly.md, criterion 12), set by `anomaly-collect` with `UpdateItem` (`attribute_exists(pk)`): `status` (`scored`, `low_wear`, `not_enough_history`, `no_model`), `score`, `cutoff`, `unusual` (null unless scored), `reasons` (up to 2 `{feature, value, usual}`), `usable_nights`, `model_version`, `schema_version` 1. Absent until scored; a re-run of `results` removes it and the chained scoring writes it again |
 
 - **Keys:** `pk`, `sk` (strings); no indexes, no stream. 1 RCU / 1 WCU.
 - **Writer:** the `results` Lambda (`silvercare-results`, pattern 30), after every
@@ -1245,6 +1246,9 @@ copy for the portal and the one exception to "live state only".
   index for `pk` and `entity_type` (`Select = SPECIFIC_ATTRIBUTES`). A resident with no
   item counts towards `no_summary_count`; an item that can't be read counts the same way
   (logged as a count only).
+- **Writer (anomaly):** `silvercare-anomaly-collect` updates `anomaly` only; its role
+  may only `dynamodb:UpdateItem` this table. Both readers above return it (the overview
+  also projects `anomaly`).
 - **TTL:** `expires_at`. DynamoDB deletes expired items typically within two days, so
   the API also hides nights older than 30 days before today's Singapore date.
 - **Point-in-time recovery:** on, as every table, so a deleted or expired item stays
@@ -1576,6 +1580,7 @@ critical-alert and `silvercare-iot-rules`.
 | Clean tables (S3 `silvercare-clean-<account_id>`, `tables/`, `rejected` included) | 365 days after a file is written *(proposed)*, matching raw; re-running a date restarts its clock | S3 lifecycle expiry on `tables/` |
 | Athena results and query history | result files 7 days; query text 45 days (AWS's fixed limit) | S3 lifecycle expiry; AWS ages out the history |
 | Alert copies, alert final records (`<alert_id>.final.json`, with `ack_note` and `resolve_note`), and daily summaries (S3 `alerts/`, `summaries/`) | the resident's lifetime + 6 years (MOH Circular 85/2022) | per-resident deletion at date of death + 6 years; summaries can be found by their `resident_id` tag, alert copies can't yet, and there is no date of death or deletion tool (gaps, see [S3 history](#s3-history)); no expiry rule. A re-run of a date replaces its summaries |
+| Nightly anomaly scores (S3 `silvercare-ml-<account_id>`, `scores/`) and the models that produced them (`models/`) | the resident's lifetime + 6 years, as derived records that informed care (user, 2026-11-09) | no expiry rule; per-resident erasure by the `resident_id` tag (below). `input/` and `output/` (per-resident z-scores, job output) expire after 30 days (S3 lifecycle) |
 | Nightly results (`silvercare-results`) | 30 nights after the night's own date (`expires_at` = 00:00 SGT on `date` + 31 days); DynamoDB deletes them typically within two days of that, and the API hides older nights; restorable through point-in-time recovery for 35 days. The S3 summaries stay the record | TTL `expires_at` |
 | Failed fall and `vitals_alert` events (SQS `silvercare-critical-alert-dlq`) | up to 14 days | SQS message retention (SSE-SQS encryption, TLS-only queue policy) |
 | Latest device `vitals_alert`s | 5 per device | write rule |
@@ -1609,6 +1614,26 @@ runs in one go:
 Acknowledged alerts that are never resolved have no TTL, on purpose: deleting an
 unhandled alert automatically could hide a fall. The nurse dashboard lists them until
 someone resolves them, and the doctor dashboard counts them in its alert summary.
+
+## ML bucket
+
+`silvercare-ml-<account_id>` (docs/features/nightly-anomaly.md): SSE-S3, TLS only,
+versioning off (as the history bucket), public access blocked.
+
+| Prefix | Contents | Written by | Kept |
+|---|---|---|---|
+| `input/score/date=<D>/<run>/rows.csv` | one row of 9 z-scores per scored resident (no IDs) | `anomaly-score` | 30 days |
+| `input/score-meta/date=<D>/<run>/rows.json` | which resident each row is, plus each resident's status and explanation | `anomaly-score` | 30 days |
+| `input/train/<version>/train.csv` | 90 days of z-score rows (no IDs) | `anomaly-train` | 30 days |
+| `output/score/…`, `output/cal/…` | SageMaker batch transform output (`{"score": x}` per row) | SageMaker | 30 days |
+| `models/<version>/output/model.tar.gz`, `models/<version>/cutoff.json`, `models/current.json` | trained RCF models, their cut-off, the current model | SageMaker, `anomaly-collect` | lifetime + 6 years |
+| `scores/date=<D>/<uuid4>.json` (tag `resident_id`) | one resident-night's score record | `anomaly-collect` only (bucket policy denies others) | lifetime + 6 years |
+
+**Erasure of one resident:** delete their `scores/` objects (found by the `resident_id`
+tag; the bucket policy's `DenyScoreWritesFromOthers` must be changed first, as for
+`summaries/`) and their Results items; `input/` and `output/` expire within 30 days.
+Models stay (user, 2026-11-09): they hold tree statistics over standardised values and
+no IDs, and are needed to reproduce other residents' past flags.
 
 ## Notes for later specs
 

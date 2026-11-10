@@ -39,7 +39,7 @@ def _load():
 
 
 def _source_summary() -> dict:
-    night = {k: v for k, v in EXPECTED_NIGHT.items() if k != "date"}
+    night = {k: v for k, v in EXPECTED_NIGHT.items() if k not in ("date", "anomaly")}
     return {
         "resident_id": RESIDENT_A,
         "date": YESTERDAY,

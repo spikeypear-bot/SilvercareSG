@@ -12,6 +12,36 @@ export interface NightThresholds {
   skin_temp_c: { min: number; max: number }
 }
 
+/** A measure furthest from the resident's usual (docs/features/nightly-anomaly.md). */
+export interface AnomalyReason {
+  feature:
+    | 'hr_bpm_avg'
+    | 'hr_bpm_min'
+    | 'hr_bpm_max'
+    | 'spo2_pct_avg'
+    | 'spo2_pct_min'
+    | 'skin_temp_c_avg'
+    | 'activity_pct_avg'
+    | 'bed_minutes'
+    | 'motion_events'
+  value: number
+  /** The resident's baseline mean (nights 8–37 days before), 1 decimal. */
+  usual: number
+}
+
+/** The night's anomaly check. `score`, `cutoff`, `unusual`, `model_version` are null unless `scored`. */
+export interface NightAnomaly {
+  status: 'scored' | 'low_wear' | 'not_enough_history' | 'no_model'
+  score: number | null
+  cutoff: number | null
+  unusual: boolean | null
+  /** The two measures furthest from usual when scored; empty otherwise. */
+  reasons: AnomalyReason[]
+  /** Usable nights in the baseline window; scoring needs 20. */
+  usable_nights: number
+  model_version: string | null
+}
+
 export interface Night {
   /** Singapore date, `yyyy-mm-dd`. */
   date: string
@@ -41,6 +71,8 @@ export interface Night {
   falls: number
   vitals_alert_episodes: number
   cancels: number
+  /** null when the night hasn't been scored (or its stored check couldn't be read). */
+  anomaly: NightAnomaly | null
 }
 
 export interface NightlyResponse {
@@ -72,6 +104,10 @@ export interface NightlyOverviewFlagged {
   out_of_limit: number
   /** That night's limits, or null when the stored limits couldn't be read. */
   thresholds: NightThresholds | null
+  /** The anomaly model found the night unusual for this resident. */
+  unusual: boolean
+  /** Its two measures furthest from usual; empty unless `unusual`. */
+  anomaly_reasons: AnomalyReason[]
 }
 
 export interface NightlyOverviewResponse {
@@ -81,7 +117,7 @@ export interface NightlyOverviewResponse {
   available: boolean
   /** true only when `available` is false and it is 09:30 SGT or later. */
   not_ready: boolean
-  /** Priority order (falls, then alert episodes, then out-of-limit readings). Empty when not available. */
+  /** Priority order (falls, then alert episodes, then out-of-limit readings, then unusual nights). Empty when not available. */
   flagged: NightlyOverviewFlagged[]
   /** Residents whose night has nothing flagged. */
   clear_count: number

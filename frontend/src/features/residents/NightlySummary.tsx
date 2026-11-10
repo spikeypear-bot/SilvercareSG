@@ -8,6 +8,7 @@ import type { Night, NightlyResponse } from '../../types/nightly'
 import { DashboardError, LoadingStatus } from '../dashboard/DashboardStates'
 import { DetailSection } from './DetailSection'
 import {
+  anomalyLine,
   formatActivityAvg,
   formatBedTime,
   formatCount,
@@ -202,6 +203,28 @@ function NightFigures({ night }: { night: Night }) {
         <li>{`"I'm OK" cancels ${formatCount(night.cancels)}`}</li>
       </ul>
       <p className="text-base text-slate-600">{`Limits used that night: ${formatLimitsUsed(night.thresholds)}`}</p>
+      <AnomalyCheck night={night} />
+    </div>
+  )
+}
+
+/** The anomaly model's view of the night (docs/features/nightly-anomaly.md, criterion 19). */
+function AnomalyCheck({ night }: { night: Night }) {
+  const line = anomalyLine(night.anomaly)
+  return (
+    <div className="flex flex-col gap-1 border-t border-slate-200 pt-3 sm:flex-row sm:gap-x-6">
+      <p className="text-base font-medium text-slate-900 sm:w-32">Anomaly check</p>
+      <div className="flex flex-col gap-1">
+        {line.unusual ? (
+          <p className="inline-flex items-center gap-1 text-base font-semibold text-amber-900">
+            <TriangleAlert className="size-5 shrink-0" aria-hidden="true" />
+            <span>{line.text}</span>
+          </p>
+        ) : (
+          <p className="text-base text-slate-700">{line.text}</p>
+        )}
+        {line.detail && <p className="text-base text-slate-700">{line.detail}</p>}
+      </div>
     </div>
   )
 }

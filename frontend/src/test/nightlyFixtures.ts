@@ -30,6 +30,7 @@ export function testNight(overrides: Partial<Night> = {}): Night {
     falls: 0,
     vitals_alert_episodes: 1,
     cancels: 0,
+    anomaly: null,
     ...overrides,
   }
 }
@@ -60,6 +61,8 @@ export function testFlagged(overrides: Partial<NightlyOverviewFlagged> = {}): Ni
     skin_temp_c_below: 0,
     out_of_limit: 0,
     thresholds: { hr_bpm: { min: 50, max: 120 }, spo2_pct: { min: 92 }, skin_temp_c: { min: 30.0, max: 38.0 } },
+    unusual: false,
+    anomaly_reasons: [],
     ...overrides,
   }
 }

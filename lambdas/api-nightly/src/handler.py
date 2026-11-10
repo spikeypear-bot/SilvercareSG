@@ -117,7 +117,24 @@ THRESHOLD_LIMITS = {
     "spo2_pct": (("min",), True),
     "skin_temp_c": (("min", "max"), False),
 }
-PROJECTION = ("pk", "sk", "summary")
+PROJECTION = ("pk", "sk", "summary", "anomaly")
+# The anomaly map written by anomaly-collect (docs/features/nightly-anomaly.md,
+# criteria 12, 15-18).
+ANOMALY_STATUSES = frozenset(("scored", "low_wear", "not_enough_history", "no_model"))
+ANOMALY_FEATURES = frozenset(
+    (
+        "hr_bpm_avg",
+        "hr_bpm_min",
+        "hr_bpm_max",
+        "spo2_pct_avg",
+        "spo2_pct_min",
+        "skin_temp_c_avg",
+        "activity_pct_avg",
+        "bed_minutes",
+        "motion_events",
+    )
+)
+MODEL_VERSION_RE = re.compile(r"^anomaly-train-[0-9]{8}-[0-9a-f]{8}\Z")
 LOG_KEYS = ["request_id", "route", "sub", "resident_id"]
 
 _deserializer = TypeDeserializer()
@@ -218,6 +235,95 @@ def _thresholds(value: Any) -> dict[str, dict[str, int | float]]:
     return out
 
 
+class InvalidAnomaly(Exception):
+    """A stored `anomaly` map doesn't have its shape. Never carries a value."""
+
+
+def _reasons(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 2:
+        raise InvalidAnomaly
+    out = []
+    for reason in value:
+        if not isinstance(reason, dict) or set(reason) != {"feature", "value", "usual"}:
+            raise InvalidAnomaly
+        feature = reason["feature"]
+        if not isinstance(feature, str) or feature not in ANOMALY_FEATURES:
+            raise InvalidAnomaly
+        try:
+            out.append(
+                {
+                    "feature": feature,
+                    "value": _number(reason["value"], False),
+                    "usual": _number(reason["usual"], False),
+                }
+            )
+        except InvalidNight:
+            raise InvalidAnomaly from None
+    return out
+
+
+def parse_anomaly(value: Any) -> dict[str, Any] | None:
+    """The response's `anomaly` (criteria 15, 16): None when the item has none. Raises
+    InvalidAnomaly when it can't be read (criterion 18)."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise InvalidAnomaly
+    status = value.get("status")
+    if not isinstance(status, str) or status not in ANOMALY_STATUSES:
+        raise InvalidAnomaly
+    usable = value.get("usable_nights")
+    try:
+        usable_nights = int(_number(usable, True))
+        if usable_nights < 0:
+            raise InvalidAnomaly
+        if status == "scored":
+            score = round(_number(value.get("score"), False), 2)
+            cutoff = round(_number(value.get("cutoff"), False), 2)
+        else:
+            if value.get("score") is not None or value.get("cutoff") is not None:
+                raise InvalidAnomaly
+            score = cutoff = None
+    except InvalidNight:
+        raise InvalidAnomaly from None
+    unusual = value.get("unusual")
+    version = value.get("model_version")
+    reasons = _reasons(value.get("reasons"))
+    if status == "scored":
+        if type(unusual) is not bool or not isinstance(version, str):
+            raise InvalidAnomaly
+        if not MODEL_VERSION_RE.match(version):
+            raise InvalidAnomaly
+    else:
+        if unusual is not None or version is not None or reasons:
+            raise InvalidAnomaly
+    return {
+        "status": status,
+        "score": score,
+        "cutoff": cutoff,
+        "unusual": unusual,
+        "reasons": reasons,
+        "usable_nights": usable_nights,
+        "model_version": version,
+    }
+
+
+def read_anomaly(
+    item: dict[str, Any], resident_id: str | None = None
+) -> dict[str, Any] | None:
+    """parse_anomaly, but a malformed map gives None and a warning (no values), so one
+    bad anomaly never hides the night (criterion 18). The overview passes resident_id;
+    the per-resident route already has it in its log keys."""
+    try:
+        return parse_anomaly(item.get("anomaly"))
+    except InvalidAnomaly:
+        extra = {"outcome": "invalid_anomaly"}
+        if resident_id:
+            extra["resident_id"] = resident_id
+        logger.warning("invalid anomaly", extra=extra)
+        return None
+
+
 def night_from_item(item: dict[str, Any]) -> dict[str, Any]:
     """One response night from a deserialized item: `date` plus the summary's fields,
     built explicitly (never the raw item). Raises InvalidNight."""
@@ -240,7 +346,11 @@ def night_from_item(item: dict[str, Any]) -> dict[str, Any]:
     for name in FLOAT_FIELDS:
         values[name] = _nullable(summary.get(name), False)
     values["thresholds"] = _thresholds(summary.get("thresholds"))
-    return {"date": date, **{name: values[name] for name in NIGHT_FIELDS}}
+    return {
+        "date": date,
+        **{name: values[name] for name in NIGHT_FIELDS},
+        "anomaly": read_anomaly(item),
+    }
 
 
 def sgt_now(now: datetime) -> datetime:
@@ -442,34 +552,45 @@ def overview_entry(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         )
     except InvalidNight:
         thresholds = None
+    anomaly = read_anomaly(item, resident_id)
+    unusual = bool(anomaly and anomaly["unusual"])
     entry = {
         "resident_id": resident_id,
         **counts,
         "out_of_limit": sum(counts[name] for name in OUT_OF_LIMIT_FIELDS),
         "thresholds": thresholds,
+        "unusual": unusual,
+        "anomaly_reasons": anomaly["reasons"] if unusual else [],
+        # Only for ordering (criterion 17); removed before the response.
+        "_score": anomaly["score"] if unusual else 0.0,
     }
     return resident_id, entry
 
 
 def is_flagged(entry: dict[str, Any]) -> bool:
-    """Criterion 7: any of the seven counts above 0."""
-    return any(entry[name] > 0 for name in FLAG_FIELDS)
+    """Criterion 7: any of the seven counts above 0, or an unusual night
+    (nightly-anomaly.md criterion 17)."""
+    return entry["unusual"] or any(entry[name] > 0 for name in FLAG_FIELDS)
 
 
-def flag_order(entry: dict[str, Any]) -> tuple[int, int, int, int, str]:
-    """Criterion 9: tier (falls, then alert episodes, then the rest), then descending
-    falls, alert episodes, out_of_limit, then resident_id ascending."""
+def flag_order(entry: dict[str, Any]) -> tuple[int, int, int, int, float, str]:
+    """Criterion 9: tier (falls, then alert episodes, then out-of-limit readings, then
+    unusual nights only, nightly-anomaly.md criterion 17), then descending falls, alert
+    episodes, out_of_limit, anomaly score, then resident_id ascending."""
     if entry["falls"] > 0:
         tier = 1
     elif entry["vitals_alert_episodes"] > 0:
         tier = 2
-    else:
+    elif entry["out_of_limit"] > 0:
         tier = 3
+    else:
+        tier = 4
     return (
         tier,
         -entry["falls"],
         -entry["vitals_alert_episodes"],
         -entry["out_of_limit"],
+        -entry["_score"],
         entry["resident_id"],
     )
 
@@ -506,7 +627,7 @@ def build_overview(
         if resident_id in wanted:
             entries[resident_id] = entry
     flagged = sorted((e for e in entries.values() if is_flagged(e)), key=flag_order)
-    body["flagged"] = flagged
+    body["flagged"] = [{k: v for k, v in e.items() if k != "_score"} for e in flagged]
     body["clear_count"] = len(entries) - len(flagged)
     body["no_summary_count"] = len(wanted) - len(entries)
     no_limits = sum(1 for e in entries.values() if e["thresholds"] is None)
@@ -557,10 +678,10 @@ def batch_get_nights(resident_ids: list[str], date: str) -> list[dict[str, Any]]
     back-off (5 attempts in all). Raises RuntimeError if keys stay unprocessed."""
     client = dynamodb_client()
     table = os.environ["RESULTS_TABLE"]
-    names = {"#pk": "pk", "#s": "summary", "#th": "thresholds"}
+    names = {"#pk": "pk", "#s": "summary", "#th": "thresholds", "#an": "anomaly"}
     names.update({p: name for name, p in _SUMMARY_PLACEHOLDERS.items()})
     projection = ", ".join(
-        ["#pk", *(f"#s.{p}" for p in _SUMMARY_PLACEHOLDERS.values()), "#s.#th"]
+        ["#pk", *(f"#s.{p}" for p in _SUMMARY_PLACEHOLDERS.values()), "#s.#th", "#an"]
     )
     items: list[dict[str, Any]] = []
     for start in range(0, len(resident_ids), BATCH_GET_MAX_KEYS):

@@ -120,3 +120,26 @@ describe('lastNightCountLines', () => {
     expect(lastNightCountLines(0, 0)).toEqual([])
   })
 })
+
+describe('unusual night (docs/features/nightly-anomaly.md, criterion 20)', () => {
+  const reasons = [
+    { feature: 'hr_bpm_avg' as const, value: 78, usual: 58.2 },
+    { feature: 'bed_minutes' as const, value: 240, usual: 426 },
+  ]
+
+  it('an unusual-only row shows just the anomaly reason', () => {
+    expect(flaggedReasonsText(testFlagged({ unusual: true, anomaly_reasons: reasons }))).toBe(
+      'unusual night (HR avg 78, usual 58 · bed 4 h 0 m, usual 7 h 6 m)',
+    )
+  })
+
+  it('comes last, after the counts', () => {
+    const got = flaggedReasons(testFlagged({ falls: 1, unusual: true, anomaly_reasons: reasons }))
+    expect(got[0]).toBe('1 fall')
+    expect(got[1]).toMatch(/^unusual night/)
+  })
+
+  it('is absent when the night is usual', () => {
+    expect(flaggedReasons(testFlagged({ hr_bpm_below: 2 }))).toEqual(['2 HR below 50'])
+  })
+})

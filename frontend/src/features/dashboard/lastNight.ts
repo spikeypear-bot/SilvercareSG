@@ -3,7 +3,7 @@
  * criteria 19-21). Kept out of LastNightSection.tsx so that file exports only components.
  */
 import type { NightlyOverviewFlagged } from '../../types/nightly'
-import { formatCount, formatLimit, formatNightDate } from '../residents/nightly'
+import { formatAnomalyReason, formatCount, formatLimit, formatNightDate } from '../residents/nightly'
 
 /** "Last night · 18 Nov 2026" (the date as on the resident page's Nightly summary). */
 export function lastNightHeading(expectedDate: string): string {
@@ -38,6 +38,11 @@ export function flaggedReasons(entry: NightlyOverviewFlagged): string[] {
   }
   if (entry.skin_temp_c_below > 0) {
     out.push(`${formatCount(entry.skin_temp_c_below)} skin temp below ${limit(t?.skin_temp_c?.min)}`)
+  }
+  // Last, the softest signal (docs/features/nightly-anomaly.md, criterion 20).
+  if (entry.unusual) {
+    const why = entry.anomaly_reasons.map((r) => formatAnomalyReason(r, 'comma')).join(' · ')
+    out.push(why ? `unusual night (${why})` : 'unusual night')
   }
   return out
 }
