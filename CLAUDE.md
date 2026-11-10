@@ -52,6 +52,10 @@ structure, not code that exists yet. Update this file as decisions land.
   `docs/features/live-alerts.md`): `alert-processor` publishes a bare "resident changed"
   ping with IAM; pages subscribe with Cognito and refetch through the HTTP API. Billed
   per operation, no fixed fee (~US$0-0.15/month).
+- **Audit trail (agreed 2026-11-10):** one multi-Region CloudTrail trail (`infra/cloudtrail.tf`,
+  `docs/features/cloudtrail.md`): all management events, `silvercare-registry` write events,
+  and Terraform state object events, to S3 `silvercare-cloudtrail-<account_id>`, kept 365
+  days; developers can read it. ~US$0.05/month.
 - **API:** API Gateway HTTP API → Lambda, protected by a Cognito JWT authorizer.
 - **Database:** DynamoDB for live state only: the device registry, the latest 5
   messages per device and message type, and alerts. One agreed exception (2026-11-07):

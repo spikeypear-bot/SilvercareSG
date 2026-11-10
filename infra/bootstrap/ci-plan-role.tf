@@ -89,6 +89,9 @@ data "aws_iam_policy_document" "ci_plan" {
       "athena:BatchGetQueryExecution",
       "athena:GetQueryResults",
       "athena:GetQueryResultsStream",
+      # Event history holds app users' sign-in IPs (docs/features/cloudtrail.md). Plans
+      # read trails with GetTrail and GetEventSelectors, never LookupEvents.
+      "cloudtrail:LookupEvents",
     ]
     resources = ["*"]
   }

@@ -1156,7 +1156,8 @@ data "archive_file" "api_thresholds" {
 #   Query can never return changed_by.
 # - The writes have no attribute list: those partitions hold only thresholds and log
 #   items. The role can overwrite a log item (IAM can't require the handler's
-#   attribute_not_exists condition), so the log is tamper-evident only via CloudTrail.
+#   attribute_not_exists condition), so the log is tamper-evident only through the
+#   CloudTrail trail's registry write events (infra/cloudtrail.tf, kept 365 days).
 # - Cognito AdminGetUser: as api-residents and api-dashboard (the handler keeps `name`).
 # - After a changed save (docs/features/device-alert-limits.md, criteria 5a-5c): a
 #   by-resident Query (pattern 10) for the resident's wearables, naming only gsi1_sk

@@ -4,7 +4,7 @@
 # Applied once by hand (see .claude/skills/tf-state-bootstrap). CI never runs this.
 
 resource "aws_s3_bucket" "tfstate" {
-  #checkov:skip=CKV_AWS_18:Access logging needs a second bucket; state access is already recorded by CloudTrail management events
+  #checkov:skip=CKV_AWS_18:Access logging needs a second bucket; state object reads and writes are recorded by the CloudTrail trail's S3 data events (infra/cloudtrail.tf)
   #checkov:skip=CKV_AWS_144:Cross-region replication would copy state out of ap-southeast-1 and add cost
   #checkov:skip=CKV2_AWS_62:No consumer for event notifications on the state bucket
   #checkov:skip=CKV_AWS_145:SSE-S3 is free; a customer-managed KMS key costs about US$1/month (AWS free plan)
