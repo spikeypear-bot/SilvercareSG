@@ -17,8 +17,11 @@ accurate. Report facts you've verified, not what you expect to be true.
 
 Read these before writing. Don't run anything that changes files.
 
-- `git branch --show-current`, `git status --short`, and `git diff --stat origin/main...` plus
-  the uncommitted diff, to see every changed and new file.
+- `git fetch origin` first (a stale `origin/main` hides newer merges), then
+  `git branch --show-current`, `git status --short`, and `git diff --stat origin/main...` plus
+  the uncommitted diff, to see every changed and new file. If
+  `git rev-list --count HEAD..origin/main` isn't 0, say so under Check and list what
+  those commits change that this work also touches (files, diagram labels, docs).
 - What this task left open: deviations from the spec, open questions, untested items,
   review findings left unfixed, and checks run.
 - Specs touched in `docs/features/` (their `status`), and changes to `CLAUDE.md`,

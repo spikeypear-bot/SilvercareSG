@@ -5,6 +5,11 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-10
 
+- **Problem:** the CloudTrail branch was made from a local `main` 2 commits behind
+  `origin/main` (keep-warm-more), and the recap compared against the stale ref, so the
+  outdated keep-warm diagram label went unnoticed until the user asked. **Changed:**
+  `.claude/skills/recap/SKILL.md` (Gather first): `git fetch origin` before diffing, and
+  report and check any commits the branch is behind.
 - **Problem:** splitting the results table out of the main DynamoDB icon dropped the
   API → results read and summaries → S3 → results arrows; found only when the user
   asked for a re-check. **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md`
