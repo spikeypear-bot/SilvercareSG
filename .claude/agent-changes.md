@@ -5,6 +5,16 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-10
 
+- **Problem:** splitting the results table out of the main DynamoDB icon dropped the
+  API → results read and summaries → S3 → results arrows; found only when the user
+  asked for a re-check. **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md`
+  (step 1): check arrows against every function's IAM statements and triggers, again
+  after moving or splitting icons.
+- **Problem:** architecture diagram v4 had edges sharing start points or running
+  side by side, lines through icon labels and a group title, and a label on a crossing;
+  the skill also told Claude to use a subagent, which `CLAUDE.md` forbids.
+  **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md` (steps, Two-Step
+  Edit Approach): check yourself; concrete overlap checks on cropped renders.
 - **Problem:** live-alerts pings had a per-call timeout only; with 10 records per batch
   an AppSync outage could exceed alert-processor's 30 s timeout (caught on re-reading
   before commit). **Changed:** `.claude/skills/lambda-python/SKILL.md` (Errors): bound a
@@ -71,6 +81,15 @@ a wasted step. Newest first. Review these in the diff before committing.
 
 ## 2026-11-08
 
+- **Problem:** the architecture diagram showed an `ops` Cognito group (planned in
+  `CLAUDE.md`, not built) and a guessed `raw/` S3 prefix (the code writes `telemetry/`);
+  a verification agent caught both.
+  **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md`: take as-built facts
+  from `infra/*.tf` and Lambda source only, and verify each label with a fresh agent.
+- **Problem:** asked for an architecture diagram, Claude only wrote a local `.drawio`
+  file; the user expected it drawn live through the draw.io connector.
+  **Changed:** `.claude/skills/aws-architecture-diagram/SKILL.md`: draw live with the
+  `mcp__drawio__*` tools by default (editor at http://localhost:3000, not the desktop app).
 - **User's request:** remove the agent workflows and agents. **Changed:** deleted
   `.claude/workflows/` (`build-feature`, `pre-pr-check`) and `.claude/agents/` (2
   builders, 2 testers, 2 reviewers); `CLAUDE.md` working rules and Claude setup, and the
